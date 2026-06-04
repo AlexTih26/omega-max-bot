@@ -1,0 +1,25 @@
+# Секреты и окружение
+.env
+.env.local
+
+# Python
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+
+# Логи и ОС
+*.log
+.DS_Store
+
+# База комментариев (бинарник — не в Git)
+*.db
+*.sqlite
+*.sqlite3
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Папка data остаётся в репо (схема + .gitkeep), но не сами .db

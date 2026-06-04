@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>Комментарии — OMEGA</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/comments.css">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="app comments-app">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div>
+          <p class="topbar-label">Обсуждение в MAX</p>
+          <h1 class="topbar-title comments-title" id="postTitle">Загрузка…</h1>
+        </div>
+      </div>
+    </header>
+
+    <main class="content comments-main">
+      <p class="muted comments-hint" id="postHint"></p>
+      <p class="comments-user" id="userLine" hidden></p>
+      <ul class="comment-list" id="commentList"></ul>
+      <p class="muted empty-state" id="emptyState" hidden>Пока нет комментариев. Будьте первым.</p>
+      <p class="comments-error" id="outsideMax" hidden>
+        Откройте обсуждение кнопкой «Комментарии» под постом в канале MAX.
+      </p>
+    </main>
+
+    <form class="comment-form" id="commentForm" hidden>
+      <textarea class="comment-text" id="textInput" placeholder="Написать комментарий…" rows="2" maxlength="2000" required></textarea>
+      <button type="submit" class="btn btn-primary comment-submit">Отправить</button>
+    </form>
+  </div>
+  <script src="/comments.js?v=3"></script>
+</body>
+</html>

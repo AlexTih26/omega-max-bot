@@ -11,6 +11,10 @@ from maxapi.types.message import Message
 
 from comments_store import count_comments, upsert_post
 from keyboards import comments_keyboard
+from post_attachments import (
+    merge_attachments_with_keyboard,
+    serialize_media_attachments,
+)
 from post_payload import decode_post_id
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,12 @@ def post_title_from_message(message: Message) -> str:
     return "Пост в канале"
 
 
+def _edit_text_from_body(body) -> str | None:
+    if body.text and body.text.strip():
+        return body.text
+    return None
+
+
 async def attach_comments_button(bot: Bot, message: Message) -> bool:
     body = message.body
     if not body or not body.mid:
@@ -66,17 +76,30 @@ async def attach_comments_button(bot: Bot, message: Message) -> bool:
 
     title = post_title_from_message(message)
     text = body.text or ""
-    upsert_post(mid, chat_id, title, message_text=text)
+    media_json = serialize_media_attachments(body.attachments)
+    upsert_post(
+        mid,
+        chat_id,
+        title,
+        message_text=text or None,
+        media_attachments_json=media_json,
+    )
     kb = comments_keyboard(mid, count_comments(mid)).as_markup()
+    attachments = merge_attachments_with_keyboard(body.attachments, kb)
+    edit_text = _edit_text_from_body(body)
 
     try:
         await bot.edit_message(
             message_id=mid,
-            text=text,
-            attachments=[kb],
+            text=edit_text,
+            attachments=attachments,
         )
         _remember(mid)
-        logger.info("Кнопка комментариев добавлена к посту %s в чате %s", mid, chat_id)
+        logger.info(
+            "Кнопка комментариев добавлена к посту %s (медиа: %s)",
+            mid,
+            len(attachments) - 1,
+        )
         return True
     except Exception:
         logger.exception("Не удалось добавить кнопку к посту %s", mid)

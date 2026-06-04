@@ -67,48 +67,54 @@ def upsert_post(
     chat_id: int,
     title: str,
     message_text: str | None = None,
+    media_attachments_json: str | None = None,
 ) -> None:
     title = (title or "Пост в канале")[:500]
     msg = (message_text or "").strip()[:4000] if message_text else None
+    media = (media_attachments_json or "").strip() or None
     now = time.time()
     with _connect() as conn:
-        try:
-            conn.execute("ALTER TABLE posts ADD COLUMN message_text TEXT")
-        except sqlite3.OperationalError:
-            pass
-        if msg:
-            conn.execute(
-                """
-                INSERT INTO posts (post_id, chat_id, title, message_text, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(post_id) DO UPDATE SET
-                    title = excluded.title,
-                    chat_id = excluded.chat_id,
-                    message_text = excluded.message_text
-                """,
-                (post_id, chat_id, title, msg, now),
+        for ddl in (
+            "ALTER TABLE posts ADD COLUMN message_text TEXT",
+            "ALTER TABLE posts ADD COLUMN media_attachments_json TEXT",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+        conn.execute(
+            """
+            INSERT INTO posts (
+                post_id, chat_id, title, message_text, media_attachments_json, created_at
             )
-        else:
-            conn.execute(
-                """
-                INSERT INTO posts (post_id, chat_id, title, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(post_id) DO UPDATE SET
-                    title = excluded.title,
-                    chat_id = excluded.chat_id
-                """,
-                (post_id, chat_id, title, now),
-            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(post_id) DO UPDATE SET
+                title = excluded.title,
+                chat_id = excluded.chat_id,
+                message_text = COALESCE(excluded.message_text, posts.message_text),
+                media_attachments_json = COALESCE(
+                    excluded.media_attachments_json, posts.media_attachments_json
+                )
+            """,
+            (post_id, chat_id, title, msg, media, now),
+        )
 
 
 def get_post(post_id: str) -> dict | None:
     with _connect() as conn:
-        try:
-            conn.execute("ALTER TABLE posts ADD COLUMN message_text TEXT")
-        except sqlite3.OperationalError:
-            pass
+        for ddl in (
+            "ALTER TABLE posts ADD COLUMN message_text TEXT",
+            "ALTER TABLE posts ADD COLUMN media_attachments_json TEXT",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
         row = conn.execute(
-            "SELECT post_id, chat_id, title, message_text, created_at FROM posts WHERE post_id = ?",
+            """
+            SELECT post_id, chat_id, title, message_text, media_attachments_json, created_at
+            FROM posts WHERE post_id = ?
+            """,
             (post_id,),
         ).fetchone()
     if row is None:

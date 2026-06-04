@@ -8,6 +8,10 @@ from maxapi import Bot
 
 from comments_store import count_comments, get_post
 from keyboards import comments_keyboard
+from post_attachments import (
+    deserialize_media_attachments,
+    merge_attachments_with_keyboard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +31,17 @@ async def refresh_comments_button(post_id: str) -> None:
         return
     count = count_comments(post_id)
     kb = comments_keyboard(post_id, count).as_markup()
-    text = (post.get("message_text") or post.get("title") or "").strip()
-    if not text:
-        text = " "
+    media = deserialize_media_attachments(post.get("media_attachments_json"))
+    attachments = merge_attachments_with_keyboard(media, kb)
+
+    text_raw = (post.get("message_text") or post.get("title") or "").strip()
+    edit_text = text_raw if text_raw else None
+
     try:
         await _bot.edit_message(
             message_id=post_id,
-            text=text,
-            attachments=[kb],
+            text=edit_text,
+            attachments=attachments,
         )
         logger.info("Счётчик комментариев на посте %s: %s", post_id, count)
     except Exception:

@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS posts (
     post_id TEXT PRIMARY KEY,
     chat_id INTEGER NOT NULL,
     title TEXT NOT NULL DEFAULT '',
+    message_text TEXT,
+    media_attachments_json TEXT,
     created_at REAL NOT NULL
 );
 

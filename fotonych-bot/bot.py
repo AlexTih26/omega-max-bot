@@ -14,6 +14,7 @@ from maxapi.types.updates.message_callback import MessageCallback
 from ai import ask, clear_history
 from channel_posts import attach_comments_button
 from comments_api import start_comments_api
+from comments_button import set_bot
 from keyboards import (
     CB_CLEAR,
     CB_HELP,
@@ -178,6 +179,7 @@ async def main() -> None:
         BotCommand(name="start", description="Показать меню"),
         BotCommand(name="clear", description="Очистить память"),
     )
+    set_bot(bot)
     api_runner = await start_comments_api()
     try:
         await dp.start_polling(bot)

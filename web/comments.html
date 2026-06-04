@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/comments.css">
+  <link rel="stylesheet" href="/comments.css?v=8">
   <script src="https://st.max.ru/js/max-web-app.js"></script>
 </head>
 <body>
@@ -24,9 +24,9 @@
     </header>
 
     <main class="content comments-main">
-      <p class="muted comments-hint" id="postHint"></p>
-      <p class="comments-user" id="userLine" hidden></p>
+      <p class="comments-count-pill muted" id="postHint"></p>
       <ul class="comment-list" id="commentList"></ul>
+      <div id="commentsEndAnchor" class="comments-end-anchor" aria-hidden="true"></div>
       <p class="muted empty-state" id="emptyState" hidden>Пока нет комментариев. Будьте первым.</p>
       <p class="comments-error" id="outsideMax" hidden>
         Откройте обсуждение кнопкой «Комментарии» под постом в канале MAX.
@@ -34,10 +34,15 @@
     </main>
 
     <form class="comment-form" id="commentForm" hidden>
-      <textarea class="comment-text" id="textInput" placeholder="Написать комментарий…" rows="2" maxlength="2000" required></textarea>
-      <button type="submit" class="btn btn-primary comment-submit">Отправить</button>
+      <div class="composer-row">
+        <div class="composer-avatar" id="composerAvatar" aria-hidden="true"></div>
+        <div class="composer-fields">
+          <textarea class="comment-text" id="textInput" placeholder="Сообщение" rows="1" maxlength="2000" required></textarea>
+          <button type="submit" class="comment-send" aria-label="Отправить">↑</button>
+        </div>
+      </div>
     </form>
   </div>
-  <script src="/comments.js?v=3"></script>
+  <script src="/comments.js?v=9"></script>
 </body>
 </html>

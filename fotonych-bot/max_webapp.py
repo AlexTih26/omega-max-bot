@@ -72,6 +72,27 @@ def validate_init_data(init_data: str, bot_token: str) -> dict | None:
     return result
 
 
+def avatar_url_from_user(user: dict | None) -> str | None:
+    if not user or not isinstance(user, dict):
+        return None
+    for key in ("photo_url", "avatar_url", "photo", "avatar"):
+        val = user.get(key)
+        if isinstance(val, str) and val.strip().startswith(("http://", "https://")):
+            return val.strip()[:500]
+    return None
+
+
+def user_id_from_user(user: dict | None) -> int | None:
+    if not user or not isinstance(user, dict):
+        return None
+    uid = user.get("id")
+    if isinstance(uid, int):
+        return uid
+    if isinstance(uid, str) and uid.isdigit():
+        return int(uid)
+    return None
+
+
 def display_name_from_user(user: dict | None) -> str:
     if not user or not isinstance(user, dict):
         return "Пользователь MAX"

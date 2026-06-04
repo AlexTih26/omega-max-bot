@@ -29,11 +29,17 @@ def back_menu_keyboard() -> InlineKeyboardBuilder:
     return kb
 
 
-def comments_keyboard(post_id: str) -> InlineKeyboardBuilder:
+def comments_button_label(count: int) -> str:
+    if count <= 0:
+        return "💬 Комментарии"
+    return f"💬 Комментарии · {count}"
+
+
+def comments_keyboard(post_id: str, count: int = 0) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.row(
         OpenAppButton(
-            text="💬 Комментарии",
+            text=comments_button_label(count),
             web_app=MAX_BOT_USERNAME,
             payload=encode_post_id(post_id),
         )

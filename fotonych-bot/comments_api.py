@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 
 from aiohttp import web
 
-from comments_store import add_comment, get_post, init_db, list_comments
-from max_webapp import display_name_from_user, validate_init_data
+from comments_button import refresh_comments_button
+from comments_store import (
+    add_comment,
+    build_comment_tree,
+    count_comments,
+    get_post,
+    init_db,
+    list_comments,
+    toggle_like,
+)
+from max_webapp import (
+    avatar_url_from_user,
+    display_name_from_user,
+    user_id_from_user,
+    validate_init_data,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +37,19 @@ def _bot_token() -> str:
     return os.getenv("MAX_BOT_TOKEN", "")
 
 
+def _parse_user(request: web.Request) -> tuple[dict | None, int | None]:
+    init_data = request.headers.get("X-Max-Init-Data", "").strip()
+    if not init_data:
+        return None, None
+    parsed = validate_init_data(init_data, _bot_token())
+    if parsed is None:
+        return None, None
+    user = parsed.get("user")
+    if not isinstance(user, dict):
+        return None, None
+    return user, user_id_from_user(user)
+
+
 async def handle_get_post(request: web.Request) -> web.Response:
     post_id = request.match_info.get("post_id", "").strip()
     if not post_id:
@@ -29,8 +57,22 @@ async def handle_get_post(request: web.Request) -> web.Response:
     post = get_post(post_id)
     if post is None:
         return _json({"error": "not found"}, 404)
-    comments = list_comments(post_id)
-    return _json({"post": post, "comments": comments})
+
+    _, viewer_id = _parse_user(request)
+    flat = list_comments(post_id, viewer_id=viewer_id)
+    comments = build_comment_tree(flat)
+    total = count_comments(post_id)
+
+    viewer = None
+    user, uid = _parse_user(request)
+    if user and uid:
+        viewer = {
+            "id": uid,
+            "author": display_name_from_user(user),
+            "author_photo": avatar_url_from_user(user),
+        }
+
+    return _json({"post": post, "comments": comments, "comment_count": total, "viewer": viewer})
 
 
 async def handle_post_comment(request: web.Request) -> web.Response:
@@ -56,18 +98,72 @@ async def handle_post_comment(request: web.Request) -> web.Response:
     if not text:
         return _json({"error": "text required"}, 400)
 
+    parent_id = body.get("parent_id")
+    if parent_id is not None:
+        try:
+            parent_id = int(parent_id)
+        except (TypeError, ValueError):
+            return _json({"error": "invalid parent_id"}, 400)
+
     user = parsed.get("user")
-    author = display_name_from_user(user if isinstance(user, dict) else None)
-    user_id = user.get("id") if isinstance(user, dict) else None
+    if not isinstance(user, dict):
+        return _json({"error": "user required"}, 401)
+
+    author = display_name_from_user(user)
+    user_id = user_id_from_user(user)
+    photo = avatar_url_from_user(user)
 
     try:
-        comment = add_comment(post_id, text, author, max_user_id=user_id)
+        comment = add_comment(
+            post_id,
+            text,
+            author,
+            max_user_id=user_id,
+            parent_id=parent_id,
+            author_photo=photo,
+        )
     except KeyError:
         return _json({"error": "post not found"}, 404)
     except ValueError as e:
         return _json({"error": str(e)}, 400)
 
+    asyncio.create_task(refresh_comments_button(post_id))
+
     return _json({"comment": comment}, 201)
+
+
+async def handle_toggle_like(request: web.Request) -> web.Response:
+    comment_id_raw = request.match_info.get("comment_id", "").strip()
+    try:
+        comment_id = int(comment_id_raw)
+    except ValueError:
+        return _json({"error": "invalid comment_id"}, 400)
+
+    init_data = request.headers.get("X-Max-Init-Data", "").strip()
+    if not init_data:
+        return _json({"error": "open in MAX mini-app"}, 401)
+
+    parsed = validate_init_data(init_data, _bot_token())
+    if parsed is None:
+        return _json({"error": "invalid init data"}, 401)
+
+    user = parsed.get("user")
+    if not isinstance(user, dict):
+        return _json({"error": "user required"}, 401)
+
+    user_id = user_id_from_user(user)
+    if user_id is None:
+        return _json({"error": "user id required"}, 401)
+
+    author = display_name_from_user(user)
+    photo = avatar_url_from_user(user)
+
+    try:
+        likes = toggle_like(comment_id, user_id, author, author_photo=photo)
+    except KeyError:
+        return _json({"error": "comment not found"}, 404)
+
+    return _json({"likes": likes})
 
 
 async def handle_health(_request: web.Request) -> web.Response:
@@ -80,6 +176,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/health", handle_health)
     app.router.add_get("/api/posts/{post_id}", handle_get_post)
     app.router.add_post("/api/posts/{post_id}/comments", handle_post_comment)
+    app.router.add_post("/api/comments/{comment_id}/like", handle_toggle_like)
     return app
 
 

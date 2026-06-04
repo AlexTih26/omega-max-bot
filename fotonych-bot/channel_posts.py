@@ -9,7 +9,7 @@ from maxapi.enums.attachment import AttachmentType
 from maxapi.enums.button_type import ButtonType
 from maxapi.types.message import Message
 
-from comments_store import upsert_post
+from comments_store import count_comments, upsert_post
 from keyboards import comments_keyboard
 from post_payload import decode_post_id
 
@@ -65,9 +65,9 @@ async def attach_comments_button(bot: Bot, message: Message) -> bool:
         return False
 
     title = post_title_from_message(message)
-    upsert_post(mid, chat_id, title)
-    kb = comments_keyboard(mid).as_markup()
-    text = body.text
+    text = body.text or ""
+    upsert_post(mid, chat_id, title, message_text=text)
+    kb = comments_keyboard(mid, count_comments(mid)).as_markup()
 
     try:
         await bot.edit_message(

@@ -270,11 +270,11 @@
     }
   }
 
-  function renderQuote(replyTo, usePurple) {
+  function renderQuote(replyTo, isReply) {
     if (!replyTo) return null;
     var q = document.createElement("button");
     q.type = "button";
-    q.className = "comment-quote" + (usePurple ? " comment-quote--purple" : "");
+    q.className = "comment-quote" + (isReply ? " comment-quote--reply" : "");
     q.innerHTML =
       '<span class="comment-quote-author">' + escapeHtml(replyTo.author) + "</span>" +
       '<span class="comment-quote-text">' + escapeHtml(replyTo.text) + "</span>";
@@ -303,7 +303,7 @@
     bubble.className = "comment-bubble";
     if (activeCommentId === c.id) bubble.classList.add("comment-bubble--active");
 
-    var quote = renderQuote(c.reply_to, nested);
+    var quote = renderQuote(c.reply_to, Boolean(c.reply_to));
     if (quote) bubble.appendChild(quote);
 
     var head = document.createElement("div");

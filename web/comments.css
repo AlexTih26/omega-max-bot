@@ -11,18 +11,21 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  --comments-bg: #151520;
-  --comments-bubble-bg: #222232;
-  --comments-border: rgba(255, 255, 255, 0.16);
-  --comments-border-strong: rgba(255, 255, 255, 0.22);
+  --comments-bg: #1c1c2a;
+  --comments-bubble-bg: #2e2e3c;
+  --comments-border: rgba(255, 255, 255, 0.12);
+  --comments-border-warm: rgba(212, 175, 88, 0.42);
+  --comments-border-strong: rgba(228, 198, 118, 0.38);
+  --comments-quote-blue: #5b9cf5;
+  --comments-quote-gold: #d4b06a;
   background:
-    radial-gradient(ellipse 70% 40% at 50% 0%, rgba(37, 99, 235, 0.1), transparent),
+    radial-gradient(ellipse 80% 45% at 50% 0%, rgba(55, 65, 100, 0.15), transparent),
     var(--comments-bg);
 }
 
 .comments-app .topbar {
-  background: rgba(21, 21, 32, 0.92);
-  border-bottom-color: var(--comments-border);
+  background: rgba(28, 28, 42, 0.94);
+  border-bottom-color: var(--comments-border-warm);
 }
 
 .comments-app .content {
@@ -36,7 +39,7 @@ body {
   margin-bottom: 12px;
   border-radius: 999px;
   background: var(--comments-bubble-bg);
-  border: 1px solid var(--comments-border);
+  border: 1px solid var(--comments-border-warm);
 }
 
 .comments-main {
@@ -44,7 +47,7 @@ body {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding-bottom: 96px;
+  padding: 0 12px 96px;
 }
 
 .comments-end-anchor {
@@ -57,29 +60,44 @@ body {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+  max-width: 100%;
 }
 
 .comment-thread {
   list-style: none;
+  width: 100%;
 }
 
 .comment-row {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-}
-
-.comment-row--nested {
-  margin-left: 0;
+  width: 100%;
 }
 
 .comment-column {
   flex: 1;
   min-width: 0;
+  max-width: calc(100% - 50px);
 }
 
-/* Жёсткий круг 40×40 — иначе фото из MAX растягивается на весь экран */
+.comment-bubble {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--comments-bubble-bg);
+  border: 1.5px solid var(--comments-border-strong);
+  border-radius: 14px 14px 14px 6px;
+  padding: 10px 14px 8px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
+}
+
+.comment-bubble--active {
+  border-color: rgba(250, 204, 21, 0.55);
+  box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.2), 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Аватар 40×40 */
 .comment-avatar-slot {
   width: 40px;
   height: 40px;
@@ -101,8 +119,8 @@ body {
   border-radius: 50%;
   object-fit: cover;
   display: block;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: var(--comments-bubble-bg);
+  border: 1px solid var(--comments-border-warm);
   box-sizing: border-box;
 }
 
@@ -113,61 +131,50 @@ body {
   font-size: 0.85rem;
   font-weight: 700;
   color: #fff;
-  background: linear-gradient(135deg, var(--purple), var(--max-blue));
+  background: linear-gradient(135deg, #7c6b9e, #4a6fa5);
   border: none;
 }
 
-.comment-bubble {
-  flex: 1;
-  min-width: 0;
-  background: var(--comments-bubble-bg);
-  border: 1.5px solid var(--comments-border-strong);
-  border-radius: 16px;
-  padding: 10px 12px 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
-}
-
-.comment-bubble--active {
-  border-color: rgba(96, 165, 250, 0.65);
-  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.25), 0 2px 10px rgba(0, 0, 0, 0.28);
-}
-
+/* Цитата при ответе */
 .comment-quote {
   display: block;
+  width: 100%;
+  box-sizing: border-box;
   margin-bottom: 8px;
   padding: 8px 10px 8px 12px;
-  border-left: 3px solid var(--max-blue);
+  border-left: 3px solid var(--comments-quote-blue);
   border-radius: 8px;
-  background: rgba(37, 99, 235, 0.08);
+  background: rgba(55, 100, 180, 0.12);
   text-decoration: none;
   color: inherit;
   cursor: pointer;
 }
 
-.comment-quote--purple {
-  border-left-color: var(--purple);
-  background: rgba(124, 58, 237, 0.1);
+.comment-quote--reply {
+  border-left-color: var(--comments-quote-gold);
+  background: rgba(212, 175, 88, 0.1);
 }
 
 .comment-quote-author {
   display: block;
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--max-blue);
+  color: var(--comments-quote-blue);
   margin-bottom: 2px;
 }
 
-.comment-quote--purple .comment-quote-author {
-  color: #a78bfa;
+.comment-quote--reply .comment-quote-author {
+  color: var(--comments-quote-gold);
 }
 
 .comment-quote-text {
   display: block;
   font-size: 0.8rem;
-  color: var(--muted);
+  color: #a8a8b8;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .comment-head {
@@ -181,21 +188,22 @@ body {
 .comment-author-name {
   font-weight: 600;
   font-size: 0.9rem;
-  color: var(--max-blue);
+  color: var(--comments-quote-blue);
 }
 
 .comment-time {
   font-size: 0.7rem;
-  color: var(--muted);
+  color: #9ca3af;
   flex-shrink: 0;
 }
 
 .comment-body {
   font-size: 0.95rem;
-  line-height: 1.45;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0 0 8px;
+  color: #f0f0f4;
 }
 
 .comment-body img {
@@ -206,7 +214,7 @@ body {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 8px 14px;
 }
 
 .comment-like-btn {
@@ -215,7 +223,7 @@ body {
   gap: 6px;
   font: inherit;
   font-size: 0.8rem;
-  color: var(--muted);
+  color: #9ca3af;
   background: none;
   border: none;
   padding: 4px 0;
@@ -223,12 +231,12 @@ body {
 }
 
 .comment-like-btn--active {
-  color: #60a5fa;
+  color: #fbbf24;
 }
 
 .comment-like-label {
   font-size: 0.8rem;
-  color: var(--muted);
+  color: #9ca3af;
 }
 
 .comment-like-btn--active .comment-like-label {
@@ -262,19 +270,15 @@ body {
   max-width: 20px;
   max-height: 20px;
   margin-left: 0;
-  border: 2px solid var(--bg-card);
+  border: 2px solid var(--comments-bubble-bg);
   font-size: 0.55rem;
-}
-
-.comment-like-avatars .comment-avatar:first-child {
-  margin-left: 0;
 }
 
 .comment-reply-btn {
   font: inherit;
   font-size: 0.8rem;
   font-weight: 600;
-  color: var(--muted);
+  color: #9ca3af;
   background: none;
   border: none;
   padding: 4px 0;
@@ -282,16 +286,38 @@ body {
 }
 
 .comment-reply-btn--active {
-  color: var(--max-blue);
+  color: var(--comments-quote-gold);
 }
 
+/* Ветка ответов — ровный отступ, линия слева */
 .comment-replies-wrap {
   list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
+  margin: 8px 0 0 0;
+  padding: 4px 0 4px 14px;
+  border-left: 2px solid rgba(212, 175, 88, 0.35);
   display: flex;
   flex-direction: column;
   gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.comment-replies-wrap .comment-column {
+  max-width: 100%;
+}
+
+.comment-replies-wrap .comment-avatar-slot,
+.comment-replies-wrap .comment-avatar-slot img,
+.comment-replies-wrap .comment-avatar {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px;
+  max-width: 32px;
+  max-height: 32px;
+}
+
+.comment-replies-wrap .comment-bubble {
+  border-radius: 12px 12px 12px 4px;
 }
 
 .comment-form {
@@ -299,15 +325,16 @@ body {
   bottom: 0;
   padding: 10px 12px;
   padding-bottom: max(10px, env(safe-area-inset-bottom));
-  background: rgba(21, 21, 32, 0.97);
+  background: rgba(28, 28, 42, 0.97);
   backdrop-filter: blur(12px);
-  border-top: 1px solid var(--comments-border);
+  border-top: 1px solid var(--comments-border-warm);
 }
 
 .composer-row {
   display: flex;
   align-items: flex-end;
   gap: 10px;
+  max-width: 100%;
 }
 
 .composer-avatar {
@@ -330,21 +357,23 @@ body {
 
 .composer-fields {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
   background: var(--comments-bubble-bg);
-  border: 1.5px solid var(--comments-border-strong);
+  border: 1.5px solid var(--comments-border-warm);
   border-radius: 24px;
   padding: 8px 8px 8px 14px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
 }
 
 .comment-text {
   flex: 1;
+  min-width: 0;
   font: inherit;
   font-size: 0.95rem;
-  color: var(--text);
+  color: #f0f0f4;
   background: transparent;
   border: none;
   padding: 6px 0;
@@ -387,6 +416,7 @@ body {
 .empty-state {
   text-align: center;
   padding: 24px 0;
+  color: #9ca3af;
 }
 
 .comments-error {

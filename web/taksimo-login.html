@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#141820">
+  <meta name="application-name" content="Таксимо">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Таксимо">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/taksimo-manifest.json">
+  <link rel="icon" href="/taksimo-icon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/taksimo-icon-180.png" sizes="180x180">
+  <title>Таксимо · вход</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/taksimo.css?v=6">
+  <style>
+    .tk-login-wrap {
+      min-height: 70vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px 16px;
+    }
+    .tk-login-card {
+      width: 100%;
+      max-width: 340px;
+      background: var(--tk-card, #1a2030);
+      border: 1.5px solid var(--tk-border, #2a3344);
+      border-radius: 16px;
+      padding: 24px 20px;
+    }
+    .tk-login-title {
+      margin: 0 0 8px;
+      font-size: 1.25rem;
+      color: var(--tk-gold, #d4af37);
+    }
+    .tk-login-hint {
+      margin: 0 0 20px;
+      font-size: 0.88rem;
+      color: #9ca3af;
+    }
+    .tk-pin-input {
+      font-size: 1.6rem;
+      letter-spacing: 0.35em;
+      text-align: center;
+      font-weight: 700;
+    }
+    .tk-login-err {
+      color: #f87171;
+      font-size: 0.85rem;
+      min-height: 1.2em;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="app taksimo-app">
+    <main class="tk-login-wrap">
+      <div class="tk-login-card">
+        <h1 class="tk-login-title">Таксимо</h1>
+        <p class="tk-login-hint">Введите 5-значный PIN для доступа к площадке</p>
+        <form id="loginForm">
+          <input class="tk-input tk-pin-input" id="pin" type="password" inputmode="numeric"
+            pattern="[0-9]{5}" maxlength="5" minlength="5" placeholder="•••••" autocomplete="off" required>
+          <button type="submit" class="tk-submit" id="loginBtn">Войти</button>
+        </form>
+        <p class="tk-login-err" id="err"></p>
+        <p class="tk-footer" style="margin-top:16px"><a href="/">← Меню avtmsk.ru</a></p>
+      </div>
+    </main>
+  </div>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var next = params.get("next") || "/taksimo.html";
+      if (!next.startsWith("/") || next.startsWith("//")) next = "/taksimo.html";
+
+      fetch("/api/taksimo/auth/check", { credentials: "same-origin" })
+        .then(function (r) { if (r.ok) location.replace(next); });
+
+      document.getElementById("loginForm").addEventListener("submit", function (e) {
+        e.preventDefault();
+        var pin = document.getElementById("pin").value.trim();
+        var err = document.getElementById("err");
+        var btn = document.getElementById("loginBtn");
+        err.textContent = "";
+        btn.disabled = true;
+        fetch("/api/taksimo/auth", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: pin }),
+        })
+          .then(function (r) {
+            return r.json().then(function (d) { return { ok: r.ok, data: d }; });
+          })
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.data.error || "Ошибка входа");
+            location.replace(next);
+          })
+          .catch(function (ex) {
+            err.textContent = ex.message;
+            btn.disabled = false;
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

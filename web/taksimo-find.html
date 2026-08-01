@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#12151a">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>Где плита — Таксимо</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/taksimo-find.css?v=1">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="tf-app">
+    <header class="tf-header">
+      <p class="tf-kicker">Таксимо</p>
+      <h1 class="tf-title">Где плита</h1>
+      <p class="tf-sub">Плита: A4495, 4495 · вагон: 12345</p>
+    </header>
+
+    <main class="tf-main">
+      <label class="tf-label" for="searchQ">Поиск</label>
+      <input class="tf-input" id="searchQ" type="search" inputmode="search"
+        placeholder="A4495 или вагон 12345" autocomplete="off" autocapitalize="characters">
+
+      <ul class="tf-results" id="results"></ul>
+      <p class="tf-empty" id="empty" hidden>Ничего не найдено</p>
+
+      <p class="tf-error" id="outsideMax" hidden>
+        Откройте кнопкой «Где плита» под отчётом в чате Таксимо MAX.
+      </p>
+    </main>
+  </div>
+  <script src="/taksimo-find.js?v=2"></script>
+</body>
+</html>

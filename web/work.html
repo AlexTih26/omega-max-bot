@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#18191d">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <title>Сервис FOTON · avtmsk.ru</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/taksimo.css?v=4">
+  <link rel="stylesheet" href="/work.css?v=1">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="app work-app">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <span class="logo-mark">Ω</span>
+        <div>
+          <p class="topbar-label">FOTON Auman EST A</p>
+          <h1 class="topbar-title">Сервис и запчасти</h1>
+        </div>
+        <a class="tk-menu-link" href="/">☰ Меню</a>
+      </div>
+    </header>
+
+    <main class="content work-main">
+      <p class="work-intro" id="workIntro">
+        Опишите проблему или запрос на запчасти — заявка сохранится в вашем списке.
+        Откройте из бота OMEGA или чата MAX.
+      </p>
+
+      <div class="work-tabs" role="tablist">
+        <button type="button" class="work-tab work-tab--active" data-tab="new" role="tab">Новая заявка</button>
+        <button type="button" class="work-tab" data-tab="list" role="tab">Мои заявки</button>
+      </div>
+
+      <section class="work-panel" id="panelNew" role="tabpanel">
+        <form class="work-form" id="workForm">
+          <label class="work-label" for="category">Узел</label>
+          <select class="work-select" id="category" name="category" required></select>
+
+          <label class="work-label" for="title">Кратко</label>
+          <input class="work-input" id="title" name="title" maxlength="200" placeholder="Например: не заводится после холода" required>
+
+          <label class="work-label" for="text">Описание</label>
+          <textarea class="work-textarea" id="text" name="text" maxlength="2000" placeholder="Симптомы, код ошибки, что уже пробовали…" required></textarea>
+
+          <button type="submit" class="work-submit" id="submitBtn">Отправить заявку</button>
+        </form>
+      </section>
+
+      <section class="work-panel" id="panelList" role="tabpanel" hidden>
+        <ul class="work-list" id="requestList"></ul>
+        <p class="work-empty" id="emptyList" hidden>Пока нет заявок.</p>
+      </section>
+
+      <p class="work-error" id="outsideMax" hidden>
+        Откройте через кнопку «Сервис FOTON» в боте OMEGA AI LAB в MAX.
+      </p>
+
+      <p class="work-footer-link">
+        <a href="https://max.avtmsk.ru/">OMEGA AI LAB</a>
+        ·
+        <a href="https://max.ru/join/uOBAd0LKVYbG9-xVnKoJFpzMgRVR5QPZSDGFn3FfKSA" target="_blank" rel="noopener">чат FOTON</a>
+      </p>
+    </main>
+
+    <div class="work-toast" id="toast" hidden>Заявка отправлена</div>
+  </div>
+  <script src="/work.js?v=1"></script>
+</body>
+</html>

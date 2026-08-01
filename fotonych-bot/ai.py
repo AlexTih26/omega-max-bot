@@ -5,11 +5,9 @@ from typing import Any
 
 from openai import OpenAI
 
+from omega_assistant import DEFAULT_SYSTEM_PROMPT
+
 DEFAULT_MODEL = "gpt-4.1-mini"
-DEFAULT_SYSTEM_PROMPT = (
-    "Ты OMEGA — дружелюбный AI-помощник в мессенджере MAX. "
-    "Отвечай по-русски, кратко и по делу."
-)
 
 MAX_MESSAGES = 40
 HISTORY_TTL_SEC = 2 * 3600

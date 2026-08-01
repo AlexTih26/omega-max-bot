@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#12101a">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="description" content="OMEGA Chat — AI-чат в MAX. Отдельный mini-app, не связанный с рейсами и служебными панелями.">
+  <title>OMEGA Chat · OMEGA AI LAB</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css?v=4">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <script>
+    (function () {
+      try {
+        var wa = window.WebApp;
+        if (wa && wa.initData && String(wa.initData).length > 0) {
+          window.location.replace("/chat.html" + window.location.search + window.location.hash);
+        }
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <span class="logo-mark">Ω</span>
+        <div>
+          <p class="topbar-label">Mini-app</p>
+          <h1 class="topbar-title">OMEGA Chat</h1>
+        </div>
+        <a class="topbar-link" href="/">На главную</a>
+      </div>
+    </header>
+
+    <main class="content">
+      <a class="back-link" href="/">← OMEGA AI LAB</a>
+
+      <section class="hero card">
+        <p class="badge badge-chat">AI в MAX</p>
+        <h2>Личный чат с OMEGA</h2>
+        <p class="muted">
+          Отдельный mini-app для вопросов к AI: память диалога, до 50 сообщений в день бесплатно.
+          Не связан с рейсами, Таксimo и служебными чатами водителей.
+        </p>
+      </section>
+
+      <section class="card">
+        <h3>Открыть в MAX</h3>
+        <p class="muted section-hint">
+          OMEGA Chat работает только внутри мессенджера MAX — как mini-app бота OMEGA AI LAB.
+        </p>
+        <div class="link-buttons">
+          <a class="btn btn-chat btn-primary" href="https://max.ru/id5406829253_bot?startapp=chat" target="_blank" rel="noopener">
+            <span class="btn-icon">💬</span>
+            <span class="btn-text">Открыть OMEGA Chat в MAX</span>
+          </a>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Что внутри</h3>
+        <ul class="feature-list">
+          <li><span>🤖</span> Ответы AI на русском</li>
+          <li><span>🧠</span> Память диалога в рамках беседы</li>
+          <li><span>📊</span> До 50 сообщений в день</li>
+          <li><span>🔒</span> Отдельно от рабочих чатов и панелей</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p><a href="https://max.avtmsk.ru/">max.avtmsk.ru</a> · OMEGA Chat</p>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0f1419">
+  <title>Панель — загрузка</title>
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      background: #0f1419;
+      color: #8b98a8;
+      font: 500 15px/1.4 Inter, system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <p id="msg">Открываем панель…</p>
+  <script>
+    (function () {
+      var webApp = window.WebApp || null;
+      var msg = document.getElementById("msg");
+
+      function readInitDataFromUrl() {
+        var params = new URLSearchParams(window.location.search);
+        var fromQuery = params.get("initData") || params.get("InitData");
+        if (fromQuery) return fromQuery;
+        if (window.location.hash && window.location.hash.length > 1) {
+          var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+          return hash.get("initData") || hash.get("InitData") || "";
+        }
+        return "";
+      }
+
+      function syncInitData() {
+        if (webApp && webApp.initData) return webApp.initData;
+        return readInitDataFromUrl();
+      }
+
+      function startParam() {
+        var params = new URLSearchParams(window.location.search);
+        var fromQuery = params.get("WebAppStartParam") || params.get("startapp") || "";
+        if (fromQuery) return fromQuery;
+        if (webApp && webApp.initDataUnsafe && webApp.initDataUnsafe.start_param) {
+          return webApp.initDataUnsafe.start_param;
+        }
+        return "";
+      }
+
+      function boot() {
+        if (webApp) {
+          try {
+            if (webApp.ready) webApp.ready();
+            if (webApp.expand) webApp.expand();
+          } catch (e) {}
+        }
+        var initData = syncInitData();
+        var q = window.location.search || "";
+        var h = window.location.hash || "";
+        if (startParam() === "admin" || startParam() === "adm") {
+          window.location.replace("/admin.html" + q + h);
+          return;
+        }
+        if (!initData) {
+          msg.textContent = "Откройте панель из чата MAX ↓";
+          return;
+        }
+        var headers = { "X-Max-Init-Data": initData };
+        fetch("/api/panel/role", { headers: headers })
+          .then(function (r) {
+            return r.json().then(function (body) {
+              if (!r.ok) throw new Error(body.error || "role failed");
+              return body;
+            });
+          })
+          .then(function (data) {
+            var target = data.redirect || "/drivers.html";
+            var q = window.location.search || "";
+            var h = window.location.hash || "";
+            window.location.replace(target + q + h);
+          })
+          .catch(function () {
+            msg.textContent = "Не удалось открыть панель — проверьте связь";
+          });
+      }
+
+      setTimeout(boot, webApp && webApp.initData ? 0 : 280);
+    })();
+  </script>
+</body>
+</html>

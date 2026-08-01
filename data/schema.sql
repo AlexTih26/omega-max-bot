@@ -36,3 +36,20 @@ CREATE TABLE IF NOT EXISTS comment_likes (
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_likes_comment ON comment_likes(comment_id);
+
+CREATE TABLE IF NOT EXISTS work_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    max_user_id INTEGER NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'другое',
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'новая',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_work_user ON work_requests(max_user_id);
+CREATE INDEX IF NOT EXISTS idx_work_status ON work_requests(status);
+
+-- Таксимо: data/taksimo.db (создаётся в taksimo_store.init_taksimo_db)

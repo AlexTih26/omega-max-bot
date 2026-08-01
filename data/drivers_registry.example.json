@@ -1,0 +1,7 @@
+{
+  "drivers": [
+    {"max_user_id": 122515011, "plate_tail": "350", "name": "Алексей", "vehicle": "тест"},
+    {"max_user_id": 115666650, "plate_tail": "348", "name": "Андриянов", "vehicle": "MAN В 348 МУ"},
+    {"max_user_id": 0, "plate_tail": "674", "name": "Петров", "vehicle": "Ситрак · ещё не в MAX"}
+  ]
+}

@@ -21,5 +21,33 @@ __pycache__
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/taksimo.db
+data/taksimo.db-*
+
+# Бэкапы БД (только на сервере)
+data/backups/
+
+# Runtime-состояние (не в Git)
+data/*.jsonl
+data/drivers_chat.json
+data/drivers_menu_state.json
+data/ipdocs_config.json
+data/ipdocs_documents.json
+data/super_admin.json
+data/taksimo_chat_state.json
+data/taksimo_notify_state.json
 
 # Папка data остаётся в репо (схема + .gitkeep), но не сами .db
+
+# Документы площадки (PDF, Excel — только на сервере, не в Git)
+docs/**/*.pdf
+docs/**/*.xlsx
+docs/registry/exports/
+docs/**/*.xls
+docs/**/*.doc
+docs/**/*.docx
+docs/**/*.csv
+!docs/**/.gitkeep
+
+# Локальные таблицы пользователя
+logcalc/

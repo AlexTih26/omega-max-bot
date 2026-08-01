@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#141820">
+  <meta name="application-name" content="Таксимо">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Таксимо">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="/taksimo-manifest.json">
+  <link rel="icon" href="/taksimo-icon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/taksimo-icon-180.png" sizes="180x180">
+  <title>Таксимо · выгрузка ЖБИ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/taksimo.css?v=55">
+</head>
+<body>
+  <div class="app taksimo-app">
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="tk-brand">
+          <img class="tk-brand-logo" src="/taksimo-logo.png" alt="" width="34" height="34">
+          <div class="tk-brand-text">
+            <p class="topbar-label">Площадка</p>
+            <h1 class="topbar-title">Таксимо</h1>
+          </div>
+        </div>
+        <div class="tk-header-actions">
+          <div class="tk-stats" id="headerStats" aria-label="Статистика">
+            <span class="tk-stat" title="На площадке"><b id="statYard">0</b><small>склад</small></span>
+            <span class="tk-stat tk-stat--wagon" title="В тупиках" id="statWagonWrap"><b id="statWagon">0</b><small>вагон</small></span>
+            <span class="tk-stat tk-stat--kodar" title="В пути в Кодар" id="statKodarWrap" hidden><b id="statKodar">0</b><small>кодар</small></span>
+            <span class="tk-stat tk-stat--bts" title="Выгружено у БТС Восток" id="statBtsWrap"><b id="statBts">0</b><small>бтс</small></span>
+          </div>
+          <span class="tk-user-badge" id="currentUser" hidden></span>
+          <button type="button" class="tk-menu-link" id="appMenuOpen" aria-label="Меню">☰</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="content tk-main">
+      <nav class="tk-tabs" role="tablist">
+        <button type="button" class="tk-tab tk-tab--active" data-tab="unload">Выгрузка</button>
+        <button type="button" class="tk-tab" data-tab="yard">План</button>
+        <button type="button" class="tk-tab" data-tab="search">Поиск</button>
+        <button type="button" class="tk-tab" data-tab="export">Excel</button>
+        <button type="button" class="tk-tab" data-tab="history">Журнал</button>
+      </nav>
+
+      <section class="tk-panel" id="panelUnload" role="tabpanel">
+        <p class="tk-edit-banner" id="editBanner" hidden>
+          Режим редактирования выгрузки №<span id="editSessionId"></span>
+          <button type="button" class="tk-link-btn" id="cancelEdit">Отмена</button>
+        </p>
+        <p class="tk-draft-banner" id="draftBanner" hidden>
+          Черновик №<span id="draftSessionId"></span> — плиты сохраняются без спама в чат
+        </p>
+        <form id="unloadForm">
+          <label class="tk-label" for="unloadDate">Дата</label>
+          <input class="tk-input" type="date" id="unloadDate" required>
+
+          <label class="tk-label">Машина</label>
+          <p class="tk-vehicle-banner tk-vehicle-banner--warn" id="vehicleBanner" role="status">
+            ⚠️ Нажмите машину — без выбора сохранять нельзя
+          </p>
+          <div class="tk-vehicles" id="vehicleList"></div>
+
+          <label class="tk-label" for="trn">ТРН</label>
+          <input class="tk-input" id="trn" placeholder="5097 от 01.06.2026">
+
+          <label class="tk-label" for="driver">Водитель</label>
+          <input class="tk-input" id="driver" placeholder="ФИО">
+
+          <div class="tk-row2">
+            <div>
+              <label class="tk-label" for="craneStart">Кран с <span class="tk-req" title="Обязательно при завершении">*</span></label>
+              <input class="tk-input" type="time" id="craneStart">
+            </div>
+            <div>
+              <label class="tk-label" for="craneEnd">Кран до <span class="tk-req" title="Обязательно при завершении">*</span></label>
+              <input class="tk-input" type="time" id="craneEnd">
+            </div>
+          </div>
+          <p class="tk-yard-legend">* — обязательно при «Завершить приём». Время крана — в реестр (столбцы кран). Сообщение «выехал» — через 1 мин с меткой <strong>время МСК</strong> (не время крана).</p>
+
+          <label class="tk-label">Плиты</label>
+          <div class="tk-slab-head" aria-hidden="true">
+            <span>Буква</span>
+            <span>Номер</span>
+            <span>X</span>
+            <span>Y</span>
+            <span>Пом.</span>
+            <span>Статус</span>
+            <span>Вагон</span>
+          </div>
+          <div class="tk-slab-rows" id="slabRows"></div>
+
+          <label class="tk-label" for="defaultPlatform">Статус плит по умолчанию</label>
+          <select class="tk-select" id="defaultPlatform">
+            <option value="ХРАНЕНИЯ" selected>ХРАНЕНИЯ — на площадке (нужны X/Y)</option>
+            <option value="В ПУТИ">В ПУТИ — едет, координат нет</option>
+            <option value="ГРУЗОВОЙ">ГРУЗОВОЙ — с крана в вагон (нужен номер вагона)</option>
+            <option value="ТУРАН">ТУРАН — с крана в вагон (нужен номер вагона)</option>
+          </select>
+          <div id="defaultWagonRow" hidden>
+            <label class="tk-label" for="defaultWagon">Вагон по умолчанию</label>
+            <select class="tk-select" id="defaultWagon">
+              <option value="">— выберите вагон —</option>
+            </select>
+            <p class="tk-yard-legend">Подставится во все строки с ГРУЗОВОЙ/ТУРАН. Можно указать свой вагон в строке.</p>
+          </div>
+          <p class="tk-yard-legend" id="platformHint">ХРАНЕНИЯ: блок лежит на площадке. В ПУТИ: можно внести номера заранее без X/Y.</p>
+
+          <label class="tk-label" for="notes">Примечания</label>
+          <input class="tk-input" id="notes" placeholder="Таксимо, округление +30 мин…">
+
+          <p class="tk-save-status" id="saveStatus" hidden aria-live="polite"></p>
+          <div class="tk-form-actions">
+            <button type="button" class="tk-btn" id="saveDraftBtn">Сохранить черновик</button>
+            <button type="submit" class="tk-submit" id="completeBtn">Завершить приём</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="tk-panel" id="panelYard" role="tabpanel" hidden>
+        <p class="tk-yard-legend">Склад <strong>13×25</strong>: <strong>X</strong> справа→налево, <strong>Y</strong> ряд 1–25. В ячейке <strong>макс. 4 блока</strong>. Тап — детали. <span class="tk-yard-live" id="yardLiveBadge" hidden>склад и тупики · каждые 20 сек</span></p>
+        <div class="tk-yard-wrap">
+          <div class="tk-yard" id="yardGrid"></div>
+        </div>
+        <div class="tk-detail" id="yardDetail" hidden></div>
+        <h3 class="tk-section-title">Тупики вагонов (10 + 10)</h3>
+        <p class="tk-yard-legend">ГРУЗОВОЙ и ТУРАН · <strong>★</strong> на слоте — подсказка по вагону · <strong>★★</strong> — допы по тупику · зелёный — целое кольцо 9/9.</p>
+        <div class="tk-wagon-plan" id="wagonPlan"></div>
+        <div class="tk-fleet-panel" id="wagonFleetWrap">
+          <h3 class="tk-section-title">Парк · тупик</h3>
+          <p class="tk-yard-legend">Для порожних и свободных вагонов укажите, в какой тупик ставить: <strong>ТУРАН</strong> или <strong>ГРУЗОВОЙ</strong>.</p>
+          <div class="tk-fleet-zone-list" id="wagonFleetList"></div>
+        </div>
+        <div id="wagonInTransitWrap" hidden>
+          <h3 class="tk-section-title">В пути в Кодар</h3>
+          <p class="tk-yard-legend">Подтверждение «Кодар получил» — только <strong>оператор 1</strong>: прибытие и выгрузка у <strong>БТС Восток</strong>.</p>
+          <div class="tk-in-transit-list" id="wagonInTransit"></div>
+        </div>
+      </section>
+
+      <section class="tk-panel" id="panelSearch" role="tabpanel" hidden>
+        <p class="tk-yard-legend">Плита: <strong>A</strong>, <strong>4415</strong>, <strong>B4415</strong>. Вагон: <strong>вагон 12345</strong>. Показываем склад, вагон, путь в Кодар и выгрузку у <strong>БТС Восток</strong>.</p>
+        <label class="tk-label" for="searchQ">Поиск</label>
+        <input class="tk-input" id="searchQ" placeholder="A · 4415 · вагон 12345" autocomplete="off">
+        <ul class="tk-list" id="searchResults" style="margin-top:12px"></ul>
+      </section>
+
+      <section class="tk-panel" id="panelHistory" role="tabpanel" hidden>
+        <p class="tk-yard-legend">Сохранённые выгрузки. Тап по строке — детали плит.</p>
+        <ul class="tk-list tk-list--grid-md" id="historyList"></ul>
+        <div class="tk-history-more" id="historyMoreWrap" hidden>
+          <p class="tk-history-meta" id="historyCountMeta"></p>
+          <button type="button" class="tk-btn tk-btn--primary" id="historyLoadMore">Показать ещё</button>
+        </div>
+        <div class="tk-detail" id="historyDetail" hidden></div>
+      </section>
+
+      <section class="tk-panel" id="panelWagons" role="tabpanel" hidden>
+        <p class="tk-yard-legend">Рейсы вагонов: отправка в <strong>Кодар</strong> и выгрузка у <strong>БТС Восток</strong>. Тап — детали рейса.</p>
+        <ul class="tk-list tk-list--grid-md" id="wagonHistoryList"></ul>
+        <div class="tk-detail" id="wagonHistoryDetail" hidden></div>
+      </section>
+
+      <section class="tk-panel" id="panelExport" role="tabpanel" hidden>
+        <p class="tk-yard-legend">Скачать Excel (только здесь, после входа). В файле три листа: <strong>Реестр</strong> (приложение), <strong>Журнал выгрузок</strong>, <strong>Реестр бух</strong> (как в вашем шаблоне для руководства). Копия сохраняется в <code>docs/registry/exports/</code>.</p>
+        <div class="tk-export-btns">
+          <a class="tk-export-btn" id="exportToday" href="#" download>📊 Реестр за сегодня</a>
+          <a class="tk-export-btn" href="/api/taksimo/export/registry.xlsx" download>📋 Реестр за всё время</a>
+          <a class="tk-export-btn" href="/api/taksimo/export/yard.xlsx" download>🗺 Площадка сейчас</a>
+        </div>
+        <label class="tk-label" for="exportDate">Реестр за дату</label>
+        <div class="tk-row2">
+          <input class="tk-input" type="date" id="exportDate">
+          <a class="tk-export-btn tk-export-btn--inline" id="exportByDate" href="#">Скачать</a>
+        </div>
+      </section>
+
+      <p class="tk-db-status" id="dbStatus">База: …</p>
+      <p class="tk-footer">
+        <a href="https://max.avtmsk.ru/">OMEGA</a>
+      </p>
+    </main>
+
+    <div class="tk-toast" id="toast" hidden></div>
+
+    <div class="tk-sheet" id="slabSheet" hidden>
+      <div class="tk-sheet-backdrop" id="slabSheetBackdrop"></div>
+      <div class="tk-sheet-panel">
+        <h3 class="tk-sheet-title" id="slabSheetTitle">Плита</h3>
+        <form id="slabForm">
+          <input type="hidden" id="slabEditId">
+          <label class="tk-label">Буква</label>
+          <select class="tk-select" id="slabLetter"></select>
+          <label class="tk-label">Номер</label>
+          <input class="tk-input" id="slabNumber" inputmode="numeric" required>
+          <div class="tk-row2" id="slabXYRow">
+            <div>
+              <label class="tk-label">X</label>
+              <input class="tk-input" type="number" id="slabX" min="1" max="13">
+            </div>
+            <div>
+              <label class="tk-label">Y</label>
+              <input class="tk-input" type="number" id="slabY" min="1" max="25">
+            </div>
+          </div>
+          <label class="tk-label">Пометка</label>
+          <select class="tk-select" id="slabSuffix"></select>
+          <label class="tk-label" for="slabPlatform">Площадка / статус</label>
+          <select class="tk-select" id="slabPlatform"></select>
+          <div class="tk-row2" id="slabWagonRow" hidden>
+            <div>
+              <label class="tk-label" for="slabWagon">№ вагона</label>
+              <input class="tk-input" id="slabWagon" placeholder="не больше 9 блоков">
+            </div>
+            <div>
+              <label class="tk-label" for="slabLoading">Дата погрузки</label>
+              <input class="tk-input" type="date" id="slabLoading">
+            </div>
+          </div>
+          <div class="tk-sheet-actions">
+            <button type="submit" class="tk-btn tk-btn--primary">Сохранить</button>
+            <button type="button" class="tk-btn tk-btn--warn" id="slabOffYard">Убрать с площадки</button>
+            <button type="button" class="tk-btn tk-btn--danger" id="slabDelete">Удалить</button>
+            <button type="button" class="tk-btn" id="slabCancel">Закрыть</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="tk-sheet" id="wagonSlotSheet" hidden>
+      <div class="tk-sheet-backdrop" id="wagonSlotBackdrop"></div>
+      <div class="tk-sheet-panel">
+        <div class="tk-sheet-header">
+          <h3 class="tk-sheet-title" id="wagonSlotTitle">Слот</h3>
+          <div class="tk-sheet-header-actions">
+            <button type="button" class="tk-btn tk-btn--primary tk-sheet-header-btn" id="wagonDispatchKodar" hidden title="Только оператор 1">В Кодар</button>
+            <button type="button" class="tk-sheet-close" id="wagonSlotClose" aria-label="Закрыть">Закрыть</button>
+          </div>
+        </div>
+        <p class="tk-yard-legend" id="wagonSlotHint"></p>
+        <div id="wagonSlotSlabsWrap">
+          <label class="tk-label">Блоки на вагоне</label>
+          <ul class="tk-list tk-wagon-slab-list" id="wagonSlotSlabs"></ul>
+          <p class="tk-yard-legend" id="wagonSlotSlabsEmpty" hidden>На вагоне пока нет блоков — назначьте через выгрузку или карточку плиты.</p>
+        </div>
+        <div id="wagonSlotLogistics" class="tk-wagon-slot-hints" hidden></div>
+        <details class="tk-slot-settings">
+          <summary class="tk-label">Настройка слота</summary>
+          <label class="tk-label" for="wagonSlotPick">Вагон из парка</label>
+          <select class="tk-select" id="wagonSlotPick">
+            <option value="">— пусто —</option>
+          </select>
+          <label class="tk-label" for="wagonSlotExpected">Комплект блоков (для зелёной подсветки)</label>
+          <input class="tk-input" id="wagonSlotExpected" placeholder="B4415, A123, …">
+          <div class="tk-sheet-actions">
+            <button type="button" class="tk-btn tk-btn--primary" id="wagonSlotSave">Сохранить слот</button>
+            <button type="button" class="tk-btn tk-btn--warn" id="wagonSlotClear">Освободить слот</button>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="tk-sheet" id="fleetExtrasSheet" hidden>
+      <div class="tk-sheet-backdrop" id="fleetExtrasBackdrop"></div>
+      <div class="tk-sheet-panel">
+        <div class="tk-sheet-header">
+          <h3 class="tk-sheet-title" id="fleetExtrasTitle">★★ Допы по тупику</h3>
+          <button type="button" class="tk-sheet-close" id="fleetExtrasClose" aria-label="Закрыть">Закрыть</button>
+        </div>
+        <p class="tk-yard-legend" id="fleetExtrasHint">Целые кольца вычтены — остаток допы A–F и счётчик K.</p>
+        <div class="tk-wagon-logistics" id="fleetExtrasBody"></div>
+      </div>
+    </div>
+
+    <div class="tk-menu-sheet" id="appMenuSheet" hidden>
+      <div class="tk-sheet-backdrop" id="appMenuBackdrop"></div>
+      <nav class="tk-menu-panel" aria-label="Меню Таксимо">
+        <div class="tk-menu-header">
+          <h3 class="tk-menu-title">Таксимо</h3>
+          <button type="button" class="tk-sheet-close" id="appMenuClose" aria-label="Закрыть">Закрыть</button>
+        </div>
+        <p class="tk-menu-user" id="menuUser" hidden></p>
+        <button type="button" class="tk-menu-item" id="menuFleetExtras">★★ Допы по парку</button>
+        <button type="button" class="tk-menu-item" data-go="wagons">🚃 История вагонов</button>
+        <button type="button" class="tk-menu-item" data-go="yard">🗺 План и тупики</button>
+        <button type="button" class="tk-menu-item" data-go="unload">📥 Выгрузка</button>
+        <button type="button" class="tk-menu-item" data-go="history">📋 Журнал выгрузок</button>
+        <button type="button" class="tk-menu-item" data-go="search">🔍 Поиск плит</button>
+        <button type="button" class="tk-menu-item" data-go="export">📊 Excel</button>
+        <div class="tk-menu-footer">
+          <a class="tk-menu-item tk-menu-item--muted" href="/">На главную сайта</a>
+        </div>
+      </nav>
+    </div>
+  </div>
+  <script src="/taksimo.js?v=26"></script>
+</body>
+</html>

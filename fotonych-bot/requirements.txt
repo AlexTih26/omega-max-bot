@@ -2,3 +2,4 @@ maxapi>=1.1.0
 openai>=1.66.0
 python-dotenv>=1.0.1
 aiohttp>=3.9.0
+openpyxl>=3.1.0

@@ -3,6 +3,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/fotonych-bot"
 pkill -f "fotonych-bot/.venv/bin/python bot.py" 2>/dev/null || true
+pkill -f "/MAX_BOT/fotonych-bot/.venv/bin/python bot.py" 2>/dev/null || true
+pkill -f ".venv/bin/python bot.py" 2>/dev/null || true
 sleep 1
 nohup .venv/bin/python bot.py >> bot.log 2>&1 &
 sleep 2

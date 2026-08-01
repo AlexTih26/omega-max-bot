@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0f1419">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>Панель водителя — Таксимо</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/drivers.css?v=11">
+  <link rel="stylesheet" href="/panel-feedback.css?v=2">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="drv-app">
+    <header class="drv-header">
+      <p class="drv-kicker">Завод → Таксimo</p>
+      <h1 class="drv-title" id="driverTitle">Панель водителя</h1>
+      <p class="drv-sub" id="driverSub"></p>
+      <div class="drv-tabs" role="tablist">
+        <button type="button" class="drv-tab drv-tab--active" data-tab="trip" role="tab">Мой рейс</button>
+        <button type="button" class="drv-tab" data-tab="journal" role="tab">
+          Мой журнал
+          <span class="drv-tab-badge" id="journalBadge" hidden></span>
+        </button>
+      </div>
+    </header>
+
+    <main class="drv-main">
+      <section class="drv-panel drv-panel--active" id="panelTrip" role="tabpanel">
+        <div class="drv-trip-stage" id="tripStage" aria-live="polite">
+          <p class="drv-hint" id="tripHint">Загрузка…</p>
+        </div>
+      </section>
+
+      <section class="drv-panel" id="panelJournal" role="tabpanel" hidden>
+        <p class="drv-section-title" id="journalTitle">Журнал</p>
+        <ul class="drv-feed" id="journalFeed"></ul>
+        <p class="drv-empty" id="journalEmpty" hidden>За 7 дней записей нет — отметьте рейс на вкладке «Мой рейс».</p>
+      </section>
+
+      <p class="drv-error" id="outsideMax" hidden>
+        Откройте через кнопку «Открыть панель» в чате водителей MAX.
+      </p>
+      <section class="drv-register" id="registerPanel" hidden>
+        <p class="drv-hint" id="registerHint"></p>
+        <p class="drv-register-id muted" id="registerId"></p>
+        <p class="drv-register-slots muted" id="registerSlots"></p>
+        <div class="drv-trip-stage" id="registerStage"></div>
+      </section>
+    </main>
+
+    <footer class="drv-footer-bar" id="footerBar" hidden>
+      <button type="button" class="drv-footer-link" id="infoBtn" aria-expanded="false">ℹ Подробнее</button>
+      <button type="button" class="drv-footer-link pfb-link" id="panelFeedbackBtn">💬 Ошибка</button>
+    </footer>
+    <div class="drv-info-panel drv-info-panel--float" id="infoPanel" hidden>
+      <p><strong>1. Прибыл на завод</strong> — нажмите сами. Может отметить и Румекс.</p>
+      <p><strong>2. Выехал с завода</strong> — нажмите сами или ждите Румекс после документов.</p>
+      <p><strong>3. Прибыл в Таксimo</strong> — нажмите сами или отметит оператор при начале приёмки.</p>
+      <p><strong>4. Выехал с площадки</strong> — само, через ~5 мин после приёмки. Кнопки нет.</p>
+      <p><strong>Чат водителей</strong> — одна строка на событие. Не пишите в чат — только смотрите.</p>
+      <p><strong>Мой журнал</strong> — ваши рейсы за 7 дней, не весь парк.</p>
+    </div>
+
+    <footer class="drv-footer-bar" id="footerBarGuest" hidden>
+      <button type="button" class="drv-footer-link" id="infoBtnGuest" aria-expanded="false">ℹ Подробнее</button>
+    </footer>
+    <div class="drv-info-panel drv-info-panel--float" id="infoPanelGuest" hidden>
+      <p><strong>Регистрация.</strong> Нажмите кнопку — диспетчер Румекс добавит вас в реестр по вашему MAX id.</p>
+      <p><strong>Рейс.</strong> Завод → выезд → Таксimo → выезд с площадки (последний сам, без кнопки).</p>
+      <p><strong>Чат.</strong> Только уведомления для всех водителей — не пишите туда.</p>
+    </div>
+
+    <div class="pfb-sheet" id="panelFeedbackSheet" hidden>
+      <div class="pfb-backdrop"></div>
+      <div class="pfb-panel" role="dialog" aria-labelledby="pfbTitleDrv">
+        <p class="pfb-title" id="pfbTitleDrv">Сообщить разработчику</p>
+        <p class="pfb-hint">Не в общий чат. Опишите ошибку или что добавить в панель.</p>
+        <div class="pfb-kind" role="group" aria-label="Тип сообщения">
+          <button type="button" class="pfb-kind-btn pfb-kind-btn--active" data-pfb-kind="bug">🐞 Ошибка</button>
+          <button type="button" class="pfb-kind-btn" data-pfb-kind="feature">💡 Идея</button>
+        </div>
+        <textarea class="pfb-text" maxlength="2000" placeholder="Что не сработало или чего не хватает…"></textarea>
+        <div class="pfb-actions">
+          <button type="button" class="pfb-btn pfb-btn--ghost" data-pfb-close>Отмена</button>
+          <button type="button" class="pfb-btn pfb-btn--primary" data-pfb-send>Отправить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="drv-toast" id="toast" hidden></div>
+  </div>
+  <script src="/panel-feedback.js?v=1"></script>
+  <script src="/drivers.js?v=15"></script>
+</body>
+</html>

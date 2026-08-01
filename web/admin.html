@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#12161c">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>Админ</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/admin.css?v=4">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="adm-app" id="appRoot">
+    <header class="adm-header">
+      <p class="adm-kicker">Супер-админ</p>
+      <h1 class="adm-title" id="pageTitle">⚙️ Админ</h1>
+      <p class="adm-sub" id="pageSub">Объявления и парк водителей</p>
+      <nav class="adm-tabs" id="tabBar">
+        <button type="button" class="adm-tab adm-tab--active" data-tab="announce">📢 Объявления</button>
+        <button type="button" class="adm-tab" data-tab="fleet">👥 ПАРК</button>
+      </nav>
+    </header>
+
+    <main class="adm-main" id="panelAnnounce">
+      <p class="adm-section-title">Быстрые шаблоны</p>
+      <div class="adm-templates" id="templateList"></div>
+
+      <p class="adm-section-title">Текст сообщения</p>
+      <textarea class="adm-field" id="messageField" maxlength="1000" placeholder="📢 14.06 · Таксimo · …"></textarea>
+      <p class="adm-meta" id="metaLine">—</p>
+
+      <p class="adm-section-title">Как увидят в чате</p>
+      <p class="adm-preview" id="previewBox">—</p>
+
+      <p class="adm-section-title">После отправки</p>
+      <ul class="adm-checklist">
+        <li>сообщение в чат водителей</li>
+        <li>меню водителей обновится</li>
+      </ul>
+
+      <p class="adm-section-title">Последние объявления</p>
+      <ul class="adm-history" id="historyList"></ul>
+      <p class="adm-empty" id="historyEmpty" hidden>Пока не отправляли.</p>
+    </main>
+
+    <main class="adm-main" id="panelFleet" hidden>
+      <p class="adm-section-title">Машины</p>
+      <p class="adm-meta" id="fleetMeta">—</p>
+      <ul class="adm-fleet" id="fleetList"></ul>
+      <p class="adm-empty" id="fleetEmpty" hidden>Нет записей в реестре.</p>
+
+      <p class="adm-section-title">Вагоны</p>
+      <p class="adm-meta" id="wagonsMeta">—</p>
+      <ul class="adm-fleet" id="wagonsList"></ul>
+      <p class="adm-empty" id="wagonsEmpty" hidden>Нет вагонов в парке.</p>
+    </main>
+
+    <p class="adm-error" id="accessError" hidden></p>
+
+    <footer class="adm-footer" id="footerAnnounce">
+      <button type="button" class="adm-send" id="sendBtn" disabled>Отправить сейчас</button>
+    </footer>
+
+    <footer class="adm-footer" id="footerFleet" hidden>
+      <div class="adm-footer-park">
+        <button type="button" class="adm-btn-compact adm-btn-compact--accent" id="addFleetBtn">+ Машина</button>
+        <button type="button" class="adm-btn-compact adm-btn-compact--accent" id="addWagonBtn">+ Вагон</button>
+        <button type="button" class="adm-btn-compact" id="syncFleetBtn">↻ Синхр.</button>
+      </div>
+    </footer>
+  </div>
+
+  <div class="adm-success-screen" id="successScreen" hidden>
+    <div>
+      <p class="adm-success-icon">✓</p>
+      <p class="adm-success-title">Объявление отправлено</p>
+      <p class="adm-success-sub">Сообщение в чате · меню обновлено</p>
+    </div>
+  </div>
+
+  <div class="adm-sheet" id="confirmSheet" hidden>
+    <div class="adm-sheet-backdrop" id="confirmBackdrop"></div>
+    <div class="adm-sheet-panel" role="dialog" aria-labelledby="confirmTitle">
+      <p class="adm-sheet-title" id="confirmTitle">Отправить в чат водителей?</p>
+      <p class="adm-preview" id="confirmPreview"></p>
+      <p class="adm-meta">Меню в чате обновится автоматически</p>
+      <div class="adm-sheet-actions">
+        <button type="button" class="adm-btn-ghost" id="confirmCancel">Отмена</button>
+        <button type="button" class="adm-btn-primary" id="confirmSend">Да, отправить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="adm-sheet" id="fleetSheet" hidden>
+    <div class="adm-sheet-backdrop" id="fleetSheetBackdrop"></div>
+    <div class="adm-sheet-panel adm-sheet-panel--form" role="dialog" aria-labelledby="fleetSheetTitle">
+      <p class="adm-sheet-title" id="fleetSheetTitle">Машина</p>
+      <p class="adm-meta" id="fleetSheetHint"></p>
+      <div class="adm-form-grid">
+        <label class="adm-label" id="fleetTailWrap">
+          Хвост номера
+          <input class="adm-input" id="fleetTail" type="text" inputmode="numeric" maxlength="6" placeholder="348">
+        </label>
+        <label class="adm-label">
+          Имя в Таксimo
+          <input class="adm-input" id="fleetName" type="text" maxlength="80" placeholder="Антипин">
+        </label>
+        <label class="adm-label">
+          MAX id
+          <input class="adm-input" id="fleetUid" type="text" inputmode="numeric" maxlength="16" placeholder="55976587">
+        </label>
+        <p class="adm-hint">Без MAX id — только список Таксimo, чат водителей позже</p>
+        <label class="adm-label">
+          Авто (описание)
+          <input class="adm-input" id="fleetVehicle" type="text" maxlength="120" placeholder="MAN В 348 МУ">
+        </label>
+        <label class="adm-label">
+          Номер в Таксimo
+          <input class="adm-input" id="fleetTaksimoPlate" type="text" maxlength="40" placeholder="в348му 124">
+        </label>
+        <label class="adm-check" id="fleetResetWrap">
+          <input type="checkbox" id="fleetResetTrip" checked>
+          Сбросить текущий рейс
+        </label>
+        <label class="adm-check" id="fleetReserveWrap">
+          <input type="checkbox" id="fleetOldReserve" checked>
+          Предыдущего водителя — в резерв
+        </label>
+      </div>
+      <div class="adm-sheet-actions">
+        <button type="button" class="adm-btn-ghost" id="fleetSheetCancel">Отмена</button>
+        <button type="button" class="adm-btn-primary" id="fleetSheetSave">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="adm-sheet" id="wagonSheet" hidden>
+    <div class="adm-sheet-backdrop" id="wagonSheetBackdrop"></div>
+    <div class="adm-sheet-panel adm-sheet-panel--form" role="dialog" aria-labelledby="wagonSheetTitle">
+      <p class="adm-sheet-title" id="wagonSheetTitle">Новый вагон</p>
+      <p class="adm-meta">Номер как в накладной · только цифры · парк до 50</p>
+      <label class="adm-label">
+        Номер вагона
+        <input class="adm-input" id="wagonNumber" type="text" inputmode="numeric" maxlength="12" placeholder="54543699">
+      </label>
+      <label class="adm-label">
+        Статус
+        <select class="adm-input" id="wagonStage">
+          <option value="available">В парке</option>
+          <option value="in_transit" selected>В пути на Таксimo</option>
+          <option value="returning">Порожний · обратно</option>
+        </select>
+      </label>
+      <label class="adm-label">
+        Тупик (план)
+        <select class="adm-input" id="wagonZone">
+          <option value="">— не задан —</option>
+          <option value="ТУРАН">ТУРАН</option>
+          <option value="ГРУЗОВОЙ">ГРУЗОВОЙ</option>
+        </select>
+      </label>
+      <div class="adm-sheet-actions">
+        <button type="button" class="adm-btn-ghost" id="wagonSheetCancel">Отмена</button>
+        <button type="button" class="adm-btn-primary" id="wagonSheetSave">Добавить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="adm-toast" id="toast" hidden></div>
+
+  <script src="/admin.js?v=6"></script>
+</body>
+</html>

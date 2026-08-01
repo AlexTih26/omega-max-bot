@@ -1,0 +1,322 @@
+:root {
+  color-scheme: dark;
+  --och-bg: #12101a;
+  --och-surface: #1c1828;
+  --och-border: rgba(255, 255, 255, 0.08);
+  --och-text: #f2eef8;
+  --och-muted: #9b93ad;
+  --och-accent: #9b6dff;
+  --och-accent-dim: rgba(155, 109, 255, 0.18);
+  --och-user: #2a2440;
+  --och-bot: #1a1626;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--och-bg);
+  color: var(--och-text);
+  font: 15px/1.45 Inter, system-ui, sans-serif;
+}
+
+.och-app {
+  height: 100dvh;
+  max-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.och-header {
+  flex-shrink: 0;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--och-border);
+  background: linear-gradient(180deg, #181322, var(--och-bg));
+}
+
+.och-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.och-kicker {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--och-muted);
+}
+
+.och-title {
+  margin: 2px 0 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.och-limit {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--och-muted);
+}
+
+.och-icon-btn {
+  appearance: none;
+  border: 1px solid var(--och-border);
+  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  background: var(--och-surface);
+  color: var(--och-text);
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.och-main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 14px 16px;
+}
+
+.och-scroll-anchor {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
+}
+
+.och-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.och-bubble {
+  max-width: 92%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.och-bubble--user {
+  align-self: flex-end;
+  background: var(--och-user);
+  border-bottom-right-radius: 4px;
+}
+
+.och-bubble--assistant {
+  align-self: flex-start;
+  background: var(--och-bot);
+  border: 1px solid var(--och-border);
+  border-bottom-left-radius: 4px;
+}
+
+.och-bubble--typing {
+  color: var(--och-muted);
+  font-style: italic;
+}
+
+.och-welcome {
+  margin: 24px 0 0;
+  text-align: center;
+  color: var(--och-muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.och-limit-banner {
+  flex-shrink: 0;
+  margin: 0 14px 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--och-accent-dim);
+  border: 1px solid rgba(155, 109, 255, 0.35);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.och-limit-banner p {
+  margin: 0;
+}
+
+.och-footer {
+  flex-shrink: 0;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--och-bg);
+  border-top: 1px solid var(--och-border);
+}
+
+.och-compose {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.och-input {
+  flex: 1;
+  min-height: 42px;
+  max-height: 120px;
+  resize: none;
+  border: 1px solid var(--och-border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: var(--och-surface);
+  color: var(--och-text);
+  font: inherit;
+}
+
+.och-input:focus {
+  outline: none;
+  border-color: rgba(155, 109, 255, 0.5);
+}
+
+.och-send {
+  appearance: none;
+  border: none;
+  border-radius: 14px;
+  width: 44px;
+  height: 44px;
+  background: linear-gradient(135deg, #8f5cff, #b088ff);
+  color: #140f22;
+  font: 700 18px/1 Inter, sans-serif;
+  cursor: pointer;
+}
+
+.och-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.och-gate {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+
+.och-gate-title {
+  margin: 0 0 8px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.och-gate-text {
+  margin: 0;
+  color: var(--och-muted);
+  max-width: 280px;
+}
+
+.och-sheet[hidden],
+.och-app[hidden],
+.och-gate[hidden] {
+  display: none !important;
+}
+
+.och-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.och-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.och-sheet-panel {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  max-height: 85dvh;
+  overflow: auto;
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+  border-radius: 16px 16px 0 0;
+  background: var(--och-surface);
+  border-top: 1px solid var(--och-border);
+}
+
+.och-sheet-title {
+  margin: 0 0 12px;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.och-meta {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--och-muted);
+}
+
+.och-hint {
+  margin: 12px 0;
+  font-size: 13px;
+  color: var(--och-muted);
+  line-height: 1.45;
+}
+
+.och-pro-list {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.och-btn-ghost,
+.och-btn-primary {
+  width: 100%;
+  appearance: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font: 600 15px/1 Inter, sans-serif;
+  cursor: pointer;
+  margin-top: 8px;
+}
+
+.och-btn-ghost {
+  border: 1px solid var(--och-border);
+  background: transparent;
+  color: var(--och-text);
+}
+
+.och-btn-primary {
+  border: none;
+  background: linear-gradient(135deg, #8f5cff, #b088ff);
+  color: #140f22;
+}
+
+.och-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #2a2440;
+  border: 1px solid var(--och-border);
+  font-size: 13px;
+  z-index: 40;
+  max-width: 90vw;
+}
+
+.och-toast[hidden] {
+  display: none;
+}

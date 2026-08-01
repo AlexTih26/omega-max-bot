@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#12101a">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>OMEGA Chat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/chat.css?v=3">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="och-app" id="appRoot">
+    <header class="och-header">
+      <div class="och-header-row">
+        <div>
+          <p class="och-kicker">OMEGA AI LAB</p>
+          <h1 class="och-title">Chat</h1>
+        </div>
+        <button type="button" class="och-icon-btn" id="settingsBtn" aria-label="Настройки">⚙</button>
+      </div>
+      <p class="och-limit" id="limitLine">—</p>
+    </header>
+
+    <main class="och-main" id="chatMain">
+      <ul class="och-feed" id="messageFeed" aria-live="polite"></ul>
+      <p class="och-welcome" id="welcomeBlock">
+        Задайте вопрос — ответит AI OMEGA.<br>
+        Отдельный чат, не связанный с рейсами и служебными панелями.
+      </p>
+      <div class="och-scroll-anchor" id="scrollEndAnchor" aria-hidden="true"></div>
+    </main>
+
+    <div class="och-limit-banner" id="limitBanner" hidden>
+      <p id="limitBannerText">Лимит на сегодня исчерпан. Завтра будет новый лимит.</p>
+    </div>
+
+    <footer class="och-footer">
+      <div class="och-compose">
+        <textarea class="och-input" id="messageInput" rows="1" maxlength="4000" placeholder="Сообщение…"></textarea>
+        <button type="button" class="och-send" id="sendBtn" disabled aria-label="Отправить">↑</button>
+      </div>
+    </footer>
+  </div>
+
+  <div class="och-gate" id="outsideMax" hidden>
+    <p class="och-gate-title">OMEGA Chat</p>
+    <p class="och-gate-text">Работает только внутри MAX. Откройте кнопку «OMEGA Chat» в боте, канале или на сайте — из приложения MAX.</p>
+  </div>
+
+  <div class="och-sheet" id="settingsSheet" hidden>
+    <div class="och-sheet-backdrop" id="settingsBackdrop"></div>
+    <div class="och-sheet-panel" role="dialog" aria-labelledby="settingsTitle">
+      <p class="och-sheet-title" id="settingsTitle">Настройки</p>
+      <p class="och-meta" id="settingsId">MAX id —</p>
+      <p class="och-meta" id="settingsLimit">Лимит —</p>
+      <button type="button" class="och-btn-ghost" id="clearBtn">Очистить этот диалог</button>
+      <p class="och-hint">Служебные панели (Таксimo, водители, Румекс) — отдельно.</p>
+      <button type="button" class="och-btn-primary" id="settingsClose">Закрыть</button>
+    </div>
+  </div>
+
+  <p class="och-toast" id="toast" hidden></p>
+
+  <script src="/chat.js?v=4"></script>
+</body>
+</html>

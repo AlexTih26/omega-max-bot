@@ -4,13 +4,63 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#0a0a0f">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preload" href="/comments-bg.webp" as="image" type="image/webp">
   <title>Комментарии — OMEGA</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/comments.css?v=9">
+  <link rel="stylesheet" href="/comments.css?v=11">
   <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <script>
+    (function () {
+      function readStartParam() {
+        var params = new URLSearchParams(window.location.search);
+        var direct = params.get("WebAppStartParam") || params.get("startapp");
+        if (direct === "panel" || direct === "pnl") return "panel";
+        if (direct === "drivers" || direct === "drv") return "drivers";
+        if (direct === "admin" || direct === "adm") return "admin";
+        if (direct === "taksimo_find" || direct === "find" || direct === "tks") return "find";
+        if (direct === "chat" || direct === "omega_chat" || direct === "omg") return "chat";
+        if (window.location.hash && window.location.hash.length > 1) {
+          var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+          var fromHash = hash.get("WebAppStartParam") || hash.get("startapp");
+          if (fromHash === "panel" || fromHash === "pnl") return "panel";
+          if (fromHash === "drivers" || fromHash === "drv") return "drivers";
+          if (fromHash === "admin" || fromHash === "adm") return "admin";
+            if (fromHash === "taksimo_find" || fromHash === "find" || fromHash === "tks") return "find";
+            if (fromHash === "chat" || fromHash === "omega_chat" || fromHash === "omg") return "chat";
+        }
+        try {
+          var wa = window.WebApp;
+          if (wa && wa.initDataUnsafe) {
+            var sp = wa.initDataUnsafe.start_param;
+            if (sp === "panel" || sp === "pnl") return "panel";
+            if (sp === "drivers" || sp === "drv") return "drivers";
+            if (sp === "admin" || sp === "adm") return "admin";
+            if (sp === "taksimo_find" || sp === "find" || sp === "tks") return "find";
+            if (sp === "chat" || sp === "omega_chat" || sp === "omg") return "chat";
+          }
+        } catch (e) {}
+        return null;
+      }
+      var route = readStartParam();
+      if (route) {
+        var q = window.location.search || "";
+        var h = window.location.hash || "";
+        var target = "/drivers.html";
+        if (route === "find") target = "/taksimo-find.html";
+        else if (route === "panel") target = "/panel.html";
+        else if (route === "admin") target = "/admin.html";
+        else if (route === "chat") target = "/chat.html";
+        window.location.replace(target + q + h);
+      }
+    })();
+  </script>
 </head>
 <body>
   <div class="app comments-app">

@@ -1,0 +1,11 @@
+# Таксimo watchdog — сервер в UTC, время в комментариях по Москве (MSK = UTC+3).
+# Установка: crontab /MAX_BOT/scripts/cron-taksimo-watchdog.txt
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# 03:05 MSK — плановый перезапуск после ночного бэкапа (03:00 MSK)
+5 0 * * * /MAX_BOT/scripts/taksimo-watchdog.sh nightly >> /MAX_BOT/data/watchdog.log 2>&1
+
+# 06:00–22:00 MSK — проверка stats каждые 10 мин, рестарт при сбое (cooldown 15 мин)
+*/10 3-19 * * * /MAX_BOT/scripts/taksimo-watchdog.sh day >> /MAX_BOT/data/watchdog.log 2>&1

@@ -1,7 +1,7 @@
 # OMEGA AI LAB — бот MAX
 
 AI-помощник в чатах и **комментарии к постам канала** в [MAX Messenger](https://max.ru).  
-Сайт и mini-app: `https://max.avtmsk.ru`
+Сайт и mini-app: `https://max.avtmsk.ru` · **Таксимо**: `https://avtmsk.ru/taksimo.html` · FOTON: `https://avtmsk.ru/work.html`
 
 ---
 
@@ -25,6 +25,11 @@ MAX_BOT/
 ├── .gitignore
 ├── README.md
 │
+├── docs/                     # Документы площадки (отчёты, реестры)
+│   ├── incoming/             # Новые файлы с компьютера
+│   ├── reports/              # Отчёты по выгрузке
+│   └── registry/             # Реестры (Excel)
+│
 ├── data/                     # Данные на сервере
 │   ├── schema.sql            # Схема SQLite (в Git)
 │   ├── .gitkeep
@@ -32,8 +37,19 @@ MAX_BOT/
 │
 ├── web/                      # Статика для nginx
 │   ├── index.html            # Лендинг OMEGA
+│   ├── products.html         # Каталог продуктов и партнёров
+│   ├── favicon.ico           # Иконка сайта (Омега-М)
+│   ├── favicon-16x16.png
+│   ├── favicon-32x32.png
+│   ├── apple-touch-icon.png
 │   ├── style.css
+│   ├── taksimo.html          # Выгрузка ЖБИ, план X/Y (avtmsk.ru)
+│   ├── avtmsk-index.html     # Меню avtmsk.ru
+│   ├── work.html             # Mini-app заявок FOTON (avtmsk.ru)
+│   ├── work.css, work.js
 │   ├── comments.html         # Mini-app комментариев
+│   ├── comments-bg.webp      # Фон ленты (11 КБ, основной)
+│   ├── comments-bg.png       # Фон ленты (fallback, ~70 КБ)
 │   ├── comments.css
 │   └── comments.js           # MAX Bridge, лента, лайки, ответы
 │
@@ -124,8 +140,16 @@ tail -f /MAX_BOT/fotonych-bot/bot.log
 
 ## Nginx
 
-- Статика: корень `web/` → `https://max.avtmsk.ru/`
+Конфиги:
+- `scripts/nginx-max.avtmsk.ru.conf` → `max.avtmsk.ru` (лендинг OMEGA)
+- `scripts/nginx-avtmsk.ru.conf` → `avtmsk.ru` (сервис FOTON, главная = work.html)
+
+- Статика: корень `web/` → оба домена
+- Таксимо: `https://avtmsk.ru/taksimo.html`
+- FOTON: `https://avtmsk.ru/work.html`
+- Каталог разработок: `https://max.avtmsk.ru/products.html`
 - API: `location /api/` → `proxy_pass http://127.0.0.1:8765;`
+- Кэш статики (css/js/картинки): `Cache-Control: public, immutable`, 1 год
 
 В панели MAX (mini-app): URL **`https://max.avtmsk.ru/comments.html`**
 
@@ -139,6 +163,13 @@ tail -f /MAX_BOT/fotonych-bot/bot.log
 | GET | `/api/posts/{post_id}` | Пост + дерево комментариев (`replies`, `reply_to`, `likes`) |
 | POST | `/api/posts/{post_id}/comments` | Новый комментарий. Header: `X-Max-Init-Data`. Body: `{ "text", "parent_id"? }` |
 | POST | `/api/comments/{id}/like` | Вкл/выкл лайк. Header: `X-Max-Init-Data` |
+| GET | `/api/work/meta` | Категории узлов для заявок |
+| GET | `/api/work/requests` | Список заявок пользователя. Header: `X-Max-Init-Data` |
+| POST | `/api/work/requests` | Новая заявка. Body: `{ "category", "title", "text" }` |
+| GET | `/api/taksimo/meta` | Машины, буквы блоков, размер сетки |
+| GET | `/api/taksimo/yard` | План площадки X/Y |
+| GET/POST | `/api/taksimo/sessions` | Журнал / новая выгрузка |
+| GET | `/api/taksimo/search?q=` | Поиск плиты по номеру |
 
 `post_id` = `mid` сообщения поста в канале.
 

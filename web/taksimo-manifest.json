@@ -1,0 +1,32 @@
+{
+  "name": "Таксимо",
+  "short_name": "Таксимо",
+  "description": "Выгрузка ЖБИ на площадке",
+  "start_url": "/taksimo.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#141820",
+  "theme_color": "#141820",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/taksimo-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/taksimo-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/taksimo-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

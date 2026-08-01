@@ -2,6 +2,7 @@ html,
 body {
   height: 100%;
   overflow: hidden;
+  background-color: #18191d;
 }
 
 .comments-app {
@@ -11,20 +12,30 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  --comments-bg: #1c1c2a;
+  --comments-bg: #18191d;
   --comments-bubble-bg: #2e2e3c;
   --comments-border: rgba(255, 255, 255, 0.12);
   --comments-border-warm: rgba(212, 175, 88, 0.42);
   --comments-border-strong: rgba(228, 198, 118, 0.38);
   --comments-quote-blue: #5b9cf5;
   --comments-quote-gold: #d4b06a;
-  background:
-    radial-gradient(ellipse 80% 45% at 50% 0%, rgba(55, 65, 100, 0.15), transparent),
-    var(--comments-bg);
+  background-color: var(--comments-bg);
+  background-image: url("/comments-bg.png");
+  background-repeat: repeat;
+  background-size: auto;
+}
+
+@supports (background-image: image-set(url("/comments-bg.webp") type("image/webp"))) {
+  .comments-app {
+    background-image: image-set(
+      url("/comments-bg.webp") type("image/webp"),
+      url("/comments-bg.png") type("image/png")
+    );
+  }
 }
 
 .comments-app .topbar {
-  background: rgba(28, 28, 42, 0.94);
+  background: rgba(24, 25, 29, 0.92);
   border-bottom-color: var(--comments-border-warm);
 }
 
@@ -325,8 +336,8 @@ body {
   bottom: 0;
   padding: 10px 12px;
   padding-bottom: max(10px, env(safe-area-inset-bottom));
-  background: rgba(28, 28, 42, 0.97);
-  backdrop-filter: blur(12px);
+  background: rgba(24, 25, 29, 0.94);
+  backdrop-filter: blur(10px);
   border-top: 1px solid var(--comments-border-warm);
 }
 

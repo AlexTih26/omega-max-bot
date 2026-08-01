@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#141a12">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>Румекс — диспетчер</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/rumex.css?v=8">
+  <link rel="stylesheet" href="/panel-feedback.css?v=1">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="rmx-app">
+    <header class="rmx-header">
+      <p class="rmx-kicker" id="siteLabel">Румекс · Северомуйск</p>
+      <h1 class="rmx-title">Выдача документов</h1>
+      <p class="rmx-sub" id="rmxSub">Введите хвост номера и нажмите кнопку</p>
+      <p class="rmx-brief">Очередь и парк — в админ-панели. Здесь только выдача документов.</p>
+    </header>
+
+    <main class="rmx-main">
+      <div class="rmx-docs-form">
+        <label class="rmx-label" for="plateTail">Хвост номера</label>
+        <input class="rmx-input" id="plateTail" type="text" inputmode="numeric" autocomplete="off" placeholder="348" maxlength="6">
+        <button type="button" class="rmx-btn rmx-btn--docs rmx-btn--wide" id="docsBtn">📄 Выдала документы</button>
+      </div>
+
+      <p class="rmx-error" id="outsideMax" hidden>Откройте панель из MAX или войдите как диспетчер Румекс.</p>
+    </main>
+
+    <div class="rmx-footer">
+      <button type="button" class="rmx-info-btn" id="infoBtn" aria-expanded="false">ℹ️ Информация</button>
+      <div class="rmx-info-panel" id="infoPanel" hidden>
+        <p>После выгрузки в Таксimo водитель приезжает на завод.</p>
+        <p><strong>Выдала документы</strong> — единственное действие. В чат уходит «выехал с завода», если водитель сам не нажал.</p>
+        <p><strong>Ошибка / идея</strong> — кнопка внизу.</p>
+      </div>
+      <button type="button" class="pfb-link" id="panelFeedbackBtn">💬 Ошибка / идея</button>
+    </div>
+
+    <div class="pfb-sheet" id="panelFeedbackSheet" hidden>
+      <div class="pfb-backdrop"></div>
+      <div class="pfb-panel" role="dialog" aria-labelledby="pfbTitle">
+        <p class="pfb-title" id="pfbTitle">Сообщить разработчику</p>
+        <p class="pfb-hint">Не в чат водителей.</p>
+        <div class="pfb-kind" role="group" aria-label="Тип сообщения">
+          <button type="button" class="pfb-kind-btn pfb-kind-btn--active" data-pfb-kind="bug">🐞 Ошибка</button>
+          <button type="button" class="pfb-kind-btn" data-pfb-kind="feature">💡 Идея</button>
+        </div>
+        <textarea class="pfb-text" maxlength="2000" placeholder="Что не сработало…"></textarea>
+        <div class="pfb-actions">
+          <button type="button" class="pfb-btn pfb-btn--ghost" data-pfb-close>Отмена</button>
+          <button type="button" class="pfb-btn pfb-btn--primary" data-pfb-send>Отправить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rmx-toast" id="toast" hidden></div>
+  </div>
+  <script src="/panel-feedback.js?v=1"></script>
+  <script src="/rumex.js?v=10"></script>
+</body>
+</html>

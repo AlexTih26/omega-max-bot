@@ -14,6 +14,12 @@ def _is_inline_keyboard(att: Any) -> bool:
     return att_type == AttachmentType.INLINE_KEYBOARD or str(att_type) == "inline_keyboard"
 
 
+def has_media_attachments(attachments: list[Any] | None) -> bool:
+    if not attachments:
+        return False
+    return any(not _is_inline_keyboard(att) for att in attachments)
+
+
 def merge_attachments_with_keyboard(
     original: list[Any] | None,
     keyboard: Any,

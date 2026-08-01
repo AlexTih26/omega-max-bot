@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import time
+from datetime import date, datetime, time as dt_time
 from pathlib import Path
+
+from taksimo_time import report_tz
+
+logger = logging.getLogger(__name__)
 
 _CYR_TO_LAT = str.maketrans(
     {

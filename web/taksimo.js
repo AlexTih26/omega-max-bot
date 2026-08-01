@@ -25,6 +25,10 @@
   var YARD_CELL_PX = 40;
   var wagonPlanData = null;
   var activeWagonSlot = null;
+  var HISTORY_PAGE_SIZE = 50;
+  var historyOffset = 0;
+  var historyTotal = 0;
+  var historyLoading = false;
 
   function yardCellPx() {
     var w = window.innerWidth || 0;
@@ -320,6 +324,56 @@
     $("statBts").textContent = bts;
     var kodarWrap = $("statKodarWrap");
     if (kodarWrap) kodarWrap.hidden = kodar <= 0;
+    var btsWrap = $("statBtsWrap");
+    if (btsWrap) btsWrap.hidden = false;
+  }
+
+  function bindHeaderStats() {
+    var statBtsWrap = $("statBtsWrap");
+    if (statBtsWrap) {
+      statBtsWrap.classList.add("tk-stat--click");
+      statBtsWrap.setAttribute("role", "button");
+      statBtsWrap.setAttribute("tabindex", "0");
+      statBtsWrap.addEventListener("click", function () { setTab("wagons"); });
+      statBtsWrap.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          setTab("wagons");
+        }
+      });
+    }
+    var statKodarWrap = $("statKodarWrap");
+    if (statKodarWrap) {
+      statKodarWrap.classList.add("tk-stat--click");
+      statKodarWrap.setAttribute("role", "button");
+      statKodarWrap.setAttribute("tabindex", "0");
+      statKodarWrap.addEventListener("click", function () {
+        setTab("yard");
+        setTimeout(function () {
+          var el = $("wagonInTransitWrap");
+          if (el && !el.hidden) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 400);
+      });
+      statKodarWrap.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          statKodarWrap.click();
+        }
+      });
+    }
+    var statWagonWrap = $("statWagonWrap");
+    if (statWagonWrap) {
+      statWagonWrap.classList.add("tk-stat--click");
+      statWagonWrap.setAttribute("role", "button");
+      statWagonWrap.setAttribute("tabindex", "0");
+      statWagonWrap.addEventListener("click", function () {
+        setTab("yard");
+        setTimeout(function () {
+          var el = $("wagonPlan");
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 400);
+      });
+    }
   }
 
   function openAppMenu() {
@@ -341,6 +395,56 @@
 
   function dispatchStatusLabel(status) {
     return status === "in_transit" ? "в пути" : status === "delivered" ? "у БТС Восток" : status || "";
+  }
+
+  function formatVehicleBlockLines(blocks, prefix) {
+    prefix = prefix || "· ";
+    var grouped = {};
+    var order = [];
+    var unknown = [];
+    (blocks || []).forEach(function (b) {
+      var label = (b && b.label) || "";
+      if (!label) return;
+      var plate = ((b && b.vehicle_plate) || "").trim();
+      if (!plate) {
+        unknown.push(label);
+        return;
+      }
+      if (!grouped[plate]) {
+        grouped[plate] = [];
+        order.push(plate);
+      }
+      grouped[plate].push(label);
+    });
+    if (!order.length && !unknown.length) return ["—"];
+    var lines = order.map(function (plate) {
+      return prefix + plate + " — " + grouped[plate].join(", ");
+    });
+    if (unknown.length) {
+      lines.push(prefix + "без машины — " + unknown.join(", "));
+    }
+    return lines;
+  }
+
+  function confirmKodarReceived(dispatchId, wagonNumber) {
+    if (!canKodar) return Promise.resolve();
+    if (!confirm("Кодар получил вагон " + wagonNumber + "?\nПлиты будут отмечены выгруженными у БТС Восток.")) {
+      return Promise.resolve();
+    }
+    return apiFetch("/api/taksimo/wagons/kodar-received", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dispatch_id: dispatchId, wagon_number: wagonNumber }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        toast("Кодар получил · БТС Восток");
+        loadWagonPlan();
+        loadStats();
+        loadWagonHistory();
+      })
+      .catch(function (err) { alert(err.message); });
   }
 
   function loadWagonHistory() {
@@ -1333,20 +1437,7 @@
         btn.className = "tk-btn tk-btn--primary";
         btn.textContent = "Кодар получил";
         btn.addEventListener("click", function () {
-          if (!confirm("Кодар получил вагон " + d.wagon_number + "?")) return;
-          apiFetch("/api/taksimo/wagons/kodar-received", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ wagon_number: d.wagon_number, dispatch_id: d.id }),
-          })
-            .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, data: j }; }); })
-            .then(function (res) {
-              if (!res.ok) throw new Error(res.data.error || "Ошибка");
-              toast("Кодар получил " + d.wagon_number);
-              loadWagonPlan();
-              loadStats();
-            })
-            .catch(function (err) { alert(err.message); });
+          confirmKodarReceived(d.id, d.wagon_number);
         });
         card.appendChild(btn);
       }
@@ -1733,8 +1824,12 @@
     if (reset !== false) {
       historyOffset = 0;
       var list = $("historyList");
-      if (list) list.innerHTML = "";
-      $("historyDetail").hidden = true;
+      if (list) {
+        list.innerHTML =
+          "<li class='tk-card'><div class='tk-card-meta'>Загрузка журнала…</div></li>";
+      }
+      var detail = $("historyDetail");
+      if (detail) detail.hidden = true;
     }
     historyLoading = true;
     var btn = $("historyLoadMore");
@@ -1748,6 +1843,10 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         var sessions = data.sessions || [];
+        if (historyOffset === 0) {
+          var listEl = $("historyList");
+          if (listEl) listEl.innerHTML = "";
+        }
         appendHistorySessions(sessions);
         historyOffset += sessions.length;
         if (!sessions.length && historyOffset === 0) {
@@ -1758,7 +1857,12 @@
         }
         updateHistoryMoreUi(data);
       })
-      .catch(function () {
+      .catch(function (err) {
+        if (historyOffset === 0 && $("historyList")) {
+          $("historyList").innerHTML =
+            "<li class='tk-card'><div class='tk-card-meta'>Не удалось загрузить журнал</div></li>";
+        }
+        if (err && err.message !== "auth") alert(err.message || "Ошибка загрузки журнала");
         if (btn) {
           btn.disabled = false;
           btn.textContent = "Показать ещё";
@@ -2182,6 +2286,8 @@
       setTab(btn.dataset.go);
     });
   });
+
+  bindHeaderStats();
 
   var yardResizeTimer;
   window.addEventListener("resize", function () {

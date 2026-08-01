@@ -40,6 +40,7 @@ from taksimo_store import (
     KodarBlockedError,
     add_wagon_numbers,
     confirm_kodar_received,
+    count_sessions,
     create_session,
     db_status,
     delete_session,

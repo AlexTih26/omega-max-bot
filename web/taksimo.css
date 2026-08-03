@@ -1611,6 +1611,96 @@ body {
   max-width: 320px;
 }
 
+.tk-wagon-card-layout {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.tk-wagon-card-list {
+  max-height: 380px;
+  overflow-y: auto;
+}
+
+.tk-wagon-card-item {
+  cursor: pointer;
+}
+
+.tk-wagon-card-item--active {
+  border-color: var(--tk-blue);
+  box-shadow: 0 0 0 1px rgba(91, 156, 245, 0.25);
+}
+
+.tk-wagon-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tk-wagon-card-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(91, 156, 245, 0.15);
+  color: #bfdbfe;
+}
+
+.tk-wagon-card-badge--departed {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+}
+
+.tk-wagon-card-badge--returning {
+  background: rgba(74, 222, 128, 0.15);
+  color: #86efac;
+}
+
+.tk-wagon-card-badge--available,
+.tk-wagon-card-badge--history {
+  background: rgba(255, 255, 255, 0.08);
+  color: #d4d4d8;
+}
+
+.tk-wagon-card-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+
+.tk-wagon-card-stat {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tk-wagon-card-stat b {
+  display: block;
+  font-size: 0.95rem;
+  color: var(--tk-gold);
+}
+
+.tk-wagon-card-stat span {
+  display: block;
+  margin-top: 3px;
+  font-size: 0.72rem;
+  color: #9ca3af;
+}
+
+.tk-wagon-card-subtitle {
+  margin: 14px 0 8px;
+  font-size: 0.82rem;
+  color: var(--tk-gold);
+}
+
+.tk-wagon-card-trip {
+  padding: 10px 12px;
+}
+
 .tk-slot-settings[open] > summary {
   margin-bottom: 10px;
 }
@@ -1657,6 +1747,11 @@ body {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
+  }
+
+  .tk-wagon-card-layout {
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    align-items: start;
   }
 
   .tk-yard-wrap {

@@ -1,6 +1,7 @@
 # Секреты и окружение
 .env
 .env.local
+.env copy
 
 # Python
 .venv

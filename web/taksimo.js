@@ -29,6 +29,9 @@
   var historyOffset = 0;
   var historyTotal = 0;
   var historyLoading = false;
+  var wagonCardCatalog = [];
+  var activeWagonCardNumber = "";
+  var wagonCardSearchTimer = null;
 
   function yardCellPx() {
     var w = window.innerWidth || 0;
@@ -305,6 +308,27 @@
     });
   }
 
+  function formatDurationShort(seconds) {
+    if (seconds == null || !isFinite(seconds)) return "—";
+    var totalMinutes = Math.max(0, Math.round(seconds / 60));
+    var days = Math.floor(totalMinutes / (60 * 24));
+    var hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    var minutes = totalMinutes % 60;
+    var parts = [];
+    if (days) parts.push(days + " д");
+    if (hours) parts.push(hours + " ч");
+    if (!days && minutes) parts.push(minutes + " мин");
+    if (!parts.length) parts.push("0 мин");
+    return parts.join(" ");
+  }
+
+  function wagonStageBadgeClass(stage) {
+    return (
+      "tk-wagon-card-badge tk-wagon-card-badge--" +
+      (stage || "history").replace(/[^a-z_]/gi, "")
+    );
+  }
+
   function renderDbStatus(db) {
     db = db || meta.db || {};
     var el = $("dbStatus");
@@ -442,9 +466,197 @@
         toast("Кодар получил · БТС Восток");
         loadWagonPlan();
         loadStats();
+        loadWagonCards();
         loadWagonHistory();
       })
       .catch(function (err) { alert(err.message); });
+  }
+
+  function renderWagonCardCatalog(items) {
+    var list = $("wagonCardList");
+    if (!list) return;
+    list.innerHTML = "";
+    if (!(items || []).length) {
+      list.innerHTML = "<li class='tk-card'><div class='tk-card-meta'>Вагоны не найдены</div></li>";
+      return;
+    }
+    items.forEach(function (wagon) {
+      var li = document.createElement("li");
+      li.className = "tk-card tk-wagon-card-item";
+      if (wagon.number === activeWagonCardNumber) {
+        li.classList.add("tk-wagon-card-item--active");
+      }
+      li.dataset.wagonNumber = wagon.number;
+      li.innerHTML =
+        '<div class="tk-wagon-card-top">' +
+        '<div class="tk-card-title">Вагон ' + esc(wagon.number) + "</div>" +
+        '<span class="' + wagonStageBadgeClass(wagon.stage) + '">' + esc(wagon.stage_label || wagon.stage || "—") + "</span>" +
+        "</div>" +
+        '<div class="tk-card-meta">' + esc(wagon.location_label || "—") + "</div>" +
+        '<div class="tk-card-meta">Плит сейчас: ' + esc(wagon.current_slab_count || 0) +
+        " · рейсов: " + esc(wagon.total_trips || 0) +
+        (wagon.last_event_at_label ? " · " + esc(wagon.last_event_at_label) : "") +
+        "</div>";
+      li.addEventListener("click", function () {
+        loadWagonCard(wagon.number, { scroll: false });
+      });
+      list.appendChild(li);
+    });
+  }
+
+  function showWagonCardEmpty(message) {
+    var box = $("wagonCardDetail");
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = "<h4>Карточка вагона</h4><p>" + esc(message) + "</p>";
+  }
+
+  function loadWagonCards(options) {
+    options = options || {};
+    var input = $("wagonCardSearch");
+    var query =
+      options.query != null
+        ? String(options.query).trim()
+        : input
+          ? input.value.trim()
+          : "";
+    var list = $("wagonCardList");
+    if (list) {
+      list.innerHTML = "<li class='tk-card'><div class='tk-card-meta'>Загрузка вагонов…</div></li>";
+    }
+    return apiFetch(
+      "/api/taksimo/wagons/catalog?limit=80&q=" + encodeURIComponent(query)
+    )
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        wagonCardCatalog = data.wagons || [];
+        if (!wagonCardCatalog.length) {
+          activeWagonCardNumber = "";
+          renderWagonCardCatalog([]);
+          showWagonCardEmpty(query ? "Совпадений нет" : "История вагонов пока пуста");
+          return null;
+        }
+        var nextNumber = activeWagonCardNumber;
+        if (
+          !nextNumber ||
+          !wagonCardCatalog.some(function (item) { return item.number === nextNumber; })
+        ) {
+          nextNumber = wagonCardCatalog[0].number;
+        }
+        activeWagonCardNumber = nextNumber;
+        renderWagonCardCatalog(wagonCardCatalog);
+        return loadWagonCard(nextNumber, { scroll: false });
+      })
+      .catch(function () {
+        if (list) {
+          list.innerHTML = "<li class='tk-card'><div class='tk-card-meta'>Не удалось загрузить вагоны</div></li>";
+        }
+      });
+  }
+
+  function loadWagonCard(wagonNumber, options) {
+    options = options || {};
+    if (!wagonNumber) return Promise.resolve();
+    activeWagonCardNumber = wagonNumber;
+    renderWagonCardCatalog(wagonCardCatalog);
+    var box = $("wagonCardDetail");
+    if (box) {
+      box.hidden = false;
+      box.innerHTML = "<h4>Вагон " + esc(wagonNumber) + "</h4><p>Загрузка карточки…</p>";
+    }
+    return apiFetch("/api/taksimo/wagons/card/" + encodeURIComponent(wagonNumber))
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка загрузки вагона");
+        var wagon = res.data.wagon;
+        if (!wagon || !box) return;
+        var currentSlabs = wagon.current_slabs || [];
+        var currentSlabHtml = currentSlabs.length
+          ? "<ul class='tk-list'>" +
+            currentSlabs.map(function (item) {
+              var metaLine = [];
+              if (item.vehicle_plate) metaLine.push(item.vehicle_plate);
+              if (item.loading_date) metaLine.push(item.loading_date);
+              return (
+                "<li class='tk-card'>" +
+                "<div class='tk-card-title'>" + esc(item.label || "—") + "</div>" +
+                (metaLine.length ? "<div class='tk-card-meta'>" + esc(metaLine.join(" · ")) + "</div>" : "") +
+                "</li>"
+              );
+            }).join("") +
+            "</ul>"
+          : "<p class='tk-card-meta'>Сейчас на вагоне плит нет.</p>";
+        var history = wagon.history || [];
+        var tripsHtml = history.length
+          ? "<ul class='tk-list'>" +
+            history.map(function (trip) {
+              var statusClass =
+                trip.status === "in_transit"
+                  ? "tk-dispatch-badge--transit"
+                  : "tk-dispatch-badge--done";
+              return (
+                "<li class='tk-card tk-card--click tk-wagon-card-trip' data-trip-id='" + trip.id + "'>" +
+                "<div class='tk-wagon-card-top'>" +
+                "<div class='tk-card-title'>Рейс №" + esc(trip.id) + " · " + esc(trip.slot_zone || "—") + " №" + esc(trip.slot_index || "—") + "</div>" +
+                "<span class='tk-dispatch-badge " + statusClass + "'>" + esc(trip.status_label || dispatchStatusLabel(trip.status)) + "</span>" +
+                "</div>" +
+                "<div class='tk-card-meta'>" +
+                esc((trip.block_labels || []).join(", ") || "Без плит") +
+                "</div>" +
+                "<div class='tk-card-meta'>" +
+                "Старт: " + esc(trip.dispatched_at_label || "—") +
+                (trip.received_at_label ? " · БТС: " + esc(trip.received_at_label) : "") +
+                " · этап: " + esc(formatDurationShort(trip.trip_seconds)) +
+                "</div>" +
+                "</li>"
+              );
+            }).join("") +
+            "</ul>"
+          : "<p class='tk-card-meta'>Рейсов пока нет.</p>";
+        box.hidden = false;
+        box.innerHTML =
+          "<h4>Вагон " + esc(wagon.number) + "</h4>" +
+          "<p><span class='" + wagonStageBadgeClass(wagon.stage) + "'>" + esc(wagon.stage_label || "—") + "</span></p>" +
+          "<p>Где стоит: <strong>" + esc(wagon.location_label || "—") + "</strong><br>" +
+          "Этап с: " + esc(wagon.current_stage_started_at_label || "—") +
+          " · прошло " + esc(formatDurationShort(wagon.current_stage_age_seconds)) +
+          ((wagon.vehicle_plates || []).length ? "<br>Машины: " + esc((wagon.vehicle_plates || []).join(", ")) : "") +
+          (wagon.planned_zone ? "<br>План тупика: " + esc(wagon.planned_zone) : "") +
+          "</p>" +
+          '<div class="tk-wagon-card-stats">' +
+          '<div class="tk-wagon-card-stat"><b>' + esc(wagon.current_slab_count || 0) + '</b><span>плит сейчас</span></div>' +
+          '<div class="tk-wagon-card-stat"><b>' + esc(wagon.total_trips || 0) + '</b><span>кругов всего</span></div>' +
+          '<div class="tk-wagon-card-stat"><b>' + esc(wagon.delivered_trips || 0) + '</b><span>закрыто у БТС</span></div>' +
+          "</div>" +
+          (
+            wagon.current_dispatch && wagon.current_dispatch.status === "in_transit" && canKodar
+              ? '<div class="tk-actions"><button type="button" class="tk-btn tk-btn--primary" id="wagonCardKodarBtn">Кодар получил</button></div>'
+              : ""
+          ) +
+          '<h5 class="tk-wagon-card-subtitle">Текущий состав плит</h5>' +
+          currentSlabHtml +
+          '<h5 class="tk-wagon-card-subtitle">История рейсов</h5>' +
+          tripsHtml;
+        var wagonCardKodarBtn = $("wagonCardKodarBtn");
+        if (wagonCardKodarBtn && wagon.current_dispatch) {
+          wagonCardKodarBtn.addEventListener("click", function () {
+            confirmKodarReceived(wagon.current_dispatch.id, wagon.number);
+          });
+        }
+        box.querySelectorAll("[data-trip-id]").forEach(function (el) {
+          el.addEventListener("click", function () {
+            var tripId = parseInt(el.dataset.tripId, 10);
+            var trip = history.find(function (item) { return item.id === tripId; });
+            if (trip) showWagonDispatchDetail(trip);
+          });
+        });
+        if (options.scroll !== false) {
+          box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      })
+      .catch(function (err) {
+        showWagonCardEmpty(err.message || "Не удалось открыть вагон");
+      });
   }
 
   function loadWagonHistory() {
@@ -1184,6 +1396,7 @@
     if (name === "history") loadHistory(true);
     if (name === "wagons") {
       $("wagonHistoryDetail").hidden = true;
+      loadWagonCards();
       loadWagonHistory();
     }
     loadStats();
@@ -1974,6 +2187,13 @@
       if (ws && !ws.disabled) ws.value = w;
     });
     updateAllPlacementHints();
+  });
+  $("wagonCardSearch").addEventListener("input", function () {
+    clearTimeout(wagonCardSearchTimer);
+    wagonCardSearchTimer = setTimeout(function () {
+      activeWagonCardNumber = "";
+      loadWagonCards();
+    }, 180);
   });
 
   function closeSlabSheet() {

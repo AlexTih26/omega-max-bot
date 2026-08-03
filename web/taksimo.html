@@ -16,7 +16,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/taksimo.css?v=55">
+  <link rel="stylesheet" href="/taksimo.css?v=56">
 </head>
 <body>
   <div class="app taksimo-app">
@@ -165,7 +165,15 @@
       </section>
 
       <section class="tk-panel" id="panelWagons" role="tabpanel" hidden>
-        <p class="tk-yard-legend">Рейсы вагонов: отправка в <strong>Кодар</strong> и выгрузка у <strong>БТС Восток</strong>. Тап — детали рейса.</p>
+        <p class="tk-yard-legend">Карточка вагона: где стоит сейчас, какие плиты в текущем круге и вся история рейсов. Ниже остаётся общий журнал рейсов.</p>
+        <label class="tk-label" for="wagonCardSearch">Номер вагона</label>
+        <input class="tk-input" id="wagonCardSearch" placeholder="Например 12345678" autocomplete="off">
+        <div class="tk-wagon-card-layout">
+          <ul class="tk-list tk-wagon-card-list" id="wagonCardList"></ul>
+          <div class="tk-detail tk-wagon-card-detail" id="wagonCardDetail" hidden></div>
+        </div>
+        <h3 class="tk-section-title">Журнал рейсов</h3>
+        <p class="tk-yard-legend">Отправка в <strong>Кодар</strong> и выгрузка у <strong>БТС Восток</strong>. Тап — детали рейса.</p>
         <ul class="tk-list tk-list--grid-md" id="wagonHistoryList"></ul>
         <div class="tk-detail" id="wagonHistoryDetail" hidden></div>
       </section>
@@ -290,7 +298,7 @@
         </div>
         <p class="tk-menu-user" id="menuUser" hidden></p>
         <button type="button" class="tk-menu-item" id="menuFleetExtras">★★ Допы по парку</button>
-        <button type="button" class="tk-menu-item" data-go="wagons">🚃 История вагонов</button>
+        <button type="button" class="tk-menu-item" data-go="wagons">🚃 Карточка вагона</button>
         <button type="button" class="tk-menu-item" data-go="yard">🗺 План и тупики</button>
         <button type="button" class="tk-menu-item" data-go="unload">📥 Выгрузка</button>
         <button type="button" class="tk-menu-item" data-go="history">📋 Журнал выгрузок</button>
@@ -302,6 +310,6 @@
       </nav>
     </div>
   </div>
-  <script src="/taksimo.js?v=30"></script>
+  <script src="/taksimo.js?v=31"></script>
 </body>
 </html>

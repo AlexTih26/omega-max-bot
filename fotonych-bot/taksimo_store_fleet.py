@@ -540,6 +540,275 @@ def list_wagon_dispatch_history(*, limit: int = 50) -> list[dict]:
     return [_row_wagon_dispatch(row) for row in rows]
 
 
+def _dispatch_stage_started_at(dispatch: dict | None) -> float | None:
+    if not dispatch:
+        return None
+    if dispatch.get("status") == "in_transit":
+        return dispatch.get("dispatched_at")
+    return dispatch.get("received_at") or dispatch.get("dispatched_at")
+
+
+def _wagon_current_slabs_from_slot(
+    conn: sqlite3.Connection, zone: str, wagon_number: str
+) -> list[dict]:
+    out: list[dict] = []
+    for slab in _slot_slabs(conn, zone, wagon_number):
+        out.append(
+            {
+                "id": int(slab["id"]),
+                "label": _slab_label_compact(slab["letter"], slab["number"]),
+                "vehicle_plate": (slab.get("vehicle_plate") or "").strip(),
+                "loading_date": slab.get("loading_date") or "",
+                "platform_zone": slab.get("platform_zone") or zone,
+            }
+        )
+    return out
+
+
+def _wagon_card_stage_meta(
+    *,
+    pool: dict | None,
+    slot_row: sqlite3.Row | None,
+    current_dispatch: dict | None,
+    latest_dispatch: dict | None,
+) -> tuple[str, str, str, float | None]:
+    if current_dispatch:
+        return (
+            "departed",
+            "В пути в Кодар",
+            "Маршрут: {} №{} -> Кодар".format(
+                current_dispatch.get("slot_zone") or "—",
+                current_dispatch.get("slot_index") or "—",
+            ),
+            current_dispatch.get("dispatched_at"),
+        )
+    if slot_row:
+        return (
+            "at_slot",
+            "На Таксимо",
+            f"{slot_row['zone']} №{slot_row['slot_index']}",
+            slot_row["updated_at"] or (pool or {}).get("updated_at"),
+        )
+    if pool and pool.get("stage") == "returning":
+        stage_started_at = _dispatch_stage_started_at(latest_dispatch) or pool.get("updated_at")
+        return (
+            "returning",
+            "У БТС Восток / порожний",
+            "БТС Восток",
+            stage_started_at,
+        )
+    if pool:
+        planned = (pool.get("planned_zone") or "").strip()
+        location = f"Парк · план {planned}" if planned else "Парк"
+        return (
+            pool.get("stage") or "available",
+            pool.get("stage_label") or "В парке",
+            location,
+            pool.get("updated_at"),
+        )
+    if latest_dispatch:
+        stage_started_at = _dispatch_stage_started_at(latest_dispatch)
+        return (
+            "history",
+            "В истории",
+            "Последний рейс закрыт",
+            stage_started_at,
+        )
+    return ("history", "Без движения", "Нет данных", None)
+
+
+def _build_wagon_card(
+    conn: sqlite3.Connection, wagon_number: str, *, include_history: bool = True
+) -> dict | None:
+    wagon_number = (wagon_number or "").strip()
+    if not wagon_number:
+        return None
+
+    pool_row = conn.execute(
+        "SELECT * FROM wagon_pool WHERE number = ? ORDER BY active DESC LIMIT 1",
+        (wagon_number,),
+    ).fetchone()
+    slot_row = conn.execute(
+        """
+        SELECT id, zone, slot_index, updated_at
+        FROM wagon_slots
+        WHERE wagon_number = ?
+        LIMIT 1
+        """,
+        (wagon_number,),
+    ).fetchone()
+    history_rows = conn.execute(
+        """
+        SELECT * FROM wagon_dispatches
+        WHERE wagon_number = ?
+        ORDER BY dispatched_at DESC
+        """,
+        (wagon_number,),
+    ).fetchall()
+    if not pool_row and not slot_row and not history_rows:
+        slab_row = conn.execute(
+            "SELECT id FROM slabs WHERE wagon_number = ? LIMIT 1",
+            (wagon_number,),
+        ).fetchone()
+        if not slab_row:
+            return None
+
+    pool = _row_fleet_wagon(conn, pool_row) if pool_row else None
+    history = [_row_wagon_dispatch(row) for row in history_rows]
+    current_dispatch = next((item for item in history if item["status"] == "in_transit"), None)
+    latest_dispatch = history[0] if history else None
+
+    stage, stage_label, location_label, stage_started_at = _wagon_card_stage_meta(
+        pool=pool,
+        slot_row=slot_row,
+        current_dispatch=current_dispatch,
+        latest_dispatch=latest_dispatch,
+    )
+
+    if stage == "at_slot" and slot_row:
+        current_slabs = _wagon_current_slabs_from_slot(
+            conn, str(slot_row["zone"]), wagon_number
+        )
+    elif stage in ("departed", "returning") and (current_dispatch or latest_dispatch):
+        current_slabs = list((current_dispatch or latest_dispatch).get("blocks") or [])
+    else:
+        current_slabs = []
+
+    last_event_candidates: list[float] = []
+    if pool and pool.get("updated_at"):
+        last_event_candidates.append(float(pool["updated_at"]))
+    if slot_row and slot_row["updated_at"]:
+        last_event_candidates.append(float(slot_row["updated_at"]))
+    if latest_dispatch:
+        if latest_dispatch.get("received_at"):
+            last_event_candidates.append(float(latest_dispatch["received_at"]))
+        elif latest_dispatch.get("dispatched_at"):
+            last_event_candidates.append(float(latest_dispatch["dispatched_at"]))
+    last_event_at = max(last_event_candidates) if last_event_candidates else None
+
+    now = time.time()
+    stage_age_seconds = (
+        max(0.0, now - float(stage_started_at)) if stage_started_at else None
+    )
+    vehicle_plates = sorted(
+        {
+            (item.get("vehicle_plate") or "").strip()
+            for item in current_slabs
+            if (item.get("vehicle_plate") or "").strip()
+        }
+        | {
+            plate
+            for dispatch in history
+            for plate in (dispatch.get("vehicles") or [])
+            if (plate or "").strip()
+        }
+    )
+
+    result = {
+        "number": wagon_number,
+        "stage": stage,
+        "stage_label": stage_label,
+        "location_label": location_label,
+        "planned_zone": (pool or {}).get("planned_zone") or "",
+        "slot_id": int(slot_row["id"]) if slot_row else (pool or {}).get("slot_id"),
+        "slot_label": (
+            f"{slot_row['zone']} №{slot_row['slot_index']}"
+            if slot_row
+            else (pool or {}).get("slot_label") or ""
+        ),
+        "current_stage_started_at": stage_started_at,
+        "current_stage_started_at_label": _msk_label_from_ts(stage_started_at),
+        "current_stage_age_seconds": stage_age_seconds,
+        "last_event_at": last_event_at,
+        "last_event_at_label": _msk_label_from_ts(last_event_at),
+        "current_slabs": current_slabs,
+        "current_slab_count": len(current_slabs),
+        "vehicle_plates": vehicle_plates,
+        "total_trips": len(history),
+        "delivered_trips": sum(1 for item in history if item["status"] == "delivered"),
+        "in_transit_trips": sum(1 for item in history if item["status"] == "in_transit"),
+        "current_dispatch": current_dispatch or latest_dispatch,
+    }
+    if include_history:
+        result["history"] = [
+            {
+                **item,
+                "status_label": (
+                    "В пути в Кодар"
+                    if item["status"] == "in_transit"
+                    else "У БТС Восток"
+                ),
+                "stage_started_at": _dispatch_stage_started_at(item),
+                "stage_started_at_label": _msk_label_from_ts(
+                    _dispatch_stage_started_at(item)
+                ),
+                "trip_seconds": (
+                    max(
+                        0.0,
+                        float(item.get("received_at") or now)
+                        - float(item["dispatched_at"]),
+                    )
+                    if item.get("dispatched_at")
+                    else None
+                ),
+            }
+            for item in history
+        ]
+    return result
+
+
+def get_wagon_card(wagon_number: str) -> dict | None:
+    with _connect() as conn:
+        return _build_wagon_card(conn, wagon_number, include_history=True)
+
+
+def list_wagon_cards(*, query: str = "", limit: int = 80) -> list[dict]:
+    query = (query or "").strip()
+    limit = max(1, min(int(limit), 200))
+    params: list = []
+    where = ""
+    if query:
+        where = "WHERE wagon_number LIKE ?"
+        params.append(f"%{query}%")
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT wagon_number
+            FROM (
+                SELECT number AS wagon_number FROM wagon_pool WHERE number != ''
+                UNION
+                SELECT wagon_number FROM wagon_slots WHERE wagon_number != ''
+                UNION
+                SELECT wagon_number FROM wagon_dispatches WHERE wagon_number != ''
+                UNION
+                SELECT wagon_number FROM slabs WHERE wagon_number != ''
+            )
+            {where}
+            """,
+            params,
+        ).fetchall()
+        cards = []
+        for row in rows:
+            card = _build_wagon_card(conn, str(row["wagon_number"]), include_history=False)
+            if card:
+                cards.append(card)
+    stage_rank = {
+        "at_slot": 0,
+        "departed": 1,
+        "returning": 2,
+        "available": 3,
+        "history": 4,
+    }
+    cards.sort(
+        key=lambda item: (
+            stage_rank.get(item.get("stage") or "history", 9),
+            -(item.get("last_event_at") or 0),
+            item.get("number") or "",
+        )
+    )
+    return cards[:limit]
+
+
 def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
     with _connect() as conn:
         row = conn.execute(

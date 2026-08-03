@@ -46,10 +46,12 @@ from taksimo_store import (
     delete_session,
     delete_slab,
     dispatch_wagon_to_kodar,
+    get_wagon_card,
     get_session,
     get_slab,
     init_taksimo_db,
     list_sessions,
+    list_wagon_cards,
     list_vehicles,
     list_wagon_dispatch_history,
     list_wagon_pool,
@@ -551,6 +553,25 @@ async def handle_taksimo_wagon_history(request: web.Request) -> web.Response:
     return _json({"dispatches": list_wagon_dispatch_history(limit=limit)})
 
 
+async def handle_taksimo_wagon_catalog(request: web.Request) -> web.Response:
+    try:
+        limit = int(request.rel_url.query.get("limit", "80"))
+    except ValueError:
+        limit = 80
+    query = (request.rel_url.query.get("q") or "").strip()
+    return _json({"wagons": list_wagon_cards(query=query, limit=limit)})
+
+
+async def handle_taksimo_wagon_card(request: web.Request) -> web.Response:
+    wagon_number = (request.match_info.get("wagon_number") or "").strip()
+    if not wagon_number:
+        return _json({"error": "wagon_number required"}, 400)
+    card = get_wagon_card(wagon_number)
+    if not card:
+        return _json({"error": "not found"}, 404)
+    return _json({"wagon": card})
+
+
 async def handle_taksimo_export_yard(_request: web.Request) -> web.Response:
     data = build_yard_workbook()
     headers = {
@@ -583,6 +604,8 @@ def register_taksimo_routes(app: web.Application) -> None:
     )
     app.router.add_post("/api/taksimo/wagons/kodar-received", handle_kodar_received)
     app.router.add_get("/api/taksimo/wagons/history", handle_taksimo_wagon_history)
+    app.router.add_get("/api/taksimo/wagons/catalog", handle_taksimo_wagon_catalog)
+    app.router.add_get("/api/taksimo/wagons/card/{wagon_number}", handle_taksimo_wagon_card)
     app.router.add_put(
         "/api/taksimo/wagons/pool/{wagon_number}/planned-zone",
         handle_wagon_planned_zone,

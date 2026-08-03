@@ -2,7 +2,7 @@
   "name": "Таксимо",
   "short_name": "Таксимо",
   "description": "Выгрузка ЖБИ на площадке",
-  "start_url": "/taksimo-login.html",
+  "start_url": "/taksimo-login.html?v=2",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",

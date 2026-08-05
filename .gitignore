@@ -34,6 +34,7 @@ data/drivers_chat.json
 data/drivers_menu_state.json
 data/ipdocs_config.json
 data/ipdocs_documents.json
+data/materials_chat_state.json
 data/super_admin.json
 data/taksimo_chat_state.json
 data/taksimo_notify_state.json

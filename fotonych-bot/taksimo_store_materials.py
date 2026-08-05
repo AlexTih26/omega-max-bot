@@ -16,6 +16,11 @@ MOVE_RELEASE = "release"
 MOVE_CONSUME = "consume"
 MOVE_CONSUME_RESERVED = "consume_reserved"
 MOVE_ADJUST = "adjust"
+SCHEME_CODE_DEFAULT = "scheme1"
+SCHEME_CODES = {"scheme1", "scheme2", "scheme3"}
+RETURN_STATUS_PLANNED = "planned_return"
+RETURN_STATUS_IN_TRANSIT = "in_transit_back"
+RETURN_STATUS_RETURNED = "returned_to_zone"
 
 
 def migrate_materials(conn: sqlite3.Connection) -> None:
@@ -41,6 +46,8 @@ def migrate_materials(conn: sqlite3.Connection) -> None:
             on_hand_delta REAL NOT NULL DEFAULT 0,
             reserved_delta REAL NOT NULL DEFAULT 0,
             wagon_number TEXT NOT NULL DEFAULT '',
+            template_id INTEGER NOT NULL DEFAULT 0,
+            zone TEXT NOT NULL DEFAULT '',
             dispatch_id INTEGER,
             operator TEXT NOT NULL DEFAULT '',
             note TEXT NOT NULL DEFAULT '',
@@ -57,6 +64,13 @@ def migrate_materials(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             description TEXT NOT NULL DEFAULT '',
+            scheme_code TEXT NOT NULL DEFAULT 'scheme1',
+            has_box INTEGER NOT NULL DEFAULT 0,
+            returns_materials INTEGER NOT NULL DEFAULT 0,
+            extra_ring_mode TEXT NOT NULL DEFAULT '',
+            extra_units INTEGER NOT NULL DEFAULT 0,
+            k_goal INTEGER NOT NULL DEFAULT 0,
+            box_capacity_wagons INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
@@ -76,7 +90,19 @@ def migrate_materials(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             wagon_number TEXT NOT NULL,
             template_id INTEGER,
+            scheme_code TEXT NOT NULL DEFAULT 'scheme1',
+            has_box INTEGER NOT NULL DEFAULT 0,
+            returns_materials INTEGER NOT NULL DEFAULT 0,
+            extra_ring_mode TEXT NOT NULL DEFAULT '',
+            extra_units INTEGER NOT NULL DEFAULT 0,
+            k_goal INTEGER NOT NULL DEFAULT 0,
+            box_capacity_wagons INTEGER NOT NULL DEFAULT 0,
+            origin_zone TEXT NOT NULL DEFAULT '',
             prep_status TEXT NOT NULL DEFAULT 'draft',
+            return_status TEXT NOT NULL DEFAULT '',
+            return_target_zone TEXT NOT NULL DEFAULT '',
+            actual_return_zone TEXT NOT NULL DEFAULT '',
+            return_updated_at REAL,
             prepared_by TEXT NOT NULL DEFAULT '',
             prepared_at REAL,
             note TEXT NOT NULL DEFAULT '',
@@ -136,6 +162,93 @@ def migrate_materials(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE material_template_items ADD COLUMN norm_minutes REAL NOT NULL DEFAULT 0"
         )
+    movement_cols = {row[1] for row in conn.execute("PRAGMA table_info(material_movements)")}
+    if "template_id" not in movement_cols:
+        conn.execute(
+            "ALTER TABLE material_movements ADD COLUMN template_id INTEGER NOT NULL DEFAULT 0"
+        )
+    if "zone" not in movement_cols:
+        conn.execute(
+            "ALTER TABLE material_movements ADD COLUMN zone TEXT NOT NULL DEFAULT ''"
+        )
+    template_cols = {row[1] for row in conn.execute("PRAGMA table_info(material_templates)")}
+    if "scheme_code" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN scheme_code TEXT NOT NULL DEFAULT 'scheme1'"
+        )
+    if "has_box" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN has_box INTEGER NOT NULL DEFAULT 0"
+        )
+    if "returns_materials" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN returns_materials INTEGER NOT NULL DEFAULT 0"
+        )
+    if "extra_ring_mode" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN extra_ring_mode TEXT NOT NULL DEFAULT ''"
+        )
+    if "extra_units" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN extra_units INTEGER NOT NULL DEFAULT 0"
+        )
+    if "k_goal" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN k_goal INTEGER NOT NULL DEFAULT 0"
+        )
+    if "box_capacity_wagons" not in template_cols:
+        conn.execute(
+            "ALTER TABLE material_templates ADD COLUMN box_capacity_wagons INTEGER NOT NULL DEFAULT 0"
+        )
+    prep_cols = {row[1] for row in conn.execute("PRAGMA table_info(master_wagon_prep)")}
+    if "scheme_code" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN scheme_code TEXT NOT NULL DEFAULT 'scheme1'"
+        )
+    if "has_box" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN has_box INTEGER NOT NULL DEFAULT 0"
+        )
+    if "returns_materials" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN returns_materials INTEGER NOT NULL DEFAULT 0"
+        )
+    if "extra_ring_mode" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN extra_ring_mode TEXT NOT NULL DEFAULT ''"
+        )
+    if "extra_units" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN extra_units INTEGER NOT NULL DEFAULT 0"
+        )
+    if "k_goal" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN k_goal INTEGER NOT NULL DEFAULT 0"
+        )
+    if "box_capacity_wagons" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN box_capacity_wagons INTEGER NOT NULL DEFAULT 0"
+        )
+    if "origin_zone" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN origin_zone TEXT NOT NULL DEFAULT ''"
+        )
+    if "return_status" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN return_status TEXT NOT NULL DEFAULT ''"
+        )
+    if "return_target_zone" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN return_target_zone TEXT NOT NULL DEFAULT ''"
+        )
+    if "actual_return_zone" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN actual_return_zone TEXT NOT NULL DEFAULT ''"
+        )
+    if "return_updated_at" not in prep_cols:
+        conn.execute(
+            "ALTER TABLE master_wagon_prep ADD COLUMN return_updated_at REAL"
+        )
 
 
 def _normalize_quantity(value, *, allow_zero: bool = False) -> float:
@@ -156,6 +269,63 @@ def _normalize_non_negative(value, *, field_name: str) -> float:
     if qty < 0:
         raise ValueError(f"{field_name} не может быть меньше нуля")
     return qty
+
+
+def _normalize_scheme_code(value) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "1": "scheme1",
+        "2": "scheme2",
+        "3": "scheme3",
+        "scheme1": "scheme1",
+        "scheme2": "scheme2",
+        "scheme3": "scheme3",
+        "схема1": "scheme1",
+        "схема2": "scheme2",
+        "схема3": "scheme3",
+    }
+    code = aliases.get(raw, raw or SCHEME_CODE_DEFAULT)
+    if code not in SCHEME_CODES:
+        raise ValueError("Тип схемы: scheme1, scheme2 или scheme3")
+    return code
+
+
+def _normalize_bool_flag(value) -> int:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    text = str(value or "").strip().lower()
+    return 1 if text in {"1", "true", "yes", "да", "on"} else 0
+
+
+def _normalize_non_negative_int(value, *, field_name: str) -> int:
+    try:
+        num = int(float(value or 0))
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{field_name} должно быть числом") from e
+    if num < 0:
+        raise ValueError(f"{field_name} не может быть меньше нуля")
+    return num
+
+
+def _template_meta(row: sqlite3.Row | dict | None) -> dict:
+    row = row or {}
+    return {
+        "scheme_code": _normalize_scheme_code(row.get("scheme_code") if isinstance(row, dict) else row["scheme_code"] if "scheme_code" in row.keys() else SCHEME_CODE_DEFAULT),
+        "has_box": bool((row.get("has_box") if isinstance(row, dict) else row["has_box"]) or 0),
+        "returns_materials": bool((row.get("returns_materials") if isinstance(row, dict) else row["returns_materials"]) or 0),
+        "extra_ring_mode": (row.get("extra_ring_mode") if isinstance(row, dict) else row["extra_ring_mode"] if "extra_ring_mode" in row.keys() else "") or "",
+        "extra_units": int((row.get("extra_units") if isinstance(row, dict) else row["extra_units"] if "extra_units" in row.keys() else 0) or 0),
+        "k_goal": int((row.get("k_goal") if isinstance(row, dict) else row["k_goal"] if "k_goal" in row.keys() else 0) or 0),
+        "box_capacity_wagons": int((row.get("box_capacity_wagons") if isinstance(row, dict) else row["box_capacity_wagons"] if "box_capacity_wagons" in row.keys() else 0) or 0),
+    }
+
+
+def _zone_from_location_label(label: str) -> str:
+    text = (label or "").strip().upper()
+    for zone in ("ТУРАН", "ГРУЗОВОЙ"):
+        if text.startswith(zone):
+            return zone
+    return ""
 
 
 def _row_material_item(row: sqlite3.Row, *, totals: dict[int, dict] | None = None) -> dict:
@@ -258,6 +428,8 @@ def _material_move(
     on_hand_delta: float,
     reserved_delta: float,
     wagon_number: str = "",
+    template_id: int = 0,
+    zone: str = "",
     dispatch_id: int | None = None,
     operator: str = "",
     note: str = "",
@@ -266,8 +438,8 @@ def _material_move(
         """
         INSERT INTO material_movements (
             material_id, move_type, quantity, on_hand_delta, reserved_delta,
-            wagon_number, dispatch_id, operator, note, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            wagon_number, template_id, zone, dispatch_id, operator, note, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             material_id,
@@ -276,6 +448,8 @@ def _material_move(
             on_hand_delta,
             reserved_delta,
             (wagon_number or "").strip(),
+            int(template_id or 0),
+            (zone or "").strip().upper(),
             dispatch_id,
             (operator or "").strip(),
             (note or "").strip(),
@@ -471,6 +645,7 @@ def list_material_templates() -> list[dict]:
                     "id": int(row["id"]),
                     "name": row["name"],
                     "description": row["description"] or "",
+                    **_template_meta(row),
                     "item_count": int(item_count[0] or 0),
                     "total_norm_minutes": round(float(item_count[1] or 0), 3),
                 }
@@ -478,11 +653,31 @@ def list_material_templates() -> list[dict]:
         return out
 
 
-def create_material_template(*, name: str, description: str = "") -> dict:
+def create_material_template(
+    *,
+    name: str,
+    description: str = "",
+    scheme_code: str = SCHEME_CODE_DEFAULT,
+    has_box=False,
+    returns_materials=False,
+    extra_ring_mode: str = "",
+    extra_units=0,
+    k_goal=0,
+    box_capacity_wagons=0,
+) -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("Укажите название схемы")
     description = (description or "").strip()
+    scheme_code = _normalize_scheme_code(scheme_code)
+    has_box = _normalize_bool_flag(has_box)
+    returns_materials = _normalize_bool_flag(returns_materials)
+    extra_ring_mode = (extra_ring_mode or "").strip()
+    extra_units = _normalize_non_negative_int(extra_units, field_name="Допы схемы")
+    k_goal = _normalize_non_negative_int(k_goal, field_name="K по схеме")
+    box_capacity_wagons = _normalize_non_negative_int(
+        box_capacity_wagons, field_name="Ёмкость ящика"
+    )
     now = time.time()
     with _connect() as conn:
         existing = conn.execute(
@@ -495,19 +690,48 @@ def create_material_template(*, name: str, description: str = "") -> dict:
             conn.execute(
                 """
                 UPDATE material_templates
-                SET description = ?, active = 1, updated_at = ?
+                SET description = ?, scheme_code = ?, has_box = ?, returns_materials = ?,
+                    extra_ring_mode = ?, extra_units = ?, k_goal = ?,
+                    box_capacity_wagons = ?, active = 1, updated_at = ?
                 WHERE id = ?
                 """,
-                (description, now, int(existing["id"])),
+                (
+                    description,
+                    scheme_code,
+                    has_box,
+                    returns_materials,
+                    extra_ring_mode,
+                    extra_units,
+                    k_goal,
+                    box_capacity_wagons,
+                    now,
+                    int(existing["id"]),
+                ),
             )
             template_id = int(existing["id"])
         else:
             cur = conn.execute(
                 """
-                INSERT INTO material_templates (name, description, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO material_templates (
+                    name, description, scheme_code, has_box, returns_materials,
+                    extra_ring_mode, extra_units, k_goal, box_capacity_wagons,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, description, now, now),
+                (
+                    name,
+                    description,
+                    scheme_code,
+                    has_box,
+                    returns_materials,
+                    extra_ring_mode,
+                    extra_units,
+                    k_goal,
+                    box_capacity_wagons,
+                    now,
+                    now,
+                ),
             )
             template_id = int(cur.lastrowid)
         conn.commit()
@@ -593,13 +817,27 @@ def assign_template_to_wagon(
     if not wagon_number:
         raise ValueError("Укажите номер вагона")
     now = time.time()
+    from taksimo_store_fleet import get_wagon_card
+
     with _connect() as conn:
         template = conn.execute(
-            "SELECT id, name FROM material_templates WHERE id = ? AND active = 1",
+            "SELECT * FROM material_templates WHERE id = ? AND active = 1",
             (template_id,),
         ).fetchone()
         if not template:
             raise ValueError("Схема не найдена")
+        template_meta = _template_meta(template)
+        wagon_card = get_wagon_card(wagon_number) or {}
+        origin_zone = (
+            _zone_from_location_label(wagon_card.get("location_label") or "")
+            or (wagon_card.get("planned_zone") or "").strip().upper()
+        )
+        default_return_zone = (
+            origin_zone if template_meta["returns_materials"] else ""
+        )
+        return_status = (
+            RETURN_STATUS_PLANNED if template_meta["returns_materials"] else ""
+        )
         template_items = conn.execute(
             """
             SELECT * FROM material_template_items
@@ -624,23 +862,64 @@ def assign_template_to_wagon(
             conn.execute(
                 """
                 UPDATE master_wagon_prep
-                SET template_id = ?, prep_status = 'in_progress',
+                SET template_id = ?, scheme_code = ?, has_box = ?, returns_materials = ?,
+                    extra_ring_mode = ?, extra_units = ?, k_goal = ?, box_capacity_wagons = ?,
+                    origin_zone = ?, return_status = ?, return_target_zone = ?,
+                    actual_return_zone = '', return_updated_at = ?, prep_status = 'in_progress',
                     prepared_by = ?, note = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (template_id, (operator or "").strip(), note, now, prep_id),
+                (
+                    template_id,
+                    template_meta["scheme_code"],
+                    1 if template_meta["has_box"] else 0,
+                    1 if template_meta["returns_materials"] else 0,
+                    template_meta["extra_ring_mode"],
+                    template_meta["extra_units"],
+                    template_meta["k_goal"],
+                    template_meta["box_capacity_wagons"],
+                    origin_zone,
+                    return_status,
+                    default_return_zone,
+                    now if return_status else None,
+                    (operator or "").strip(),
+                    note,
+                    now,
+                    prep_id,
+                ),
             )
             conn.execute("DELETE FROM master_wagon_prep_items WHERE prep_id = ?", (prep_id,))
         else:
             cur = conn.execute(
                 """
                 INSERT INTO master_wagon_prep (
-                    wagon_number, template_id, prep_status, prepared_by,
+                    wagon_number, template_id, scheme_code, has_box, returns_materials,
+                    extra_ring_mode, extra_units, k_goal, box_capacity_wagons,
+                    origin_zone, prep_status, return_status, return_target_zone,
+                    actual_return_zone, return_updated_at, prepared_by,
                     note, created_at, updated_at
                 )
-                VALUES (?, ?, 'in_progress', ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, '', ?, ?, ?, ?, ?)
                 """,
-                (wagon_number, template_id, (operator or "").strip(), note, now, now),
+                (
+                    wagon_number,
+                    template_id,
+                    template_meta["scheme_code"],
+                    1 if template_meta["has_box"] else 0,
+                    1 if template_meta["returns_materials"] else 0,
+                    template_meta["extra_ring_mode"],
+                    template_meta["extra_units"],
+                    template_meta["k_goal"],
+                    template_meta["box_capacity_wagons"],
+                    origin_zone,
+                    return_status,
+                    default_return_zone,
+                    now if return_status else None,
+                    (operator or "").strip(),
+                    note,
+                    now,
+                    now,
+                ),
             )
             prep_id = int(cur.lastrowid)
         for item in template_items:
@@ -827,6 +1106,7 @@ def get_wagon_materials(wagon_number: str) -> dict | None:
             shortage_qty = round(max(0.0, norm - reserved_qty), 3) if norm > 0 else 0.0
             items.append(
                 {
+                    "id": material_id,
                     "material_id": material_id,
                     "name": row["name"],
                     "unit": row["unit"] or "шт",
@@ -847,7 +1127,18 @@ def get_wagon_materials(wagon_number: str) -> dict | None:
             "template_id": int(prep["template_id"]) if prep and prep["template_id"] else None,
             "template_name": prep["template_name"] if prep else "",
             "template_description": prep["template_description"] if prep else "",
+            "scheme_code": prep["scheme_code"] if prep else SCHEME_CODE_DEFAULT,
+            "has_box": bool(prep["has_box"]) if prep else False,
+            "returns_materials": bool(prep["returns_materials"]) if prep else False,
+            "extra_ring_mode": prep["extra_ring_mode"] if prep else "",
+            "extra_units": int(prep["extra_units"] or 0) if prep else 0,
+            "k_goal": int(prep["k_goal"] or 0) if prep else 0,
+            "box_capacity_wagons": int(prep["box_capacity_wagons"] or 0) if prep else 0,
+            "origin_zone": prep["origin_zone"] if prep else "",
             "status": prep["prep_status"] if prep else "",
+            "return_status": prep["return_status"] if prep else "",
+            "return_target_zone": prep["return_target_zone"] if prep else "",
+            "actual_return_zone": prep["actual_return_zone"] if prep else "",
             "prepared_by": prep["prepared_by"] if prep else "",
             "note": prep["note"] if prep else "",
         },
@@ -1002,6 +1293,163 @@ def auto_writeoff_for_dispatch(
     )
 
 
+def _latest_prep_row(
+    conn: sqlite3.Connection, wagon_number: str
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT p.*, t.name AS template_name, t.description AS template_description
+        FROM master_wagon_prep p
+        LEFT JOIN material_templates t ON t.id = p.template_id
+        WHERE p.wagon_number = ?
+        ORDER BY p.updated_at DESC, p.id DESC
+        LIMIT 1
+        """,
+        ((wagon_number or "").strip(),),
+    ).fetchone()
+
+
+def sync_dispatch_scheme(
+    conn: sqlite3.Connection,
+    *,
+    wagon_number: str,
+    dispatch_id: int,
+    slot_zone: str = "",
+) -> None:
+    prep = _latest_prep_row(conn, wagon_number)
+    if not prep:
+        return
+    origin_zone = (slot_zone or prep["origin_zone"] or "").strip().upper()
+    if origin_zone and origin_zone != (prep["origin_zone"] or "").strip().upper():
+        conn.execute(
+            """
+            UPDATE master_wagon_prep
+            SET origin_zone = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (origin_zone, time.time(), int(prep["id"])),
+        )
+    conn.execute(
+        """
+        UPDATE wagon_dispatches
+        SET scheme_template_id = ?, scheme_name = ?, scheme_code = ?, has_box = ?,
+            returns_materials = ?, extra_units = ?, k_goal = ?, origin_zone = ?,
+            return_status = ?, return_target_zone = ?, return_actual_zone = ?
+        WHERE id = ?
+        """,
+        (
+            int(prep["template_id"] or 0),
+            prep["template_name"] or "",
+            prep["scheme_code"] or SCHEME_CODE_DEFAULT,
+            int(prep["has_box"] or 0),
+            int(prep["returns_materials"] or 0),
+            int(prep["extra_units"] or 0),
+            int(prep["k_goal"] or 0),
+            origin_zone,
+            prep["return_status"] or "",
+            prep["return_target_zone"] or "",
+            prep["actual_return_zone"] or "",
+            int(dispatch_id),
+        ),
+    )
+
+
+def mark_return_in_transit(
+    conn: sqlite3.Connection, *, wagon_number: str, dispatch_id: int
+) -> None:
+    prep = _latest_prep_row(conn, wagon_number)
+    if not prep or not int(prep["returns_materials"] or 0):
+        return
+    now = time.time()
+    target_zone = (prep["return_target_zone"] or prep["origin_zone"] or "").strip().upper()
+    conn.execute(
+        """
+        UPDATE master_wagon_prep
+        SET return_status = ?, return_target_zone = ?, return_updated_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (RETURN_STATUS_IN_TRANSIT, target_zone, now, now, int(prep["id"])),
+    )
+    conn.execute(
+        """
+        UPDATE wagon_dispatches
+        SET return_status = ?, return_target_zone = ?
+        WHERE id = ?
+        """,
+        (RETURN_STATUS_IN_TRANSIT, target_zone, int(dispatch_id)),
+    )
+
+
+def mark_return_target_zone(
+    conn: sqlite3.Connection, *, wagon_number: str, target_zone: str
+) -> None:
+    zone = (target_zone or "").strip().upper()
+    if not zone:
+        return
+    prep = _latest_prep_row(conn, wagon_number)
+    if not prep or not int(prep["returns_materials"] or 0):
+        return
+    now = time.time()
+    conn.execute(
+        """
+        UPDATE master_wagon_prep
+        SET return_target_zone = ?, return_updated_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (zone, now, now, int(prep["id"])),
+    )
+    conn.execute(
+        """
+        UPDATE wagon_dispatches
+        SET return_target_zone = ?
+        WHERE wagon_number = ?
+          AND id = (
+              SELECT id FROM wagon_dispatches
+              WHERE wagon_number = ?
+              ORDER BY dispatched_at DESC, id DESC
+              LIMIT 1
+          )
+        """,
+        (zone, wagon_number, wagon_number),
+    )
+
+
+def mark_returned_to_zone(
+    conn: sqlite3.Connection, *, wagon_number: str, actual_zone: str
+) -> None:
+    zone = (actual_zone or "").strip().upper()
+    if not zone:
+        return
+    prep = _latest_prep_row(conn, wagon_number)
+    if not prep or not int(prep["returns_materials"] or 0):
+        return
+    now = time.time()
+    conn.execute(
+        """
+        UPDATE master_wagon_prep
+        SET return_status = ?, return_target_zone = COALESCE(NULLIF(return_target_zone, ''), ?),
+            actual_return_zone = ?, return_updated_at = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (RETURN_STATUS_RETURNED, zone, zone, now, now, int(prep["id"])),
+    )
+    conn.execute(
+        """
+        UPDATE wagon_dispatches
+        SET return_status = ?, return_target_zone = COALESCE(NULLIF(return_target_zone, ''), ?),
+            return_actual_zone = ?
+        WHERE wagon_number = ?
+          AND id = (
+              SELECT id FROM wagon_dispatches
+              WHERE wagon_number = ?
+              ORDER BY dispatched_at DESC, id DESC
+              LIMIT 1
+          )
+        """,
+        (RETURN_STATUS_RETURNED, zone, zone, wagon_number, wagon_number),
+    )
+
+
 def materials_dashboard() -> dict:
     materials = list_material_items()
     from taksimo_store_fleet import list_wagon_cards
@@ -1024,9 +1472,7 @@ def materials_dashboard() -> dict:
         prep_rows = conn.execute(
             """
             SELECT
-                p.wagon_number,
-                p.template_id,
-                p.prep_status,
+                p.*,
                 t.name AS template_name
             FROM master_wagon_prep p
             LEFT JOIN material_templates t ON t.id = p.template_id
@@ -1061,6 +1507,28 @@ def materials_dashboard() -> dict:
             GROUP BY p.wagon_number, i.material_id
             """
         ).fetchall()
+        dispatch_rows = conn.execute(
+            """
+            SELECT
+                wagon_number,
+                scheme_code,
+                scheme_name,
+                extra_units,
+                k_goal,
+                has_box,
+                returns_materials,
+                origin_zone,
+                return_status,
+                return_target_zone,
+                return_actual_zone,
+                dispatched_at,
+                received_at,
+                status
+            FROM wagon_dispatches
+            WHERE COALESCE(scheme_code, '') != ''
+            ORDER BY dispatched_at DESC, id DESC
+            """
+        ).fetchall()
     reserved_by_wagon: dict[str, dict[int, float]] = {}
     for row in rows:
         wagon_number = (row["wagon_number"] or "").strip()
@@ -1071,7 +1539,18 @@ def materials_dashboard() -> dict:
         (row["wagon_number"] or "").strip(): {
             "template_id": int(row["template_id"]) if row["template_id"] else None,
             "template_name": row["template_name"] or "",
+            "scheme_code": row["scheme_code"] or SCHEME_CODE_DEFAULT,
+            "has_box": bool(row["has_box"]),
+            "returns_materials": bool(row["returns_materials"]),
+            "extra_ring_mode": row["extra_ring_mode"] or "",
+            "extra_units": int(row["extra_units"] or 0),
+            "k_goal": int(row["k_goal"] or 0),
+            "box_capacity_wagons": int(row["box_capacity_wagons"] or 0),
+            "origin_zone": row["origin_zone"] or "",
             "prep_status": row["prep_status"] or "",
+            "return_status": row["return_status"] or "",
+            "return_target_zone": row["return_target_zone"] or "",
+            "actual_return_zone": row["actual_return_zone"] or "",
         }
         for row in prep_rows
         if (row["wagon_number"] or "").strip()
@@ -1088,7 +1567,56 @@ def materials_dashboard() -> dict:
             3,
         )
 
-    queue_numbers = set(active_by_number) | set(reserved_by_wagon)
+    scheme_summary = {
+        "dispatched": {"scheme1": 0, "scheme2": 0, "scheme3": 0},
+        "assigned": {"scheme1": 0, "scheme2": 0, "scheme3": 0},
+        "historical_k_total": 0,
+        "historical_extra_units": 0,
+        "returning_box_wagons": 0,
+        "return_capacity_wagons": 0,
+        "returned_box_wagons": 0,
+    }
+    for row in dispatch_rows:
+        code = _normalize_scheme_code(row["scheme_code"] or SCHEME_CODE_DEFAULT)
+        scheme_summary["dispatched"][code] += 1
+        scheme_summary["historical_k_total"] += int(row["k_goal"] or 0)
+        scheme_summary["historical_extra_units"] += int(row["extra_units"] or 0)
+    for prep in prep_by_wagon.values():
+        code = _normalize_scheme_code(prep.get("scheme_code") or SCHEME_CODE_DEFAULT)
+        scheme_summary["assigned"][code] += 1
+    return_queue = []
+    for wagon_number, prep in prep_by_wagon.items():
+        if not prep.get("returns_materials"):
+            continue
+        status = prep.get("return_status") or ""
+        if status == RETURN_STATUS_RETURNED:
+            scheme_summary["returned_box_wagons"] += 1
+            continue
+        scheme_summary["returning_box_wagons"] += 1
+        scheme_summary["return_capacity_wagons"] += int(prep.get("box_capacity_wagons") or 0)
+        wagon = active_by_number.get(wagon_number) or {
+            "number": wagon_number,
+            "stage": "history",
+            "stage_label": "В истории",
+            "location_label": "Только по расходникам",
+        }
+        return_queue.append(
+            {
+                "wagon_number": wagon_number,
+                "template_name": prep.get("template_name") or "",
+                "scheme_code": prep.get("scheme_code") or SCHEME_CODE_DEFAULT,
+                "return_status": status or RETURN_STATUS_PLANNED,
+                "origin_zone": prep.get("origin_zone") or "",
+                "return_target_zone": prep.get("return_target_zone") or "",
+                "actual_return_zone": prep.get("actual_return_zone") or "",
+                "box_capacity_wagons": int(prep.get("box_capacity_wagons") or 0),
+                "stage": wagon.get("stage") or "history",
+                "stage_label": wagon.get("stage_label") or "В истории",
+                "location_label": wagon.get("location_label") or "",
+            }
+        )
+
+    queue_numbers = set(active_by_number) | set(reserved_by_wagon) | set(prep_by_wagon)
     stage_rank = {"at_slot": 0, "departed": 1, "returning": 2, "available": 3}
     wagons = []
     for wagon_number in queue_numbers:
@@ -1134,7 +1662,17 @@ def materials_dashboard() -> dict:
                 "location_label": wagon.get("location_label") or "",
                 "template_id": prep.get("template_id"),
                 "template_name": prep.get("template_name") or "",
+                "scheme_code": prep.get("scheme_code") or SCHEME_CODE_DEFAULT,
+                "has_box": bool(prep.get("has_box")),
+                "returns_materials": bool(prep.get("returns_materials")),
+                "extra_units": int(prep.get("extra_units") or 0),
+                "k_goal": int(prep.get("k_goal") or 0),
+                "box_capacity_wagons": int(prep.get("box_capacity_wagons") or 0),
                 "prep_status": prep.get("prep_status") or "",
+                "origin_zone": prep.get("origin_zone") or "",
+                "return_status": prep.get("return_status") or "",
+                "return_target_zone": prep.get("return_target_zone") or "",
+                "actual_return_zone": prep.get("actual_return_zone") or "",
                 "reserved_item_count": reserved_item_count,
                 "shortage_count": shortage_count,
                 "is_ready": shortage_count == 0 and reserved_item_count > 0,
@@ -1156,11 +1694,17 @@ def materials_dashboard() -> dict:
         "materials": materials,
         "templates": templates,
         "wagons": wagons,
+        "scheme_summary": scheme_summary,
+        "return_queue": return_queue,
         "summary": {
             "material_count": len(materials),
             "template_count": len(templates),
             "low_stock_count": sum(1 for item in materials if item["low_stock"]),
             "overall_wagons_left": overall_wagons_left,
             "ready_wagons": sum(1 for item in wagons if item["is_ready"]),
+            "historical_k_total": scheme_summary["historical_k_total"],
+            "historical_extra_units": scheme_summary["historical_extra_units"],
+            "returning_box_wagons": scheme_summary["returning_box_wagons"],
+            "return_capacity_wagons": scheme_summary["return_capacity_wagons"],
         },
     }

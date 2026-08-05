@@ -40,6 +40,30 @@ def auto_writeoff_for_dispatch(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def sync_dispatch_scheme_meta(*args, **kwargs):
+    from taksimo_store_materials import sync_dispatch_scheme as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def mark_return_in_transit(*args, **kwargs):
+    from taksimo_store_materials import mark_return_in_transit as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def mark_return_target_zone(*args, **kwargs):
+    from taksimo_store_materials import mark_return_target_zone as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def mark_returned_to_zone(*args, **kwargs):
+    from taksimo_store_materials import mark_returned_to_zone as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def migrate_wagon_pool_fleet(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(wagon_pool)")}
     if "stage" not in cols:
@@ -167,6 +191,7 @@ def update_wagon_planned_zone(wagon_number: str, planned_zone: str) -> dict:
             "UPDATE wagon_pool SET planned_zone = ?, updated_at = ? WHERE number = ?",
             (zone, now, wagon_number),
         )
+        mark_return_target_zone(conn, wagon_number=wagon_number, target_zone=zone)
         conn.commit()
         row = conn.execute(
             "SELECT * FROM wagon_pool WHERE number = ?", (wagon_number,)
@@ -459,6 +484,10 @@ def update_wagon_slot(
                 wagon_number=new_wagon,
                 previous=prev_wagon,
             )
+            if new_wagon:
+                mark_returned_to_zone(
+                    conn, wagon_number=new_wagon, actual_zone=str(row["zone"])
+                )
         conn.commit()
     plan = wagon_plan()
     for zone_slots in plan["dead_ends"].values():
@@ -508,6 +537,17 @@ def _row_wagon_dispatch(row: sqlite3.Row) -> dict:
         "received_by": row["received_by"],
         "customer": row["customer"] or DEFAULT_CUSTOMER,
         "status": row["status"],
+        "scheme_template_id": int(row["scheme_template_id"] or 0),
+        "scheme_name": row["scheme_name"] or "",
+        "scheme_code": row["scheme_code"] or "",
+        "has_box": bool(row["has_box"]),
+        "returns_materials": bool(row["returns_materials"]),
+        "extra_units": int(row["extra_units"] or 0),
+        "k_goal": int(row["k_goal"] or 0),
+        "origin_zone": row["origin_zone"] or "",
+        "return_status": row["return_status"] or "",
+        "return_target_zone": row["return_target_zone"] or "",
+        "return_actual_zone": row["return_actual_zone"] or "",
     }
 
 
@@ -916,6 +956,12 @@ def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
             dispatch_id=dispatch_id,
             operator=operator,
         )
+        sync_dispatch_scheme_meta(
+            conn,
+            wagon_number=wagon_number,
+            dispatch_id=dispatch_id,
+            slot_zone=zone,
+        )
         conn.commit()
 
     result = get_wagon_dispatch(dispatch_id)
@@ -980,6 +1026,7 @@ def confirm_kodar_received(
             """,
             (now, wagon_number),
         )
+        mark_return_in_transit(conn, wagon_number=wagon_number, dispatch_id=did)
         conn.commit()
 
     result = get_wagon_dispatch(did)

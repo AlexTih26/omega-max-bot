@@ -196,6 +196,27 @@
     return options.join("");
   }
 
+  function slotWagonOptionsForZone(zone, selected) {
+    selected = (selected || "").trim();
+    var options = ['<option value="">— вагон из слота —</option>'];
+    var seen = {};
+    var list = (wagonPlanData && wagonPlanData.wagons_in_zone && wagonPlanData.wagons_in_zone[zone]) || [];
+    list.forEach(function (num) {
+      num = (num || "").trim();
+      if (!num || seen[num]) return;
+      seen[num] = true;
+      options.push(
+        '<option value="' + esc(num) + '"' + (num === selected ? " selected" : "") + ">" + esc(num) + "</option>"
+      );
+    });
+    if (selected && !seen[selected]) {
+      options.push(
+        '<option value="' + esc(selected) + '" selected>' + esc(selected) + " (вне слота)</option>"
+      );
+    }
+    return options.join("");
+  }
+
   function refreshDefaultWagonSelect() {
     var row = $("defaultWagonRow");
     var sel = $("defaultWagon");
@@ -298,6 +319,58 @@
     $("slabX").required = needXY;
     $("slabY").required = needXY;
     $("slabWagonRow").hidden = !needsWagon(zone);
+    if (needsWagon(zone)) {
+      var wagonSel = $("slabWagon");
+      var current = wagonSel.value || "";
+      wagonSel.innerHTML = slotWagonOptionsForZone(zone, current);
+    } else {
+      $("slabWagon").innerHTML = '<option value="">— вагон из слота —</option>';
+      $("slabWagon").value = "";
+    }
+  }
+
+  function slabSlotWagons(zone) {
+    return ((wagonPlanData && wagonPlanData.wagons_in_zone && wagonPlanData.wagons_in_zone[zone]) || [])
+      .map(function (num) { return (num || "").trim(); })
+      .filter(Boolean);
+  }
+
+  function handleSlabPlatformChange() {
+    var platformSel = $("slabPlatform");
+    var prevZone = (platformSel.dataset.prevZone || "").trim() || "ХРАНЕНИЯ";
+    var nextZone = (platformSel.value || "").trim();
+    if (!needsWagon(nextZone)) {
+      refreshSlabSheetFields();
+      platformSel.dataset.prevZone = nextZone;
+      return;
+    }
+    var slotWagons = slabSlotWagons(nextZone);
+    if (!slotWagons.length) {
+      alert(nextZone + ": нет вагонов в слотах");
+      platformSel.value = prevZone;
+      refreshSlabSheetFields();
+      return;
+    }
+    if (prevZone !== nextZone) {
+      var movingFromGround = needsCoords(prevZone) || !!($("slabX").value || $("slabY").value);
+      var message = movingFromGround
+        ? nextZone + ": перенести с земли в вагон? X/Y очистятся, затем выберите вагон из слота."
+        : nextZone + ": выберите вагон из слота.";
+      if (!confirm(message)) {
+        platformSel.value = prevZone;
+        refreshSlabSheetFields();
+        return;
+      }
+      $("slabX").value = "";
+      $("slabY").value = "";
+      $("slabWagon").value = "";
+    }
+    refreshSlabSheetFields();
+    platformSel.dataset.prevZone = nextZone;
+    if (!$("slabWagon").value) {
+      $("slabWagon").focus();
+      toast(nextZone + ": выберите вагон");
+    }
   }
 
   function formatDbTime(ts) {
@@ -2502,9 +2575,11 @@
         $("slabY").value = sl.pos_y;
         $("slabSuffix").innerHTML = suffixOptions(sl.suffix || "");
         $("slabPlatform").innerHTML = platformOptions(sl.platform_zone || "ХРАНЕНИЯ");
+        $("slabWagon").innerHTML = slotWagonOptionsForZone(sl.platform_zone || "ХРАНЕНИЯ", sl.wagon_number || "");
         $("slabWagon").value = sl.wagon_number || "";
         $("slabLoading").value = sl.loading_date || "";
         refreshSlabSheetFields();
+        $("slabPlatform").dataset.prevZone = $("slabPlatform").value || "ХРАНЕНИЯ";
       });
     } else {
       $("slabSheetTitle").textContent = "Новая координата";
@@ -2514,13 +2589,15 @@
       $("slabY").value = preset.pos_y || "";
       $("slabSuffix").innerHTML = suffixOptions("");
       $("slabPlatform").innerHTML = platformOptions("ХРАНЕНИЯ");
+      $("slabWagon").innerHTML = '<option value="">— вагон из слота —</option>';
       $("slabWagon").value = "";
       $("slabLoading").value = "";
       refreshSlabSheetFields();
+      $("slabPlatform").dataset.prevZone = $("slabPlatform").value || "ХРАНЕНИЯ";
     }
   }
 
-  $("slabPlatform").addEventListener("change", refreshSlabSheetFields);
+  $("slabPlatform").addEventListener("change", handleSlabPlatformChange);
   $("defaultPlatform").addEventListener("change", applyDefaultPlatformToRows);
   $("defaultWagon").addEventListener("change", function () {
     var w = this.value;
@@ -2562,7 +2639,7 @@
     if (!id) return;
     var zone = $("slabPlatform").value;
     if (needsWagon(zone) && !$("slabWagon").value.trim()) {
-      alert("Для " + zone + " укажите номер вагона");
+      alert(zone + ": выберите вагон из слота");
       return;
     }
     var body = {

@@ -346,6 +346,8 @@ def format_materials_report() -> list[str]:
     ctx = _collect_context()
     now = datetime.now(_tz()).strftime("%d.%m.%Y %H:%M")
     summary = (ctx["dashboard"].get("summary") or {})
+    scheme_summary = (ctx["dashboard"].get("scheme_summary") or {})
+    return_queue = (ctx["dashboard"].get("return_queue") or [])
     lines = [
         f"🧱 Материалы · {now}",
         "",
@@ -354,6 +356,9 @@ def format_materials_report() -> list[str]:
         f"🟡 Со 'скол': {ctx['wagons_with_skol']}",
         f"🟢 Готовы по комплекту: {summary.get('ready_wagons', 0)}",
         f"Хватит ещё на вагонов: {summary.get('overall_wagons_left', '—')}",
+        f"K по истории: {summary.get('historical_k_total', 0)}",
+        f"Допов A–F по истории: {summary.get('historical_extra_units', 0)}",
+        f"Возвратов по ящикам в работе: {summary.get('returning_box_wagons', 0)}",
         "",
         "Остатки по материалам:",
     ]
@@ -386,6 +391,37 @@ def format_materials_report() -> list[str]:
                 lines.append(_format_zone_line(wagon))
         else:
             lines.append("🟢 пусто")
+    if scheme_summary:
+        lines.extend(
+            [
+                "",
+                "📦 Циклы схем:",
+                "• назначено: С1 {} · С2 {} · С3 {}".format(
+                    (scheme_summary.get("assigned") or {}).get("scheme1", 0),
+                    (scheme_summary.get("assigned") or {}).get("scheme2", 0),
+                    (scheme_summary.get("assigned") or {}).get("scheme3", 0),
+                ),
+                "• ушло по схеме 2: {} · K накоплено: {}".format(
+                    (scheme_summary.get("dispatched") or {}).get("scheme2", 0),
+                    scheme_summary.get("historical_k_total", 0),
+                ),
+                "• допов A–F по истории: {}".format(
+                    scheme_summary.get("historical_extra_units", 0)
+                ),
+            ]
+        )
+    if return_queue:
+        lines.extend(["", "📥 Возвраты по ящикам:"])
+        for item in return_queue[:8]:
+            lines.append(
+                "• вагон {} · {} · откуда {} · куда {} · {}".format(
+                    item.get("wagon_number") or "—",
+                    item.get("template_name") or "схема",
+                    item.get("origin_zone") or "—",
+                    item.get("return_target_zone") or item.get("origin_zone") or "—",
+                    item.get("stage_label") or "—",
+                )
+            )
     skol_lines = []
     for zone in ctx["zones"]:
         for wagon in zone["wagons"]:
@@ -447,6 +483,24 @@ def format_materials_alerts() -> list[str]:
     if skol_lines:
         blocks.append(
             "\n".join(["🟡 Проверить вагоны со 'скол'", ""] + skol_lines)
+        )
+
+    return_queue = (ctx["dashboard"].get("return_queue") or [])
+    return_lines = []
+    for item in return_queue:
+        status = item.get("return_status") or ""
+        if status in ("planned_return", "in_transit_back"):
+            return_lines.append(
+                "🟡 вагон {} · {} · возврат {} -> {}".format(
+                    item.get("wagon_number") or "—",
+                    item.get("template_name") or "схема",
+                    item.get("origin_zone") or "—",
+                    item.get("return_target_zone") or item.get("origin_zone") or "—",
+                )
+            )
+    if return_lines:
+        blocks.append(
+            "\n".join(["🟡 Ожидаются возвраты материалов", ""] + return_lines[:8])
         )
 
     return blocks

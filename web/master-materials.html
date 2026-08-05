@@ -39,6 +39,34 @@
             <input class="tk-input" id="templateName" placeholder="Схема 1, Схема 2">
             <label class="tk-label" for="templateDescription">Описание</label>
             <input class="tk-input" id="templateDescription" placeholder="деревянная, металлоемкая, под блок-пакет">
+            <div class="tk-row2">
+              <div>
+                <label class="tk-label" for="templateSchemeCode">Тип схемы</label>
+                <select class="tk-select" id="templateSchemeCode">
+                  <option value="scheme1">Схема 1 · кольцо + допы</option>
+                  <option value="scheme2">Схема 2 · 16 K</option>
+                  <option value="scheme3">Схема 3 · с ящиком</option>
+                </select>
+              </div>
+              <div>
+                <label class="tk-label" for="templateExtraUnits">Допы A–F</label>
+                <input class="tk-input" id="templateExtraUnits" type="number" min="0" step="1" placeholder="2">
+              </div>
+            </div>
+            <div class="tk-row2">
+              <div>
+                <label class="tk-label" for="templateKGoal">K по схеме</label>
+                <input class="tk-input" id="templateKGoal" type="number" min="0" step="1" placeholder="0 или 16">
+              </div>
+              <div>
+                <label class="tk-label" for="templateBoxCapacity">Ёмкость ящика, вагонов</label>
+                <input class="tk-input" id="templateBoxCapacity" type="number" min="0" step="1" placeholder="0, 1, 2">
+              </div>
+            </div>
+            <div class="tk-row2">
+              <label class="tk-card-meta"><input type="checkbox" id="templateHasBox"> есть ящик</label>
+              <label class="tk-card-meta"><input type="checkbox" id="templateReturnsMaterials"> возвращает материалы</label>
+            </div>
             <div class="tk-actions">
               <button type="button" class="tk-btn tk-btn--primary" id="templateCreateBtn">Создать схему</button>
             </div>
@@ -167,8 +195,14 @@
         </div>
 
         <div>
+          <h3 class="tk-section-title">Циклы схем</h3>
+          <div class="tk-material-summary" id="schemeSummary"></div>
+
           <h3 class="tk-section-title">Остатки расходников</h3>
           <div class="tk-material-list" id="materialList"></div>
+
+          <h3 class="tk-section-title">Возвраты по ящикам</h3>
+          <div class="tk-material-list" id="returnQueue"></div>
         </div>
       </div>
 
@@ -182,6 +216,6 @@
 
     <div class="tk-toast" id="toast" hidden></div>
   </div>
-    <script src="/master-materials.js?v=5"></script>
+    <script src="/master-materials.js?v=6"></script>
 </body>
 </html>

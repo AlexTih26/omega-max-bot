@@ -602,6 +602,20 @@ async def handle_wagon_planned_zone(request: web.Request) -> web.Response:
         )
     except ValueError as e:
         return _json({"error": str(e)}, 400)
+    wagon_materials = get_wagon_materials(wagon_number) or {}
+    prep = (wagon_materials.get("prep") or {})
+    if prep.get("returns_materials") and wagon.get("stage") == "returning":
+        await _safe_notify_materials_chat(
+            "\n".join(
+                [
+                    "🟡 Возвратный вагон направлен в тупик",
+                    "",
+                    f"Вагон: {wagon_number}",
+                    f"Схема: {_scheme_chat_label(prep.get('template_name') or '')}",
+                    f"Куда вернуть: {wagon.get('planned_zone') or body.get('planned_zone') or '—'}",
+                ]
+            )
+        )
     return _json({"wagon": wagon})
 
 
@@ -712,6 +726,13 @@ async def handle_taksimo_material_templates(request: web.Request) -> web.Respons
         template = create_material_template(
             name=str(body.get("name") or ""),
             description=str(body.get("description") or ""),
+            scheme_code=str(body.get("scheme_code") or ""),
+            has_box=body.get("has_box"),
+            returns_materials=body.get("returns_materials"),
+            extra_ring_mode=str(body.get("extra_ring_mode") or ""),
+            extra_units=body.get("extra_units", 0),
+            k_goal=body.get("k_goal", 0),
+            box_capacity_wagons=body.get("box_capacity_wagons", 0),
         )
     except ValueError as e:
         return _json({"error": str(e)}, 400)
@@ -771,6 +792,19 @@ async def handle_taksimo_material_assign_template(request: web.Request) -> web.R
         f"Вагон: {wagon.get('wagon_number')}",
         f"Схема: {_scheme_chat_label(prep.get('template_name') or '')}",
     ]
+    if prep.get("k_goal"):
+        lines.append(f"K по схеме: {prep.get('k_goal')}")
+    if prep.get("extra_units"):
+        lines.append(f"Допы A–F: {prep.get('extra_units')}")
+    if prep.get("returns_materials"):
+        lines.append(
+            "Возврат: "
+            + (
+                prep.get("return_target_zone")
+                or prep.get("origin_zone")
+                or "ожидает тупик"
+            )
+        )
     if location:
         lines.append(f"Где стоит: {location}")
     if wagon.get("shortage_count"):

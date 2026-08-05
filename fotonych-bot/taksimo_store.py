@@ -380,6 +380,17 @@ def _migrate_wagon_dispatches(conn: sqlite3.Connection) -> None:
             slot_index INTEGER NOT NULL DEFAULT 0,
             slab_count INTEGER NOT NULL DEFAULT 0,
             blocks_json TEXT NOT NULL DEFAULT '[]',
+            scheme_template_id INTEGER NOT NULL DEFAULT 0,
+            scheme_name TEXT NOT NULL DEFAULT '',
+            scheme_code TEXT NOT NULL DEFAULT '',
+            has_box INTEGER NOT NULL DEFAULT 0,
+            returns_materials INTEGER NOT NULL DEFAULT 0,
+            extra_units INTEGER NOT NULL DEFAULT 0,
+            k_goal INTEGER NOT NULL DEFAULT 0,
+            origin_zone TEXT NOT NULL DEFAULT '',
+            return_status TEXT NOT NULL DEFAULT '',
+            return_target_zone TEXT NOT NULL DEFAULT '',
+            return_actual_zone TEXT NOT NULL DEFAULT '',
             dispatched_at REAL NOT NULL,
             dispatched_by TEXT NOT NULL DEFAULT '',
             received_at REAL,
@@ -391,6 +402,23 @@ def _migrate_wagon_dispatches(conn: sqlite3.Connection) -> None:
             ON wagon_dispatches(wagon_number, status);
         """
     )
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(wagon_dispatches)")}
+    additions = {
+        "scheme_template_id": "INTEGER NOT NULL DEFAULT 0",
+        "scheme_name": "TEXT NOT NULL DEFAULT ''",
+        "scheme_code": "TEXT NOT NULL DEFAULT ''",
+        "has_box": "INTEGER NOT NULL DEFAULT 0",
+        "returns_materials": "INTEGER NOT NULL DEFAULT 0",
+        "extra_units": "INTEGER NOT NULL DEFAULT 0",
+        "k_goal": "INTEGER NOT NULL DEFAULT 0",
+        "origin_zone": "TEXT NOT NULL DEFAULT ''",
+        "return_status": "TEXT NOT NULL DEFAULT ''",
+        "return_target_zone": "TEXT NOT NULL DEFAULT ''",
+        "return_actual_zone": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, ddl in additions.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE wagon_dispatches ADD COLUMN {name} {ddl}")
 
 
 def init_taksimo_db() -> None:
@@ -645,6 +673,8 @@ def _ensure_zone_wagon_slot(
     conn: sqlite3.Connection,
     zone: str,
     wagon_number: str,
+    *,
+    require_existing_slot: bool = False,
 ) -> None:
     zone = _normalize_platform(zone)
     if zone not in WAGON_ZONES:
@@ -663,6 +693,8 @@ def _ensure_zone_wagon_slot(
         "SELECT 1 FROM wagon_slots WHERE zone = ? AND wagon_number = ? LIMIT 1",
         (zone, wagon_number),
     ).fetchone()
+    if require_existing_slot and not in_slot:
+        raise ValueError(f"{zone}: выберите вагон из слота этого тупика")
     if not in_slot and int(active) >= MAX_WAGONS_PER_DEAD_END:
         raise ValueError(
             f"{zone}: в тупике уже {MAX_WAGONS_PER_DEAD_END} вагонов, освободите слот"
@@ -1543,7 +1575,14 @@ def update_slab(slab_id: int, *, data: dict) -> dict:
                 adding=1,
             )
         if placement["wagon_number"]:
-            _ensure_zone_wagon_slot(conn, placement["platform_zone"], placement["wagon_number"])
+            _ensure_zone_wagon_slot(
+                conn,
+                placement["platform_zone"],
+                placement["wagon_number"],
+                require_existing_slot=(
+                    old_zone == "ХРАНЕНИЯ" and placement["platform_zone"] in WAGON_ZONES
+                ),
+            )
             _ensure_wagon_capacity(
                 conn,
                 placement["wagon_number"],

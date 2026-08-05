@@ -7,7 +7,7 @@ from maxapi import Bot, Dispatcher
 from maxapi.enums.chat_type import ChatType
 from maxapi.filters import ChannelPostFilter
 from maxapi.filters.command import Command, CommandStart
-from maxapi.types import BotAdded, BotStarted, Command, MessageCreated
+from maxapi.types import BotAdded, BotStarted, Command, MessageCreated, UserAdded
 from maxapi.types.updates.message_edited import MessageEdited
 from maxapi.types.command import BotCommand
 from maxapi.types.updates.message_callback import MessageCallback
@@ -38,6 +38,16 @@ from drivers_chat import (
 )
 from taksimo_backup import backup_taksimo_db, daily_backup_loop
 from taksimo_notify import daily_report_loop, notify_chat_id, set_bot as set_taksimo_bot
+from materials_chat import (
+    handle_materials_chat_message,
+    is_materials_chat,
+    materials_report_loop,
+    materials_watch_loop,
+    send_materials_welcome,
+    send_materials_user_welcome,
+    set_bot as set_materials_bot,
+    MATERIALS_WELCOME,
+)
 from keyboards import (
     CB_CLEAR,
     CB_HELP,
@@ -122,10 +132,23 @@ async def on_bot_added(event: BotAdded) -> None:
         except Exception:
             logger.exception("bot_added: приветствие водителей chat_id=%s", event.chat_id)
         return
+    if is_materials_chat(event.chat_id):
+        try:
+            await send_materials_welcome(bot, chat_id=event.chat_id)
+        except Exception:
+            logger.exception("bot_added: приветствие материалов chat_id=%s", event.chat_id)
+        return
     try:
         await send_menu_message(chat_id=event.chat_id)
     except Exception:
         logger.exception("bot_added: не удалось отправить меню в chat_id=%s", event.chat_id)
+
+
+@dp.user_added()
+async def on_user_added(event: UserAdded) -> None:
+    if event.is_channel or not is_materials_chat(event.chat_id):
+        return
+    await send_materials_user_welcome(bot, chat_id=event.chat_id, user=event.user)
 
 
 channel_post = ChannelPostFilter()
@@ -152,6 +175,9 @@ async def on_start(event: MessageCreated) -> None:
     if is_taksimo_chat(event.message.recipient.chat_id):
         await event.message.answer(TAKSIMO_FIND_HINT, attachments=taksimo_find_attachments())
         return
+    if is_materials_chat(event.message.recipient.chat_id):
+        await event.message.answer(MATERIALS_WELCOME)
+        return
     sender = event.message.sender
     uid = sender.user_id if sender else None
     await event.message.answer(MENU_TEXT, attachments=menu_attachments(user_id=uid))
@@ -161,7 +187,7 @@ async def on_start(event: MessageCreated) -> None:
 async def on_admin(event: MessageCreated) -> None:
     if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
         event.message.recipient.chat_id
-    ):
+    ) or is_materials_chat(event.message.recipient.chat_id):
         return
     sender = event.message.sender
     if not sender:
@@ -187,6 +213,8 @@ async def on_taksimo_menu_command(event: MessageCreated) -> None:
     if is_taksimo_chat(event.message.recipient.chat_id):
         await event.message.answer(TAKSIMO_FIND_HINT, attachments=taksimo_find_attachments())
         return
+    if is_materials_chat(event.message.recipient.chat_id):
+        return
     await event.message.answer(
         "Меню Таксимо — в чате отчётов площадки.\n"
         "Сервис: https://avtmsk.ru/taksimo.html"
@@ -199,10 +227,30 @@ async def on_taksimo_chat(event: MessageCreated) -> None:
     if chat_id is None:
         await event.message.answer("Команда /taksimo_chat работает в групповом чате MAX.")
         return
+    if is_materials_chat(chat_id):
+        await event.message.answer(
+            "Чат расходников:\n\n"
+            f"MATERIALS_CHAT_ID={chat_id}\n\n"
+            "Добавьте в .env и перезапустите бота."
+        )
+        return
     await event.message.answer(
         "Чат для уведомлений Таксимо:\n\n"
         f"TAKSIMO_NOTIFY_CHAT_ID={chat_id}\n\n"
         "Добавьте эту строку в .env на сервере и перезапустите бота."
+    )
+
+
+@dp.message_created(Command("materials_chat"))
+async def on_materials_chat_cmd(event: MessageCreated) -> None:
+    chat_id = event.message.recipient.chat_id
+    if chat_id is None:
+        await event.message.answer("Команда /materials_chat — в групповом чате MAX.")
+        return
+    await event.message.answer(
+        "Чат расходников:\n\n"
+        f"MATERIALS_CHAT_ID={chat_id}\n\n"
+        "Добавьте в .env и перезапустите бота."
     )
 
 
@@ -211,6 +259,13 @@ async def on_drivers_chat_cmd(event: MessageCreated) -> None:
     chat_id = event.message.recipient.chat_id
     if chat_id is None:
         await event.message.answer("Команда /drivers_chat — в групповом чате MAX.")
+        return
+    if is_materials_chat(chat_id):
+        await event.message.answer(
+            "Чат расходников:\n\n"
+            f"MATERIALS_CHAT_ID={chat_id}\n\n"
+            "Добавьте в .env и перезапустите бота."
+        )
         return
     await event.message.answer(
         "Чат водителей:\n\n"
@@ -235,7 +290,7 @@ def _ai_question_from_message(event: MessageCreated) -> str:
 async def on_my_id(event: MessageCreated) -> None:
     if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
         event.message.recipient.chat_id
-    ):
+    ) or is_materials_chat(event.message.recipient.chat_id):
         return
     sender = event.message.sender
     if not sender:
@@ -253,7 +308,7 @@ async def on_my_id(event: MessageCreated) -> None:
 async def on_ai(event: MessageCreated) -> None:
     if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
         event.message.recipient.chat_id
-    ):
+    ) or is_materials_chat(event.message.recipient.chat_id):
         return
 
     question = _ai_question_from_message(event)
@@ -281,7 +336,7 @@ async def on_ai(event: MessageCreated) -> None:
 async def on_clear(event: MessageCreated) -> None:
     if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
         event.message.recipient.chat_id
-    ):
+    ) or is_materials_chat(event.message.recipient.chat_id):
         return
     sender = event.message.sender
     if sender:
@@ -303,6 +358,10 @@ async def on_callback(event: MessageCallback) -> None:
 
     if is_drivers_chat(chat_id) and payload in (CB_CLEAR, CB_HELP, CB_MENU):
         await event.answer(notification="Меню закреплено сверху")
+        return
+
+    if is_materials_chat(chat_id) and payload in (CB_CLEAR, CB_HELP, CB_MENU):
+        await event.answer(notification="Меню OMEGA здесь не используется")
         return
 
     if payload == CB_CLEAR:
@@ -352,6 +411,10 @@ async def on_message(event: MessageCreated) -> None:
         await handle_taksimo_chat_message(event)
         return
 
+    if is_materials_chat(event.message.recipient.chat_id):
+        await handle_materials_chat_message(event)
+        return
+
     sender = event.message.sender
     if sender and sender.is_bot:
         return
@@ -376,6 +439,9 @@ async def main() -> None:
         BotCommand(name="ai", description="Служебный ИИ-помощник"),
         BotCommand(name="clear", description="Очистить память ИИ"),
         BotCommand(name="taksimo_chat", description="ID чата уведомлений Таксимо"),
+        BotCommand(name="materials_chat", description="ID чата расходников"),
+        BotCommand(name="materials_now", description="Сводка расходников сейчас"),
+        BotCommand(name="materials_alerts", description="Флаги по расходникам"),
         BotCommand(name="drivers_chat", description="ID чата водителей"),
         BotCommand(name="menu", description="Меню Таксимо (в чате отчётов)"),
         BotCommand(name="taksimo", description="Меню Таксимо"),
@@ -383,6 +449,7 @@ async def main() -> None:
     set_bot(bot)
     set_taksimo_bot(bot)
     set_drivers_bot(bot)
+    set_materials_bot(bot)
     backup_taksimo_db(reason="startup")
     api_runner = await start_comments_api()
     drivers_cid = drivers_chat_id()
@@ -395,6 +462,8 @@ async def main() -> None:
             logger.exception("Не удалось загрузить реестр водителей")
     report_task = asyncio.create_task(daily_report_loop())
     backup_task = asyncio.create_task(daily_backup_loop())
+    materials_report_task = asyncio.create_task(materials_report_loop())
+    materials_watch_task = asyncio.create_task(materials_watch_loop())
     drivers_remind_task = None
     if drivers_reminder_enabled():
         drivers_remind_task = asyncio.create_task(drivers_reminder_loop())
@@ -403,6 +472,8 @@ async def main() -> None:
     finally:
         report_task.cancel()
         backup_task.cancel()
+        materials_report_task.cancel()
+        materials_watch_task.cancel()
         if drivers_remind_task is not None:
             drivers_remind_task.cancel()
         await api_runner.cleanup()

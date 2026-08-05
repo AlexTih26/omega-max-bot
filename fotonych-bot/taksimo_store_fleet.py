@@ -34,6 +34,12 @@ WAGON_STAGE_LABELS = {
 }
 
 
+def auto_writeoff_for_dispatch(*args, **kwargs):
+    from taksimo_store_materials import auto_writeoff_for_dispatch as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def migrate_wagon_pool_fleet(conn: sqlite3.Connection) -> None:
     cols = {row[1] for row in conn.execute("PRAGMA table_info(wagon_pool)")}
     if "stage" not in cols:
@@ -903,6 +909,12 @@ def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
             WHERE number = ?
             """,
             (now, wagon_number),
+        )
+        auto_writeoff_for_dispatch(
+            conn,
+            wagon_number=wagon_number,
+            dispatch_id=dispatch_id,
+            operator=operator,
         )
         conn.commit()
 

@@ -456,6 +456,9 @@ def init_taksimo_db() -> None:
         _migrate_sessions(conn)
         _migrate_slabs(conn)
         _migrate_wagon_dispatches(conn)
+        from taksimo_store_materials import migrate_materials
+
+        migrate_materials(conn)
         from taksimo_time import migrate_legacy_completion_labels
 
         migrated = migrate_legacy_completion_labels(conn)
@@ -1914,3 +1917,22 @@ from taksimo_store_fleet import (  # noqa: E402
 
 wagon_plan = _fleet_wagon_plan
 update_wagon_slot = _fleet_update_wagon_slot
+
+from taksimo_store_materials import (  # noqa: E402
+    MATERIAL_UNITS,
+    add_material_receipt,
+    add_template_item,
+    adjust_material_stock,
+    auto_writeoff_for_dispatch,
+    assign_template_to_wagon,
+    create_material_item,
+    create_material_template,
+    finalize_wagon_materials,
+    get_material_item,
+    get_wagon_materials,
+    list_material_items,
+    list_material_templates,
+    materials_dashboard,
+    reserve_material_for_wagon,
+    update_material_item,
+)

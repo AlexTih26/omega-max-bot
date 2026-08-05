@@ -15,6 +15,7 @@
     letters: ["A", "B", "C", "D", "E", "F", "K"],
     suffixes: ["", "к", "а", "тк", "скол"],
     platform_zones: ["ХРАНЕНИЯ", "ГРУЗОВОЙ", "ТУРАН", "В ПУТИ"],
+    material_units: ["шт", "кг", "м", "пачка", "рулон"],
     grid_x: 13,
     grid_y: 25,
     max_slabs_per_cell: 4,
@@ -32,6 +33,8 @@
   var wagonCardCatalog = [];
   var activeWagonCardNumber = "";
   var wagonCardSearchTimer = null;
+  var materialsSnapshot = null;
+  var activeMaterialWagonNumber = "";
 
   function yardCellPx() {
     var w = window.innerWidth || 0;
@@ -60,6 +63,7 @@
     search: document.getElementById("panelSearch"),
     history: document.getElementById("panelHistory"),
     wagons: document.getElementById("panelWagons"),
+    materials: document.getElementById("panelMaterials"),
     export: document.getElementById("panelExport"),
   };
 
@@ -320,6 +324,14 @@
     if (!days && minutes) parts.push(minutes + " мин");
     if (!parts.length) parts.push("0 мин");
     return parts.join(" ");
+  }
+
+  function formatQty(value) {
+    var num = Number(value || 0);
+    if (!isFinite(num)) return "0";
+    return Math.abs(num - Math.round(num)) < 0.001
+      ? String(Math.round(num))
+      : num.toFixed(3).replace(/\.?0+$/, "");
   }
 
   function wagonStageBadgeClass(stage) {
@@ -657,6 +669,329 @@
       .catch(function (err) {
         showWagonCardEmpty(err.message || "Не удалось открыть вагон");
       });
+  }
+
+  function materialUnitOptions(selected) {
+    var units = (meta.material_units || ["шт", "кг", "м", "пачка", "рулон"]).slice();
+    if (selected && units.indexOf(selected) < 0) units.push(selected);
+    return units.map(function (unit) {
+      return '<option value="' + esc(unit) + '"' + (unit === selected ? " selected" : "") + ">" + esc(unit) + "</option>";
+    }).join("");
+  }
+
+  function renderMaterialSummary(data) {
+    var box = $("materialSummary");
+    if (!box) return;
+    var summary = (data && data.summary) || {};
+    box.innerHTML =
+      '<div class="tk-material-metric"><b>' + esc(summary.material_count || 0) + '</b><span>материалов</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(summary.low_stock_count || 0) + '</b><span>ниже минимума</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(summary.ready_wagons || 0) + '</b><span>вагонов обеспечено</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(summary.overall_wagons_left != null ? summary.overall_wagons_left : "—") + '</b><span>хватит ещё на вагонов</span></div>';
+  }
+
+  function renderMaterialList(materials) {
+    var box = $("materialList");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!(materials || []).length) {
+      box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>Материалов пока нет. Добавьте первую позицию.</div></div>";
+      return;
+    }
+    materials.forEach(function (item) {
+      var card = document.createElement("div");
+      card.className = "tk-card tk-material-card";
+      card.dataset.materialId = String(item.id);
+      var warnClass = item.low_stock ? " tk-material-low" : "";
+      card.innerHTML =
+        '<div class="tk-material-card-top">' +
+        '<div class="tk-card-title">' + esc(item.name) + '</div>' +
+        '<div class="tk-card-meta' + warnClass + '">' +
+        (item.low_stock ? "ниже минимума" : "норма на вагон") +
+        ": " + esc(formatQty(item.norm_per_wagon)) + " " + esc(item.unit) +
+        '</div></div>' +
+        '<div class="tk-material-grid">' +
+        '<div class="tk-material-metric"><b>' + esc(formatQty(item.on_hand)) + '</b><span>физически, ' + esc(item.unit) + '</span></div>' +
+        '<div class="tk-material-metric"><b>' + esc(formatQty(item.reserved)) + '</b><span>в резерве</span></div>' +
+        '<div class="tk-material-metric"><b>' + esc(formatQty(item.available)) + '</b><span>свободно</span></div>' +
+        '<div class="tk-material-metric"><b>' + esc(item.available_wagons != null ? item.available_wagons : "—") + '</b><span>вагонов по норме</span></div>' +
+        '</div>' +
+        '<div class="tk-row2">' +
+        '<div><label class="tk-label">Ед. изм.</label><select class="tk-select" data-field="unit">' + materialUnitOptions(item.unit) + '</select></div>' +
+        '<div><label class="tk-label">Мин. остаток</label><input class="tk-input" data-field="min_level" type="number" min="0" step="0.001" value="' + esc(item.min_level) + '"></div>' +
+        '</div>' +
+        '<div class="tk-row2">' +
+        '<div><label class="tk-label">Название</label><input class="tk-input" data-field="name" value="' + esc(item.name) + '"></div>' +
+        '<div><label class="tk-label">Норма на вагон</label><input class="tk-input" data-field="norm_per_wagon" type="number" min="0" step="0.001" value="' + esc(item.norm_per_wagon) + '"></div>' +
+        '</div>' +
+        '<div class="tk-material-inline-actions">' +
+        '<input class="tk-input" data-field="receipt_qty" type="number" min="0" step="0.001" placeholder="Приход: количество">' +
+        '<button type="button" class="tk-btn" data-act="receipt">Приход</button>' +
+        '<button type="button" class="tk-btn tk-btn--primary" data-act="save">Сохранить</button>' +
+        '</div>';
+      card.querySelector('[data-act="save"]').addEventListener("click", function () {
+        saveMaterialItem(item.id, card);
+      });
+      card.querySelector('[data-act="receipt"]').addEventListener("click", function () {
+        addMaterialReceipt(item.id, card);
+      });
+      box.appendChild(card);
+    });
+  }
+
+  function refreshMaterialSelectors() {
+    if ($("materialUnit")) {
+      $("materialUnit").innerHTML = materialUnitOptions(($("materialUnit").value || "шт"));
+    }
+    var materials = (materialsSnapshot && materialsSnapshot.materials) || [];
+    var wagons = (materialsSnapshot && materialsSnapshot.wagons) || [];
+    if ($("materialReserveMaterial")) {
+      $("materialReserveMaterial").innerHTML =
+        '<option value="">— выберите материал —</option>' +
+        materials.map(function (item) {
+          return '<option value="' + item.id + '">' + esc(item.name) + " · свободно " + esc(formatQty(item.available)) + " " + esc(item.unit) + '</option>';
+        }).join("");
+    }
+    if ($("materialReserveWagon")) {
+      $("materialReserveWagon").innerHTML =
+        '<option value="">— выберите вагон —</option>' +
+        wagons.map(function (wagon) {
+          return '<option value="' + esc(wagon.number) + '">' + esc(wagon.number + " · " + (wagon.stage_label || "")) + '</option>';
+        }).join("");
+    }
+  }
+
+  function renderMaterialWagons(wagons) {
+    var box = $("materialWagonList");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!(wagons || []).length) {
+      box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>Активных вагонов для мастера пока нет.</div></div>";
+      return;
+    }
+    wagons.forEach(function (wagon) {
+      var card = document.createElement("div");
+      card.className = "tk-card tk-card--click";
+      if (wagon.is_ready) card.classList.add("tk-material-wagon-card--ready");
+      else if (wagon.shortage_count > 0) card.classList.add("tk-material-wagon-card--warn");
+      card.innerHTML =
+        '<div class="tk-material-card-top">' +
+        '<div class="tk-card-title">Вагон ' + esc(wagon.number) + '</div>' +
+        '<div class="tk-card-meta">' + esc(wagon.stage_label || "—") + '</div>' +
+        '</div>' +
+        '<div class="tk-card-meta">' + esc(wagon.location_label || "—") + '</div>' +
+        '<div class="tk-card-meta">Резервов: ' + esc(wagon.reserved_item_count || 0) +
+        " · дефицит: " + esc(wagon.shortage_count || 0) +
+        (wagon.shortage_names && wagon.shortage_names.length ? " · " + esc(wagon.shortage_names.join(", ")) : "") +
+        '</div>';
+      card.addEventListener("click", function () {
+        loadMaterialWagon(wagon.number);
+      });
+      box.appendChild(card);
+    });
+  }
+
+  function loadMaterialsOverview(options) {
+    options = options || {};
+    return apiFetch("/api/taksimo/materials/overview")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        materialsSnapshot = data;
+        meta.material_units = data.units || meta.material_units;
+        renderMaterialSummary(data);
+        renderMaterialList(data.materials || []);
+        renderMaterialWagons(data.wagons || []);
+        refreshMaterialSelectors();
+        if (activeMaterialWagonNumber && !options.skipDetailRefresh) {
+          return loadMaterialWagon(activeMaterialWagonNumber, { scroll: false });
+        }
+      })
+      .catch(function (err) {
+        var box = $("materialList");
+        if (box) box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>Не удалось загрузить расходники</div></div>";
+        if (err && err.message && err.message !== "auth") alert(err.message);
+      });
+  }
+
+  function saveMaterialItem(materialId, root) {
+    var body = {
+      name: root.querySelector('[data-field="name"]').value.trim(),
+      unit: root.querySelector('[data-field="unit"]').value,
+      min_level: root.querySelector('[data-field="min_level"]').value || 0,
+      norm_per_wagon: root.querySelector('[data-field="norm_per_wagon"]').value || 0,
+    };
+    apiFetch("/api/taksimo/materials/items/" + materialId, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        toast("Материал сохранён");
+        loadMaterialsOverview();
+      })
+      .catch(function (err) { alert(err.message || "Ошибка сохранения"); });
+  }
+
+  function addMaterialReceipt(materialId, root) {
+    var qtyEl = root.querySelector('[data-field="receipt_qty"]');
+    var quantity = qtyEl ? qtyEl.value : "";
+    apiFetch("/api/taksimo/materials/receipt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ material_id: materialId, quantity: quantity }),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        if (qtyEl) qtyEl.value = "";
+        toast("Приход сохранён");
+        loadMaterialsOverview();
+      })
+      .catch(function (err) { alert(err.message || "Ошибка прихода"); });
+  }
+
+  function createMaterialItem() {
+    var body = {
+      name: $("materialName").value.trim(),
+      unit: $("materialUnit").value,
+      min_level: $("materialMin").value || 0,
+      norm_per_wagon: $("materialNorm").value || 0,
+    };
+    apiFetch("/api/taksimo/materials/items", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        $("materialName").value = "";
+        $("materialMin").value = "";
+        $("materialNorm").value = "";
+        $("materialUnit").value = "шт";
+        toast("Материал добавлен");
+        loadMaterialsOverview();
+      })
+      .catch(function (err) { alert(err.message || "Ошибка добавления"); });
+  }
+
+  function reserveMaterialForWagonUi() {
+    var body = {
+      wagon_number: $("materialReserveWagon").value,
+      material_id: $("materialReserveMaterial").value,
+      quantity: $("materialReserveQty").value,
+      note: $("materialReserveNote").value.trim(),
+    };
+    apiFetch("/api/taksimo/materials/reserve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        activeMaterialWagonNumber = body.wagon_number;
+        $("materialReserveQty").value = "";
+        $("materialReserveNote").value = "";
+        toast("Резерв создан");
+        loadMaterialsOverview({ skipDetailRefresh: true }).then(function () {
+          loadMaterialWagon(body.wagon_number, { scroll: true });
+        });
+      })
+      .catch(function (err) { alert(err.message || "Ошибка резерва"); });
+  }
+
+  function loadMaterialWagon(wagonNumber, options) {
+    options = options || {};
+    if (!wagonNumber) return Promise.resolve();
+    activeMaterialWagonNumber = wagonNumber;
+    var box = $("materialWagonDetail");
+    if (box) {
+      box.hidden = false;
+      box.innerHTML = "<h4>Вагон " + esc(wagonNumber) + "</h4><p>Загрузка расходников…</p>";
+    }
+    return apiFetch("/api/taksimo/materials/wagons/" + encodeURIComponent(wagonNumber))
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        var wagon = res.data.wagon;
+        if (!box || !wagon) return;
+        var items = wagon.items || [];
+        var rowsHtml = items.length
+          ? "<ul class='tk-list'>" +
+            items.map(function (item) {
+              return (
+                "<li class='tk-card'>" +
+                "<div class='tk-material-card-top'><div class='tk-card-title'>" + esc(item.name) + "</div>" +
+                "<div class='tk-card-meta'>норма " + esc(formatQty(item.norm_per_wagon)) + " " + esc(item.unit) + "</div></div>" +
+                "<div class='tk-card-meta'>резерв: " + esc(formatQty(item.reserved_qty)) + " · факт уже ушёл: " + esc(formatQty(item.consumed_qty)) + " · дефицит: " + esc(formatQty(item.shortage_qty)) + " " + esc(item.unit) + "</div>" +
+                '<label class="tk-label">Факт списания</label>' +
+                '<input class="tk-input" data-actual-material="' + item.material_id + '" type="number" min="0" step="0.001" value="' + esc(item.actual_default_qty) + '">' +
+                "</li>"
+              );
+            }).join("") +
+            "</ul>"
+          : "<p class='tk-card-meta'>По этому вагону ещё нет нормативов или резервов.</p>";
+        box.hidden = false;
+        box.innerHTML =
+          "<h4>Вагон " + esc(wagon.wagon_number) + "</h4>" +
+          "<p>" + esc((wagon.wagon && wagon.wagon.stage_label) || "—") +
+          ((wagon.wagon && wagon.wagon.location_label) ? " · " + esc(wagon.wagon.location_label) : "") +
+          "<br>Резервов: " + esc(wagon.reserved_item_count || 0) +
+          " · дефицит: " + esc(wagon.shortage_count || 0) +
+          "</p>" +
+          itemsHtmlSafe(rowsHtml) +
+          (wagon.has_reserves
+            ? '<div class="tk-actions"><button type="button" class="tk-btn tk-btn--primary" id="materialFinalizeBtn">Списать факт по вагону</button></div>'
+            : "");
+        var finalizeBtn = $("materialFinalizeBtn");
+        if (finalizeBtn) {
+          finalizeBtn.addEventListener("click", function () {
+            finalizeMaterialWagon(wagon.wagon_number, items);
+          });
+        }
+        if (options.scroll !== false) {
+          box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      })
+      .catch(function (err) {
+        if (box) {
+          box.hidden = false;
+          box.innerHTML = "<h4>Расходники вагона</h4><p>" + esc(err.message || "Не удалось загрузить вагон") + "</p>";
+        }
+      });
+  }
+
+  function itemsHtmlSafe(html) {
+    return html;
+  }
+
+  function finalizeMaterialWagon(wagonNumber, items) {
+    var payload = {
+      items: (items || []).map(function (item) {
+        var input = document.querySelector('[data-actual-material="' + item.material_id + '"]');
+        return {
+          material_id: item.material_id,
+          actual_qty: input ? input.value : item.actual_default_qty,
+        };
+      }),
+    };
+    apiFetch("/api/taksimo/materials/wagons/" + encodeURIComponent(wagonNumber) + "/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        toast("Факт расхода списан");
+        loadMaterialsOverview({ skipDetailRefresh: true }).then(function () {
+          loadMaterialWagon(wagonNumber, { scroll: false });
+        });
+      })
+      .catch(function (err) { alert(err.message || "Ошибка списания"); });
   }
 
   function loadWagonHistory() {
@@ -1399,6 +1734,9 @@
       loadWagonCards();
       loadWagonHistory();
     }
+    if (name === "materials") {
+      loadMaterialsOverview();
+    }
     loadStats();
     if (name === "search") {
       var sq = $("searchQ");
@@ -1459,6 +1797,9 @@
       var letterSel = $("slabLetter");
       letterSel.innerHTML = letterOptions("A");
       $("slabSuffix").innerHTML = suffixOptions("");
+      if ($("materialUnit")) {
+        $("materialUnit").innerHTML = materialUnitOptions("шт");
+      }
     });
   }
 
@@ -1510,10 +1851,13 @@
         card.dataset.slotId = String(slot.id);
         card.setAttribute("role", "button");
         card.tabIndex = 0;
-        var blocks = (slot.slabs || []).map(function (s) {
+        var blockList = (slot.slabs || []).map(function (s) {
           return s.letter + s.number;
+        });
+        var blocks = blockList.join(" ");
+        var expected = (slot.expected_blocks || []).filter(function (item) {
+          return blockList.indexOf(item) === -1;
         }).join(" ");
-        var expected = (slot.expected_blocks || []).join(" ");
         var count = slot.slab_count || 0;
         var maxSlabs = (data && data.max_slabs_per_wagon) || meta.max_wagon_slabs || 9;
         var starBtn =
@@ -1977,6 +2321,7 @@
       .then(function (r) { return r.json(); })
       .then(function (data) {
         renderWagonPlan(data);
+        if (activeTab === "materials") loadMaterialsOverview({ skipDetailRefresh: true });
         return data;
       })
       .catch(function () {});
@@ -2195,6 +2540,8 @@
       loadWagonCards();
     }, 180);
   });
+  $("materialCreateBtn").addEventListener("click", createMaterialItem);
+  $("materialReserveBtn").addEventListener("click", reserveMaterialForWagonUi);
 
   function closeSlabSheet() {
     $("slabSheet").hidden = true;

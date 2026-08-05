@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import date
 
 from aiohttp import web
 
 from docs_upload import list_documents, save_upload
+from materials_chat import notify_event as notify_materials_chat_event
 from taksimo_export import build_registry_workbook, build_yard_workbook, save_registry_copy
 from taksimo_auth import can_delete, user_from_request
 from taksimo_notify import (
@@ -27,6 +29,7 @@ from taksimo_store import (
     DEFAULT_CUSTOMER,
     DEFAULT_GRID_X,
     DEFAULT_GRID_Y,
+    MATERIAL_UNITS,
     MAX_SLABS_PER_CELL,
     MAX_WAGON_SLABS,
     MAX_WAGONS_PER_DEAD_END,
@@ -38,24 +41,38 @@ from taksimo_store import (
     SUFFIXES,
     TaksimoConflictError,
     KodarBlockedError,
+    add_material_receipt,
+    add_template_item,
+    adjust_material_stock,
     add_wagon_numbers,
     confirm_kodar_received,
     count_sessions,
     create_session,
+    create_material_item,
+    create_material_template,
     db_status,
     delete_session,
     delete_slab,
     dispatch_wagon_to_kodar,
+    assign_template_to_wagon,
+    finalize_wagon_materials,
+    get_material_item,
     get_wagon_card,
+    get_wagon_materials,
     get_session,
     get_slab,
     init_taksimo_db,
+    list_material_items,
+    list_material_templates,
+    materials_dashboard,
     list_sessions,
     list_wagon_cards,
     list_vehicles,
     list_wagon_dispatch_history,
     list_wagon_pool,
+    reserve_material_for_wagon,
     unified_search,
+    update_material_item,
     update_session,
     update_slab,
     update_wagon_planned_zone,
@@ -66,6 +83,42 @@ from taksimo_store import (
     yard_map,
     yard_stats,
 )
+
+
+def _require_materials_admin(request: web.Request) -> str | web.Response:
+    user = user_from_request(request)
+    if not can_delete(user):
+        return _json({"error": "Только оператор1 может редактировать расходники"}, 403)
+    return user or ""
+
+
+def _material_chat_location(wagon_payload: dict) -> str:
+    wagon_card = (wagon_payload or {}).get("wagon") or {}
+    parts = []
+    location = (wagon_card.get("location_label") or "").strip()
+    if location:
+        parts.append(location)
+    slot_label = (wagon_card.get("slot_label") or "").strip()
+    if slot_label and slot_label not in parts:
+        parts.append(slot_label)
+    return " · ".join(parts)
+
+
+def _scheme_chat_label(raw: str) -> str:
+    name = (raw or "").strip()
+    if not name:
+        return "—"
+    match = re.search(r"(\d+)", name)
+    if match:
+        return f"схема №{match.group(1)}"
+    return name
+
+
+async def _safe_notify_materials_chat(text: str) -> None:
+    try:
+        await notify_materials_chat_event(text)
+    except Exception:
+        logger.exception("Материалы чат: не удалось отправить служебное сообщение")
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +231,7 @@ async def handle_taksimo_meta(_request: web.Request) -> web.Response:
             "max_wagon_slabs": MAX_WAGON_SLABS,
             "max_wagons_per_dead_end": MAX_WAGONS_PER_DEAD_END,
             "wagon_pool": list_wagon_pool(),
+            "material_units": list(MATERIAL_UNITS),
             "stats": yard_stats(),
             "db": _db_status_payload(),
         }
@@ -444,7 +498,13 @@ async def handle_taksimo_fleet_extras(request: web.Request) -> web.Response:
     slots: list[dict] = []
     for zone_slots in (plan.get("dead_ends") or {}).values():
         slots.extend(zone_slots)
-    extras = analyze_fleet_extras(slots, max_slabs=MAX_WAGON_SLABS, zone=zone or None)
+    dispatches = list_wagon_dispatch_history(limit=200)
+    extras = analyze_fleet_extras(
+        slots,
+        max_slabs=MAX_WAGON_SLABS,
+        zone=zone or None,
+        dispatches=dispatches,
+    )
     notify = (request.rel_url.query.get("notify") or "").strip() in ("1", "true", "yes")
     if notify:
         asyncio.create_task(notify_fleet_extras(extras, zone=zone or "ТУРАН"))
@@ -572,6 +632,306 @@ async def handle_taksimo_wagon_card(request: web.Request) -> web.Response:
     return _json({"wagon": card})
 
 
+async def handle_taksimo_materials_overview(_request: web.Request) -> web.Response:
+    return _json(materials_dashboard())
+
+
+async def handle_taksimo_material_item(request: web.Request) -> web.Response:
+    if request.method == "POST":
+        operator = _require_materials_admin(request)
+        if isinstance(operator, web.Response):
+            return operator
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            return _json({"error": "invalid json"}, 400)
+        try:
+            item = create_material_item(
+                name=str(body.get("name") or ""),
+                unit=str(body.get("unit") or "шт"),
+                min_level=body.get("min_level", 0),
+                norm_per_wagon=body.get("norm_per_wagon", 0),
+            )
+        except ValueError as e:
+            return _json({"error": str(e)}, 400)
+        await _safe_notify_materials_chat(
+            "\n".join(
+                [
+                    "🟢 Новый материал",
+                    "",
+                    f"Материал: {item.get('name')}",
+                    f"Ед. изм.: {item.get('unit')}",
+                    f"Минимум: {item.get('min_level')}",
+                    f"Норма на вагон: {item.get('norm_per_wagon')}",
+                ]
+            )
+        )
+        return _json({"item": item}, 201)
+
+    try:
+        material_id = int(request.match_info["material_id"])
+    except (KeyError, ValueError):
+        return _json({"error": "invalid material_id"}, 400)
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        item = update_material_item(material_id, body)
+    except ValueError as e:
+        return _json({"error": str(e)}, 400)
+    await _safe_notify_materials_chat(
+        "\n".join(
+            [
+                "🟡 Материал отредактирован",
+                "",
+                f"Материал: {item.get('name')}",
+                f"Ед. изм.: {item.get('unit')}",
+                f"Минимум: {item.get('min_level')}",
+                f"Норма на вагон: {item.get('norm_per_wagon')}",
+            ]
+        )
+    )
+    return _json({"item": item})
+
+
+async def handle_taksimo_material_templates(request: web.Request) -> web.Response:
+    if request.method == "GET":
+        return _json({"templates": list_material_templates()})
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        template = create_material_template(
+            name=str(body.get("name") or ""),
+            description=str(body.get("description") or ""),
+        )
+    except ValueError as e:
+        return _json({"error": str(e)}, 400)
+    return _json({"template": template}, 201)
+
+
+async def handle_taksimo_material_template_item(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        template_id = int(request.match_info["template_id"])
+    except (KeyError, ValueError):
+        return _json({"error": "invalid template_id"}, 400)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        item = add_template_item(
+            template_id,
+            material_id=int(body.get("material_id")),
+            qty_norm=body.get("qty_norm", 0),
+            work_type=str(body.get("work_type") or ""),
+            feature_text=str(body.get("feature_text") or ""),
+            tool_text=str(body.get("tool_text") or ""),
+            norm_minutes=body.get("norm_minutes", 0),
+            line_no=body.get("line_no"),
+        )
+    except (TypeError, ValueError) as e:
+        return _json({"error": str(e)}, 400)
+    return _json({"item": item}, 201)
+
+
+async def handle_taksimo_material_assign_template(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        wagon = assign_template_to_wagon(
+            str(body.get("wagon_number") or ""),
+            template_id=int(body.get("template_id")),
+            operator=operator,
+            note=str(body.get("note") or ""),
+        )
+    except (TypeError, ValueError) as e:
+        return _json({"error": str(e)}, 400)
+    prep = (wagon or {}).get("prep") or {}
+    location = _material_chat_location(wagon or {})
+    lines = [
+        "🟡 Назначена схема вагону",
+        "",
+        f"Вагон: {wagon.get('wagon_number')}",
+        f"Схема: {_scheme_chat_label(prep.get('template_name') or '')}",
+    ]
+    if location:
+        lines.append(f"Где стоит: {location}")
+    if wagon.get("shortage_count"):
+        lines.append(f"Дефицит позиций: {wagon.get('shortage_count')}")
+    await _safe_notify_materials_chat("\n".join(lines))
+    return _json({"wagon": wagon})
+
+
+async def handle_taksimo_material_receipt(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        material_id = int(body.get("material_id"))
+        item = add_material_receipt(
+            material_id,
+            quantity=body.get("quantity"),
+            operator=operator,
+            note=str(body.get("note") or ""),
+        )
+    except (TypeError, ValueError) as e:
+        return _json({"error": str(e)}, 400)
+    await _safe_notify_materials_chat(
+        "\n".join(
+            [
+                "🟢 Приход материала",
+                "",
+                f"Материал: {item.get('name')}",
+                f"Приход: {body.get('quantity')} {item.get('unit')}",
+                f"Факт: {item.get('on_hand')} {item.get('unit')}",
+                f"Свободно: {item.get('available')} {item.get('unit')}",
+            ]
+        )
+    )
+    return _json({"item": item})
+
+
+async def handle_taksimo_material_adjust(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        material_id = int(body.get("material_id"))
+        item = adjust_material_stock(
+            material_id,
+            quantity=body.get("quantity"),
+            operator=operator,
+            note=str(body.get("note") or ""),
+        )
+    except (TypeError, ValueError) as e:
+        return _json({"error": str(e)}, 400)
+    await _safe_notify_materials_chat(
+        "\n".join(
+            [
+                "🟡 Корректировка материала",
+                "",
+                f"Материал: {item.get('name')}",
+                f"Изменение: {body.get('quantity')} {item.get('unit')}",
+                f"Факт: {item.get('on_hand')} {item.get('unit')}",
+                f"Свободно: {item.get('available')} {item.get('unit')}",
+            ]
+        )
+    )
+    return _json({"item": item})
+
+
+async def handle_taksimo_material_reserve(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        material_id = int(body.get("material_id"))
+        wagon = reserve_material_for_wagon(
+            material_id,
+            wagon_number=str(body.get("wagon_number") or ""),
+            quantity=body.get("quantity"),
+            operator=operator,
+            note=str(body.get("note") or ""),
+        )
+    except (TypeError, ValueError) as e:
+        return _json({"error": str(e)}, 400)
+    material = get_material_item(material_id)
+    location = _material_chat_location(wagon or {})
+    reserved_item = next(
+        (
+            item
+            for item in ((wagon or {}).get("items") or [])
+            if int(item.get("id") or 0) == material_id
+        ),
+        None,
+    )
+    lines = [
+        "🟡 Резерв под вагон",
+        "",
+        f"Вагон: {wagon.get('wagon_number')}",
+        f"Материал: {(material or {}).get('name') or material_id}",
+        f"Резерв: {body.get('quantity')} {(material or {}).get('unit') or ''}".rstrip(),
+    ]
+    if location:
+        lines.append(f"Где стоит: {location}")
+    if material:
+        lines.append(f"Свободно после резерва: {material.get('available')} {material.get('unit')}")
+    if reserved_item and float(reserved_item.get("shortage_qty") or 0) > 0:
+        lines.append(
+            f"Остался дефицит: {reserved_item.get('shortage_qty')} {reserved_item.get('unit')}"
+        )
+    await _safe_notify_materials_chat("\n".join(lines))
+    return _json({"wagon": wagon})
+
+
+async def handle_taksimo_material_wagon(request: web.Request) -> web.Response:
+    wagon_number = (request.match_info.get("wagon_number") or "").strip()
+    if not wagon_number:
+        return _json({"error": "wagon_number required"}, 400)
+    if request.method == "GET":
+        wagon = get_wagon_materials(wagon_number)
+        if not wagon:
+            return _json({"error": "not found"}, 404)
+        return _json({"wagon": wagon})
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        wagon = finalize_wagon_materials(
+            wagon_number,
+            items=body.get("items") or [],
+            operator=operator,
+            note=str(body.get("note") or ""),
+        )
+    except ValueError as e:
+        return _json({"error": str(e)}, 400)
+    location = _material_chat_location(wagon or {})
+    lines = [
+        "🟢 Материалы по вагону закрыты",
+        "",
+        f"Вагон: {wagon.get('wagon_number')}",
+    ]
+    if location:
+        lines.append(f"Где стоит: {location}")
+    lines.append(f"Дефицит позиций: {wagon.get('shortage_count', 0)}")
+    await _safe_notify_materials_chat("\n".join(lines))
+    return _json({"wagon": wagon})
+
+
 async def handle_taksimo_export_yard(_request: web.Request) -> web.Response:
     data = build_yard_workbook()
     headers = {
@@ -606,6 +966,18 @@ def register_taksimo_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo/wagons/history", handle_taksimo_wagon_history)
     app.router.add_get("/api/taksimo/wagons/catalog", handle_taksimo_wagon_catalog)
     app.router.add_get("/api/taksimo/wagons/card/{wagon_number}", handle_taksimo_wagon_card)
+    app.router.add_get("/api/taksimo/materials/overview", handle_taksimo_materials_overview)
+    app.router.add_post("/api/taksimo/materials/items", handle_taksimo_material_item)
+    app.router.add_put("/api/taksimo/materials/items/{material_id}", handle_taksimo_material_item)
+    app.router.add_get("/api/taksimo/materials/templates", handle_taksimo_material_templates)
+    app.router.add_post("/api/taksimo/materials/templates", handle_taksimo_material_templates)
+    app.router.add_post("/api/taksimo/materials/templates/{template_id}/items", handle_taksimo_material_template_item)
+    app.router.add_post("/api/taksimo/materials/preps/assign", handle_taksimo_material_assign_template)
+    app.router.add_post("/api/taksimo/materials/receipt", handle_taksimo_material_receipt)
+    app.router.add_post("/api/taksimo/materials/adjust", handle_taksimo_material_adjust)
+    app.router.add_post("/api/taksimo/materials/reserve", handle_taksimo_material_reserve)
+    app.router.add_get("/api/taksimo/materials/wagons/{wagon_number}", handle_taksimo_material_wagon)
+    app.router.add_post("/api/taksimo/materials/wagons/{wagon_number}/finalize", handle_taksimo_material_wagon)
     app.router.add_put(
         "/api/taksimo/wagons/pool/{wagon_number}/planned-zone",
         handle_wagon_planned_zone,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 RING_LETTERS = ("A", "B", "C", "D", "E", "F", "K")
 EXTRA_LETTERS = ("A", "B", "C", "D", "E", "F")
 RING_EXTRAS = 2
@@ -148,11 +150,28 @@ def _pool_missing_for_next_ring(pool: dict[str, int]) -> list[str]:
     return [letter for letter in EXTRA_LETTERS if pool[letter] < 1]
 
 
+def _format_pool_counts(pool: dict[str, int]) -> str:
+    parts = [f"{letter}×{pool[letter]}" for letter in EXTRA_LETTERS if pool[letter] > 0]
+    return ", ".join(parts) if parts else "нет"
+
+
+def _dispatch_blocks_to_slabs(dispatch: dict) -> list[dict]:
+    slabs: list[dict] = []
+    for block in dispatch.get("blocks") or []:
+        label = (block.get("label") or "").strip().upper()
+        match = re.match(r"^([A-ZА-Я])\s*([0-9]+)$", label)
+        if not match:
+            continue
+        slabs.append({"letter": match.group(1), "number": match.group(2)})
+    return slabs
+
+
 def analyze_fleet_extras(
     slots: list[dict],
     *,
     max_slabs: int = SCHEME1_WAGON_SLOTS,
     zone: str | None = None,
+    dispatches: list[dict] | None = None,
 ) -> dict:
     """★★ Допы по парку: целые кольца вычитаем, считаем запасные A–F и K до 16."""
     filtered = [
@@ -164,23 +183,28 @@ def analyze_fleet_extras(
     filtered.sort(
         key=lambda s: (str(s.get("zone") or ""), int(s.get("slot_index") or 0))
     )
+    filtered_dispatches = [
+        dispatch
+        for dispatch in (dispatches or [])
+        if (dispatch.get("wagon_number") or "").strip()
+        and (zone is None or str(dispatch.get("slot_zone") or "") == zone)
+    ]
+    filtered_dispatches.sort(
+        key=lambda item: float(item.get("dispatched_at") or 0),
+        reverse=True,
+    )
 
     wagon_extras: list[dict] = []
     pool = {letter: 0 for letter in EXTRA_LETTERS}
     complete_rings = 0
-    total_k = 0
-    k_in_complete_rings = 0
+    departed_complete_rings = 0
     hints: list[str] = []
 
     for slot in filtered:
         slabs = slot.get("slabs") or []
         decomposed = decompose_wagon_ring(slabs, max_slabs=max_slabs)
-        counts = _letter_counts(slabs)
-        total_k += counts.get("K", 0)
-
         if decomposed["ring_complete"]:
             complete_rings += 1
-            k_in_complete_rings += 1
             extras = decomposed["extras"]
             wagon_extras.append(
                 {
@@ -205,6 +229,19 @@ def analyze_fleet_extras(
                 }
             )
 
+    cycle_dispatches: list[dict] = []
+    cycle_room_left = max(0, SCHEME2_K_GOAL - complete_rings)
+    if cycle_room_left:
+        cycle_dispatches = filtered_dispatches[:cycle_room_left]
+    for dispatch in cycle_dispatches:
+        slabs = _dispatch_blocks_to_slabs(dispatch)
+        decomposed = decompose_wagon_ring(slabs, max_slabs=max_slabs)
+        if not decomposed["ring_complete"]:
+            continue
+        departed_complete_rings += 1
+        for letter in decomposed["extras"]:
+            pool[letter] += 1
+
     spare_rings_complete = (
         min(pool[letter] for letter in EXTRA_LETTERS) if any(pool.values()) else 0
     )
@@ -220,7 +257,15 @@ def analyze_fleet_extras(
             if w.get("extras")
         ]
         if parts:
-            hints.append("Допы по вагонам: " + " | ".join(parts))
+            hints.append("Допы в слотах: " + " | ".join(parts))
+
+    if complete_rings or departed_complete_rings:
+        hints.append(
+            f"По циклу: в слотах {complete_rings} · ушло {departed_complete_rings}"
+        )
+
+    if any(pool.values()):
+        hints.append("Накоплено допов A–F: " + _format_pool_counts(pool))
 
     if spare_rings_complete:
         hints.append(
@@ -236,12 +281,12 @@ def analyze_fleet_extras(
         else:
             hints.append("Из допов можно собрать ещё одно кольцо A–F")
 
-    k_pool = max(0, total_k - k_in_complete_rings)
+    k_pool = complete_rings + departed_complete_rings
     k_left = max(0, SCHEME2_K_GOAL - k_pool)
 
     if k_pool >= SCHEME2_K_GOAL:
         hints.append("Готовь отправку: 16 K в следующем вагоне")
-    elif k_pool > 0 or total_k > 0:
+    elif k_pool > 0:
         hints.append(f"K для схемы 16: {k_pool}/{SCHEME2_K_GOAL} · не хватает {k_left}")
 
     kits_complete = complete_rings
@@ -253,10 +298,11 @@ def analyze_fleet_extras(
         "missing_spare_ring": missing_spare,
         "complete_rings": complete_rings,
         "kits_complete": kits_complete,
+        "departed_complete_rings": departed_complete_rings,
         "k_pool": k_pool,
         "k_goal": SCHEME2_K_GOAL,
         "k_left": k_left,
-        "hints": hints[:6],
+        "hints": hints[:7],
         "show_hint_star": bool(hints),
     }
 

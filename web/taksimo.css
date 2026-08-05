@@ -1701,6 +1701,103 @@ body {
   padding: 10px 12px;
 }
 
+.tk-material-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tk-material-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.tk-material-form {
+  padding-top: 2px;
+}
+
+.tk-material-list,
+.tk-material-wagons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tk-material-card {
+  padding: 12px;
+}
+
+.tk-material-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.tk-material-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tk-material-metric {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tk-material-metric b {
+  display: block;
+  color: var(--tk-gold);
+  font-size: 0.92rem;
+}
+
+.tk-material-metric span {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: #9ca3af;
+}
+
+.tk-material-low {
+  color: #fca5a5;
+}
+
+.tk-material-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.tk-material-inline-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.tk-material-inline-actions .tk-btn {
+  min-width: 100px;
+}
+
+.tk-material-inline-actions .tk-input {
+  flex: 1;
+  min-width: 110px;
+}
+
+.tk-material-wagon-card--ready {
+  border-color: rgba(74, 222, 128, 0.45);
+}
+
+.tk-material-wagon-card--warn {
+  border-color: rgba(251, 191, 36, 0.45);
+}
+
 .tk-slot-settings[open] > summary {
   margin-bottom: 10px;
 }
@@ -1751,6 +1848,15 @@ body {
 
   .tk-wagon-card-layout {
     grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .tk-material-summary {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .tk-material-layout {
+    grid-template-columns: minmax(320px, 0.95fr) minmax(0, 1.05fr);
     align-items: start;
   }
 

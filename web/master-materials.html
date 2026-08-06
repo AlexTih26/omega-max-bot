@@ -156,6 +156,7 @@
 
           <h3 class="tk-section-title">Резерв под вагон</h3>
           <div class="tk-card tk-material-form" id="materialReserveCard">
+            <p class="tk-card-meta">Сначала назначьте вагону схему. Ниже для резерва будут доступны только материалы этой схемы.</p>
             <div class="tk-row2">
               <div>
                 <label class="tk-label" for="materialReserveWagon">Вагон</label>
@@ -164,9 +165,9 @@
                 </select>
               </div>
               <div>
-                <label class="tk-label" for="materialReserveMaterial">Материал</label>
+                <label class="tk-label" for="materialReserveMaterial">Материал схемы</label>
                 <select class="tk-select" id="materialReserveMaterial">
-                  <option value="">— выберите материал —</option>
+                  <option value="">— сначала выберите вагон —</option>
                 </select>
               </div>
             </div>
@@ -216,6 +217,6 @@
 
     <div class="tk-toast" id="toast" hidden></div>
   </div>
-    <script src="/master-materials.js?v=6"></script>
+    <script src="/master-materials.js?v=7"></script>
 </body>
 </html>

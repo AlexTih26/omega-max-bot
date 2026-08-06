@@ -1966,6 +1966,7 @@ from taksimo_store_materials import (  # noqa: E402
     assign_template_to_wagon,
     create_material_item,
     create_material_template,
+    delete_template_item,
     finalize_wagon_materials,
     get_material_item,
     get_wagon_materials,
@@ -1974,4 +1975,6 @@ from taksimo_store_materials import (  # noqa: E402
     materials_dashboard,
     reserve_material_for_wagon,
     update_material_item,
+    update_material_template,
+    update_template_item,
 )

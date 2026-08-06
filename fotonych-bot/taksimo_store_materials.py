@@ -632,6 +632,19 @@ def list_material_templates() -> list[dict]:
         ).fetchall()
         out = []
         for row in rows:
+            items_rows = conn.execute(
+                """
+                SELECT
+                    i.*,
+                    m.name AS material_name,
+                    m.unit AS material_unit
+                FROM material_template_items i
+                JOIN material_items m ON m.id = i.material_id
+                WHERE i.template_id = ?
+                ORDER BY i.sort_order, i.line_no, i.id
+                """,
+                (int(row["id"]),),
+            ).fetchall()
             item_count = conn.execute(
                 """
                 SELECT COUNT(*), COALESCE(SUM(norm_minutes), 0)
@@ -648,6 +661,21 @@ def list_material_templates() -> list[dict]:
                     **_template_meta(row),
                     "item_count": int(item_count[0] or 0),
                     "total_norm_minutes": round(float(item_count[1] or 0), 3),
+                    "items": [
+                        {
+                            "id": int(item["id"]),
+                            "line_no": int(item["line_no"] or 0),
+                            "material_id": int(item["material_id"]),
+                            "material_name": item["material_name"],
+                            "material_unit": item["material_unit"] or "шт",
+                            "qty_norm": round(float(item["norm_qty"] or 0), 3),
+                            "work_type": item["work_type"] or "",
+                            "feature_text": item["feature_text"] or "",
+                            "tool_text": item["tool_text"] or "",
+                            "norm_minutes": round(float(item["norm_minutes"] or 0), 3),
+                        }
+                        for item in items_rows
+                    ],
                 }
             )
         return out
@@ -772,7 +800,7 @@ def add_template_item(
                 (template_id,),
             ).fetchone()
             line_no = int(row[0] or 1)
-        conn.execute(
+        cur = conn.execute(
             """
             INSERT INTO material_template_items (
                 template_id, material_id, norm_qty, sort_order, line_no,
@@ -794,9 +822,11 @@ def add_template_item(
         )
         conn.commit()
     return {
+        "id": int(cur.lastrowid or 0),
         "template_id": template_id,
         "material_id": material_id,
         "material_name": material["name"],
+        "material_unit": material["unit"] or "шт",
         "qty_norm": qty_norm,
         "work_type": work_type,
         "feature_text": feature_text,
@@ -804,6 +834,157 @@ def add_template_item(
         "norm_minutes": norm_minutes,
         "line_no": line_no,
     }
+
+
+def update_material_template(template_id: int, data: dict) -> dict:
+    now = time.time()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM material_templates WHERE id = ? AND active = 1",
+            (template_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("Схема не найдена")
+        name = (
+            data["name"] if "name" in data else row["name"]
+        )
+        description = (
+            data["description"] if "description" in data else row["description"]
+        )
+        name = (name or "").strip()
+        description = (description or "").strip()
+        if not name:
+            raise ValueError("Укажите название схемы")
+        existing = conn.execute(
+            "SELECT id FROM material_templates WHERE name = ? AND id != ? AND active = 1",
+            (name, template_id),
+        ).fetchone()
+        if existing:
+            raise ValueError("Такая схема уже есть")
+        scheme_code = _normalize_scheme_code(data.get("scheme_code") or row["scheme_code"])
+        has_box = _normalize_bool_flag(data.get("has_box") if "has_box" in data else row["has_box"])
+        returns_materials = _normalize_bool_flag(
+            data.get("returns_materials") if "returns_materials" in data else row["returns_materials"]
+        )
+        extra_ring_mode = (
+            data["extra_ring_mode"] if "extra_ring_mode" in data else row["extra_ring_mode"]
+        )
+        extra_ring_mode = (extra_ring_mode or "").strip()
+        extra_units = _normalize_non_negative_int(
+            data.get("extra_units", row["extra_units"]), field_name="Допы схемы"
+        )
+        k_goal = _normalize_non_negative_int(
+            data.get("k_goal", row["k_goal"]), field_name="K по схеме"
+        )
+        box_capacity_wagons = _normalize_non_negative_int(
+            data.get("box_capacity_wagons", row["box_capacity_wagons"]),
+            field_name="Ёмкость ящика",
+        )
+        conn.execute(
+            """
+            UPDATE material_templates
+            SET name = ?, description = ?, scheme_code = ?, has_box = ?,
+                returns_materials = ?, extra_ring_mode = ?, extra_units = ?,
+                k_goal = ?, box_capacity_wagons = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                name,
+                description,
+                scheme_code,
+                has_box,
+                returns_materials,
+                extra_ring_mode,
+                extra_units,
+                k_goal,
+                box_capacity_wagons,
+                now,
+                template_id,
+            ),
+        )
+        conn.commit()
+    templates = list_material_templates()
+    template = next((item for item in templates if item["id"] == template_id), None)
+    if not template:
+        raise RuntimeError("Не удалось обновить схему")
+    return template
+
+
+def update_template_item(template_item_id: int, data: dict) -> dict:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT i.*, m.name AS material_name, m.unit AS material_unit
+            FROM material_template_items i
+            JOIN material_items m ON m.id = i.material_id
+            WHERE i.id = ?
+            """,
+            (template_item_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("Строка схемы не найдена")
+        material_id = int(data.get("material_id") or row["material_id"])
+        material = _get_material_row(conn, material_id)
+        qty_norm = _normalize_non_negative(
+            data.get("qty_norm", row["norm_qty"]), field_name="Норма количества"
+        )
+        norm_minutes = _normalize_non_negative(
+            data.get("norm_minutes", row["norm_minutes"]), field_name="Норма времени"
+        )
+        work_type = data["work_type"] if "work_type" in data else row["work_type"]
+        feature_text = (
+            data["feature_text"] if "feature_text" in data else row["feature_text"]
+        )
+        tool_text = data["tool_text"] if "tool_text" in data else row["tool_text"]
+        work_type = (work_type or "").strip()
+        feature_text = (feature_text or "").strip()
+        tool_text = (tool_text or "").strip()
+        line_no = _normalize_non_negative_int(
+            data.get("line_no", row["line_no"]), field_name="Номер строки"
+        ) or int(row["line_no"] or 1)
+        conn.execute(
+            """
+            UPDATE material_template_items
+            SET material_id = ?, norm_qty = ?, sort_order = ?, line_no = ?,
+                work_type = ?, feature_text = ?, tool_text = ?, norm_minutes = ?
+            WHERE id = ?
+            """,
+            (
+                material_id,
+                qty_norm,
+                line_no,
+                line_no,
+                work_type,
+                feature_text,
+                tool_text,
+                norm_minutes,
+                template_item_id,
+            ),
+        )
+        conn.commit()
+    return {
+        "id": template_item_id,
+        "template_id": int(row["template_id"]),
+        "material_id": material_id,
+        "material_name": material["name"],
+        "material_unit": material["unit"] or "шт",
+        "qty_norm": qty_norm,
+        "work_type": work_type,
+        "feature_text": feature_text,
+        "tool_text": tool_text,
+        "norm_minutes": norm_minutes,
+        "line_no": line_no,
+    }
+
+
+def delete_template_item(template_item_id: int) -> bool:
+    with _connect() as conn:
+        cur = conn.execute(
+            "DELETE FROM material_template_items WHERE id = ?",
+            (template_item_id,),
+        )
+        conn.commit()
+        return bool(cur.rowcount)
 
 
 def assign_template_to_wagon(
@@ -992,6 +1173,21 @@ def reserve_material_for_wagon(
     qty = _normalize_quantity(quantity)
     with _connect() as conn:
         row = _get_material_row(conn, material_id)
+        prep = _latest_prep_row(conn, wagon_number)
+        if prep and prep["template_id"]:
+            allowed = {
+                int(item["material_id"])
+                for item in conn.execute(
+                    """
+                    SELECT material_id
+                    FROM material_template_items
+                    WHERE template_id = ?
+                    """,
+                    (int(prep["template_id"]),),
+                ).fetchall()
+            }
+            if allowed and material_id not in allowed:
+                raise ValueError("Для этого вагона выбирайте материал только из назначенной схемы")
         snap = _material_snapshot(conn, material_id)
         if qty > snap["available"]:
             raise ValueError(

@@ -51,6 +51,7 @@ from taksimo_store import (
     create_material_item,
     create_material_template,
     db_status,
+    delete_template_item,
     delete_session,
     delete_slab,
     dispatch_wagon_to_kodar,
@@ -73,8 +74,10 @@ from taksimo_store import (
     reserve_material_for_wagon,
     unified_search,
     update_material_item,
+    update_material_template,
     update_session,
     update_slab,
+    update_template_item,
     update_wagon_planned_zone,
     update_wagon_slot,
     validate_session_complete,
@@ -739,6 +742,25 @@ async def handle_taksimo_material_templates(request: web.Request) -> web.Respons
     return _json({"template": template}, 201)
 
 
+async def handle_taksimo_material_template_detail(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        template_id = int(request.match_info["template_id"])
+    except (KeyError, ValueError):
+        return _json({"error": "invalid template_id"}, 400)
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        template = update_material_template(template_id, body)
+    except ValueError as e:
+        return _json({"error": str(e)}, 400)
+    return _json({"template": template})
+
+
 async def handle_taksimo_material_template_item(request: web.Request) -> web.Response:
     operator = _require_materials_admin(request)
     if isinstance(operator, web.Response):
@@ -765,6 +787,31 @@ async def handle_taksimo_material_template_item(request: web.Request) -> web.Res
     except (TypeError, ValueError) as e:
         return _json({"error": str(e)}, 400)
     return _json({"item": item}, 201)
+
+
+async def handle_taksimo_material_template_item_detail(
+    request: web.Request,
+) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        template_item_id = int(request.match_info["template_item_id"])
+    except (KeyError, ValueError):
+        return _json({"error": "invalid template_item_id"}, 400)
+    if request.method == "DELETE":
+        if not delete_template_item(template_item_id):
+            return _json({"error": "not found"}, 404)
+        return _json({"ok": True})
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    try:
+        item = update_template_item(template_item_id, body)
+    except ValueError as e:
+        return _json({"error": str(e)}, 400)
+    return _json({"item": item})
 
 
 async def handle_taksimo_material_assign_template(request: web.Request) -> web.Response:
@@ -1005,7 +1052,19 @@ def register_taksimo_routes(app: web.Application) -> None:
     app.router.add_put("/api/taksimo/materials/items/{material_id}", handle_taksimo_material_item)
     app.router.add_get("/api/taksimo/materials/templates", handle_taksimo_material_templates)
     app.router.add_post("/api/taksimo/materials/templates", handle_taksimo_material_templates)
+    app.router.add_put(
+        "/api/taksimo/materials/templates/{template_id}",
+        handle_taksimo_material_template_detail,
+    )
     app.router.add_post("/api/taksimo/materials/templates/{template_id}/items", handle_taksimo_material_template_item)
+    app.router.add_put(
+        "/api/taksimo/materials/templates/items/{template_item_id}",
+        handle_taksimo_material_template_item_detail,
+    )
+    app.router.add_delete(
+        "/api/taksimo/materials/templates/items/{template_item_id}",
+        handle_taksimo_material_template_item_detail,
+    )
     app.router.add_post("/api/taksimo/materials/preps/assign", handle_taksimo_material_assign_template)
     app.router.add_post("/api/taksimo/materials/receipt", handle_taksimo_material_receipt)
     app.router.add_post("/api/taksimo/materials/adjust", handle_taksimo_material_adjust)

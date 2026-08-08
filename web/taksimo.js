@@ -1378,6 +1378,26 @@
     return errors;
   }
 
+  function findDuplicateSlabInDraft(slabs) {
+    var seen = {};
+    for (var i = 0; i < (slabs || []).length; i += 1) {
+      var item = slabs[i] || {};
+      var letter = String(item.letter || "").trim().toUpperCase();
+      var number = String(item.number || "").trim();
+      if (!letter || !number) continue;
+      var key = letter + "|" + number;
+      if (seen[key] != null) {
+        return {
+          label: letter + number,
+          firstRow: seen[key] + 1,
+          secondRow: i + 1,
+        };
+      }
+      seen[key] = i;
+    }
+    return null;
+  }
+
   function setSaveStatus(state, message) {
     var el = $("saveStatus");
     if (!el) return;
@@ -2756,6 +2776,16 @@
     if (placementErrors.length) {
       updateAllPlacementHints();
       alert(placementErrors.join("\n"));
+      return Promise.resolve();
+    }
+    var duplicateDraft = findDuplicateSlabInDraft(slabs);
+    if (duplicateDraft) {
+      alert(
+        "Плита " + duplicateDraft.label +
+        " повторяется в текущей форме: строки " +
+        duplicateDraft.firstRow + " и " + duplicateDraft.secondRow +
+        ". Исправьте номер до сохранения."
+      );
       return Promise.resolve();
     }
     var payload = {

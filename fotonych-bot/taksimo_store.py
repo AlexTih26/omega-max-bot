@@ -165,6 +165,58 @@ def _slab_label(letter: str, number: str, suffix: str = "") -> str:
     return label
 
 
+def _slab_place_hint(row: sqlite3.Row | dict) -> str:
+    zone = (row.get("platform_zone") if isinstance(row, dict) else row["platform_zone"] or "").strip() or "ХРАНЕНИЯ"
+    wagon_number = (row.get("wagon_number") if isinstance(row, dict) else row["wagon_number"] or "").strip()
+    try:
+        pos_x = int(row.get("pos_x") if isinstance(row, dict) else row["pos_x"] or 0)
+        pos_y = int(row.get("pos_y") if isinstance(row, dict) else row["pos_y"] or 0)
+    except (TypeError, ValueError):
+        pos_x = pos_y = 0
+    parts = [zone]
+    if wagon_number:
+        parts.append(f"вагон {wagon_number}")
+    elif zone == "ХРАНЕНИЯ" and is_placed(pos_x, pos_y):
+        parts.append(f"{pos_x}/{pos_y}")
+    return " · ".join(parts)
+
+
+def _find_duplicate_slab_row(
+    conn: sqlite3.Connection,
+    *,
+    letter: str,
+    number: str,
+    exclude_ids: set[int] | None = None,
+) -> sqlite3.Row | None:
+    params: list = [letter, number]
+    sql = """
+        SELECT *
+        FROM slabs
+        WHERE letter = ? AND number = ?
+    """
+    exclude_ids = {int(x) for x in (exclude_ids or set()) if int(x) > 0}
+    if exclude_ids:
+        placeholders = ",".join("?" * len(exclude_ids))
+        sql += f" AND id NOT IN ({placeholders})"
+        params.extend(sorted(exclude_ids))
+    sql += " ORDER BY id DESC LIMIT 1"
+    return conn.execute(sql, params).fetchone()
+
+
+def _raise_duplicate_slab_error(
+    *,
+    letter: str,
+    number: str,
+    duplicate_row: sqlite3.Row,
+) -> None:
+    label = _slab_label(letter, number)
+    place = _slab_place_hint(duplicate_row)
+    raise ValueError(
+        f"Плита {label} уже есть в базе: {place}. "
+        "Проверьте поиск и исправьте номер до сохранения."
+    )
+
+
 def _resolve_loading_date(
     old: dict | None,
     zone: str,
@@ -758,6 +810,7 @@ def _persist_session_slabs(
     saved_slabs: list[dict] = []
     batch_at_cell: dict[tuple[int, int], int] = {}
     wagon_batch: dict[tuple[str, str], int] = {}
+    batch_labels: dict[tuple[str, str], int] = {}
     kept_ids: set[int] = set()
     form_slab_ids: set[int] = set()
     for s in slabs:
@@ -786,6 +839,13 @@ def _persist_session_slabs(
             if existing_id:
                 slab_id = existing_id
                 s["id"] = existing_id
+        batch_key = (letter, number)
+        batch_labels[batch_key] = batch_labels.get(batch_key, 0) + 1
+        if batch_labels[batch_key] > 1:
+            raise ValueError(
+                f"Плита {_slab_label(letter, number)} повторяется в текущем списке. "
+                "Проверьте строки до сохранения."
+            )
         old_slab = None
         if slab_id:
             old_row = conn.execute(
@@ -795,6 +855,18 @@ def _persist_session_slabs(
             if old_row:
                 old_slab = _row_slab(old_row)
         placement = _resolve_slab_placement(s, old=old_slab)
+        duplicate_row = _find_duplicate_slab_row(
+            conn,
+            letter=letter,
+            number=number,
+            exclude_ids=form_slab_ids | ({int(slab_id)} if slab_id else set()),
+        )
+        if duplicate_row:
+            _raise_duplicate_slab_error(
+                letter=letter,
+                number=number,
+                duplicate_row=duplicate_row,
+            )
         pos_x = placement["pos_x"]
         pos_y = placement["pos_y"]
         zone = placement["platform_zone"]
@@ -1566,6 +1638,18 @@ def update_slab(slab_id: int, *, data: dict) -> dict:
         row = conn.execute("SELECT id FROM slabs WHERE id = ?", (slab_id,)).fetchone()
         if not row:
             raise KeyError("slab not found")
+        duplicate_row = _find_duplicate_slab_row(
+            conn,
+            letter=letter,
+            number=number,
+            exclude_ids={slab_id},
+        )
+        if duplicate_row:
+            _raise_duplicate_slab_error(
+                letter=letter,
+                number=number,
+                duplicate_row=duplicate_row,
+            )
         if is_placed(placement["pos_x"], placement["pos_y"]):
             _ensure_cell_capacity(
                 conn,

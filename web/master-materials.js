@@ -147,7 +147,7 @@
     }
     items.forEach(function (item) {
       var card = document.createElement("div");
-      card.className = "tk-card";
+      card.className = "tk-card tk-master-scheme-card";
       var target = item.return_target_zone || "не выбран";
       card.innerHTML =
         "<div class='tk-card-title'>Вагон " + esc(item.wagon_number) + "</div>" +
@@ -295,7 +295,7 @@
         html += "<div class='tk-card-meta'>Материалы схемы:</div><ul class='tk-list'>";
         (item.items || []).forEach(function (row) {
           html +=
-            "<li class='tk-card'>" +
+            "<li class='tk-card tk-master-scheme-row'>" +
             '<div class="tk-row2">' +
             '<div><label class="tk-label">Материал</label><select class="tk-select" data-item-id="' + row.id + '" data-item-field="material_id">' +
             ((dashboard && dashboard.materials) || []).map(function (mat) {

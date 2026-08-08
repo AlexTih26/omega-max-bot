@@ -1717,6 +1717,81 @@ body {
   padding-top: 2px;
 }
 
+.tk-master-intro {
+  margin-bottom: 14px;
+}
+
+.tk-master-legend {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tk-master-legend-item {
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.tk-master-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tk-master-step {
+  padding: 12px;
+}
+
+.tk-master-block {
+  border-width: 1.5px;
+}
+
+.tk-master-block--scheme,
+.tk-master-scheme-card,
+.tk-master-legend-item--scheme {
+  border-color: rgba(168, 85, 247, 0.45);
+  background: rgba(88, 28, 135, 0.18);
+}
+
+.tk-master-block--scheme-lines,
+.tk-master-scheme-row,
+.tk-master-legend-item--scheme-lines {
+  border-color: rgba(192, 132, 252, 0.42);
+  background: rgba(107, 33, 168, 0.14);
+}
+
+.tk-master-block--step2,
+.tk-master-step--step2,
+.tk-master-legend-item--step2 {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(30, 64, 175, 0.14);
+}
+
+.tk-master-block--step3,
+.tk-master-step--step3,
+.tk-master-legend-item--step3 {
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(6, 95, 70, 0.14);
+}
+
+.tk-master-block--step4,
+.tk-master-step--step4,
+.tk-master-legend-item--step4 {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(146, 64, 14, 0.14);
+}
+
+.tk-master-step--step1,
+.tk-master-legend-item--step1 {
+  border-color: rgba(244, 114, 182, 0.42);
+  background: rgba(131, 24, 67, 0.14);
+}
+
 .tk-material-list,
 .tk-material-wagons {
   display: flex;
@@ -1853,6 +1928,10 @@ body {
 
   .tk-material-summary {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .tk-master-legend {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .tk-material-layout {

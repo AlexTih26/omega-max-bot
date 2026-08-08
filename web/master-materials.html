@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#141820">
   <title>MAX · Мастер отгрузки</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/taksimo.css?v=58">
+  <link rel="stylesheet" href="/taksimo.css?v=59">
 </head>
 <body>
   <div class="app taksimo-app">
@@ -28,13 +28,26 @@
 
     <main class="content tk-main">
       <p class="tk-yard-legend">Отдельная программа мастера в общей базе: остатки, нормы, резерв под вагон и автосписание при отправке вагона из тупика.</p>
+      <div class="tk-card tk-master-intro">
+        <div class="tk-card-title">Это один экран, не разные документы</div>
+        <p class="tk-card-meta">Слева сначала настраивается схема, ниже идут шаги работы по вагону. Цвета показывают, что к чему относится.</p>
+        <div class="tk-master-legend">
+          <div class="tk-master-legend-item tk-master-legend-item--scheme">Фиолетовый: сама схема</div>
+          <div class="tk-master-legend-item tk-master-legend-item--scheme-lines">Сиреневый: строки внутри схемы</div>
+          <div class="tk-master-legend-item tk-master-legend-item--step1">Шаг 1: открыть вагон</div>
+          <div class="tk-master-legend-item tk-master-legend-item--step2">Шаг 2: назначить схему</div>
+          <div class="tk-master-legend-item tk-master-legend-item--step3">Шаг 3: резервировать материалы</div>
+          <div class="tk-master-legend-item tk-master-legend-item--step4">Шаг 4: списание при отправке</div>
+        </div>
+      </div>
 
       <div class="tk-material-summary" id="materialSummary"></div>
 
       <div class="tk-material-layout">
         <div>
           <h3 class="tk-section-title">Схема крепления</h3>
-          <div class="tk-card tk-material-form" id="templateCreateCard">
+          <div class="tk-card tk-material-form tk-master-block tk-master-block--scheme" id="templateCreateCard">
+            <p class="tk-card-meta"><b>Фиолетовый блок</b>: здесь создаётся и редактируется сама схема.</p>
             <label class="tk-label" for="templateName">Название схемы</label>
             <input class="tk-input" id="templateName" placeholder="Схема 1, Схема 2">
             <label class="tk-label" for="templateDescription">Описание</label>
@@ -74,7 +87,8 @@
           </div>
 
           <h3 class="tk-section-title">Строка схемы</h3>
-          <div class="tk-card tk-material-form" id="templateItemCard">
+          <div class="tk-card tk-material-form tk-master-block tk-master-block--scheme-lines" id="templateItemCard">
+            <p class="tk-card-meta"><b>Сиреневый блок</b>: здесь прописываются строки внутри выбранной схемы.</p>
             <label class="tk-label" for="templatePick">Схема</label>
             <select class="tk-select" id="templatePick">
               <option value="">— выберите схему —</option>
@@ -110,8 +124,28 @@
             </div>
           </div>
 
+          <h3 class="tk-section-title">Порядок по вагону</h3>
+          <div class="tk-master-flow">
+            <div class="tk-card tk-master-step tk-master-step--step1">
+              <div class="tk-card-title">1. Открыть вагон</div>
+              <p class="tk-card-meta">Нажмите вагон ниже в блоке <b>Вагоны в подготовке</b>, чтобы открыть его карточку.</p>
+            </div>
+            <div class="tk-card tk-master-step tk-master-step--step2">
+              <div class="tk-card-title">2. Назначить вагону схему</div>
+              <p class="tk-card-meta">Выберите вагон и схему, чтобы привязать к нему комплект расходников.</p>
+            </div>
+            <div class="tk-card tk-master-step tk-master-step--step3">
+              <div class="tk-card-title">3. Резервировать материалы</div>
+              <p class="tk-card-meta">После назначения схемы резервируются только материалы этой схемы.</p>
+            </div>
+            <div class="tk-card tk-master-step tk-master-step--step4">
+              <div class="tk-card-title">4. Автосписание</div>
+              <p class="tk-card-meta">Когда вагон уходит из тупика, резерв автоматически списывается.</p>
+            </div>
+          </div>
+
           <h3 class="tk-section-title">Назначить схему вагону</h3>
-          <div class="tk-card tk-material-form" id="prepAssignCard">
+          <div class="tk-card tk-material-form tk-master-block tk-master-block--step2" id="prepAssignCard">
             <div class="tk-row2">
               <div>
                 <label class="tk-label" for="prepWagon">Вагон</label>
@@ -155,7 +189,7 @@
           </div>
 
           <h3 class="tk-section-title">Резерв под вагон</h3>
-          <div class="tk-card tk-material-form" id="materialReserveCard">
+          <div class="tk-card tk-material-form tk-master-block tk-master-block--step3" id="materialReserveCard">
             <p class="tk-card-meta">Сначала назначьте вагону схему. Ниже для резерва будут доступны только материалы этой схемы.</p>
             <div class="tk-row2">
               <div>
@@ -187,8 +221,9 @@
           </div>
 
           <h3 class="tk-section-title">Схемы и тайминг</h3>
-          <div class="tk-card">
+          <div class="tk-card tk-master-block tk-master-block--step4">
             <p class="tk-card-meta">Для каждой схемы можно заводить строки с операцией, особенностью, инструментом и нормой времени. Это уже соответствует логике твоих таблиц по вагонам.</p>
+            <p class="tk-card-meta">Резервы списываются автоматически в момент отправки вагона из тупика.</p>
           </div>
           <div class="tk-card" id="materialsReadonlyNote" hidden>
             <p class="tk-card-meta">Редактирование расходников доступно только оператору1. Для мастеров этот контур будет идти через чат-бот.</p>
@@ -217,6 +252,6 @@
 
     <div class="tk-toast" id="toast" hidden></div>
   </div>
-    <script src="/master-materials.js?v=7"></script>
+    <script src="/master-materials.js?v=8"></script>
 </body>
 </html>

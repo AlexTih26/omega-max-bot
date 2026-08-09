@@ -137,6 +137,154 @@
       '<div class="tk-material-metric"><b>' + esc(stats.historical_extra_units || 0) + '</b><span>допов A–F по истории</span></div>';
   }
 
+  function renderRingSummary(stats) {
+    var box = $("ringSummary");
+    if (!box) return;
+    stats = stats || {};
+    var statuses = stats.statuses || {};
+    var allSent = statuses.all_sent || {};
+    var bts = statuses.bts || {};
+    var transit = statuses.transit || {};
+    var wagons = statuses.wagons || {};
+    var byOrigin = stats.by_origin || {};
+    var turan = byOrigin["ТУРАН"] || {};
+    var gruz = byOrigin["ГРУЗОВОЙ"] || {};
+    box.innerHTML =
+      '<div class="tk-material-metric"><b>' + esc(allSent.slab_total || 0) + '</b><span>плит всего вышло с тупиков</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(allSent.ring_total || 0) + '</b><span>полных колец в общем цикле</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(bts.slab_total || 0) + '</b><span>плит сдано БТС</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(bts.ring_total || 0) + '</b><span>колец сдано БТС</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(transit.slab_total || 0) + '</b><span>плит в пути / Кодар</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(transit.ring_total || 0) + '</b><span>колец в пути / Кодар</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(wagons.slab_total || 0) + '</b><span>плит в вагонах</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(wagons.ring_total || 0) + '</b><span>колец в вагонах</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.k_shortage_total || 0) + '</b><span>K не хватает всего</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.k_shortage_in_transit || 0) + '</b><span>K не хватает в пути</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.k_shortage_in_wagons || 0) + '</b><span>K не хватает в вагонах</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.additional_rings_possible_total || 0) + '</b><span>доп. колец можно закрыть</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.additional_k_blocks_missing_total || 0) + '</b><span>K блоков не хватает для допколец</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.additional_rings_possible_in_transit || 0) + '</b><span>доп. колец в пути можно закрыть</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(stats.additional_rings_possible_in_wagons || 0) + '</b><span>доп. колец в вагонах можно закрыть</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(turan.ring_total || turan.base_rings_total || 0) + '</b><span>Туран · колец за весь период</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(turan.k_shortage || 0) + '</b><span>Туран · K не хватает</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(gruz.ring_total || gruz.base_rings_total || 0) + '</b><span>Грузовой · колец за весь период</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(gruz.k_shortage || 0) + '</b><span>Грузовой · K не хватает</span></div>';
+  }
+
+  function renderRingRegistry(items) {
+    var box = $("ringRegistry");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!(items || []).length) {
+      box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>По кольцам отправок пока нет.</div></div>";
+      return;
+    }
+    items.forEach(function (item) {
+      var card = document.createElement("div");
+      card.className = "tk-card";
+      var scheme = item.scheme_name || schemeCodeLabel(item.scheme_code);
+      var lines = [
+        "Статус: " + (item.status_label || "—"),
+        "Базовых колец: " + formatQty(item.base_rings || 0) +
+          " · допы A–F: " + formatQty(item.extra_units || 0) +
+          " · K: " + formatQty(item.k_units || 0),
+        "Отправка: " + (item.dispatched_at_label || "—"),
+      ];
+      if (item.received_at_label) {
+        lines.push("Сдача БТС: " + item.received_at_label);
+      }
+      if (item.origin_zone) {
+        lines.push("Откуда грузили: " + item.origin_zone);
+      }
+      card.innerHTML =
+        "<div class='tk-card-title'>Вагон " + esc(item.wagon_number || "—") + "</div>" +
+        "<div class='tk-card-meta'>" + esc(scheme) + "</div>" +
+        "<div class='tk-card-meta'>" + esc(lines.join(" · ")) + "</div>";
+      box.appendChild(card);
+    });
+  }
+
+  function compactLetterMap(map) {
+    var parts = [];
+    ["A", "B", "C", "D", "E", "F"].forEach(function (letter) {
+      var value = Number((map || {})[letter] || 0);
+      if (value > 0) parts.push(letter + ":" + formatQty(value));
+    });
+    return parts.length ? parts.join(" · ") : "—";
+  }
+
+  function compactLetterBadges(map, tone) {
+    var parts = [];
+    ["A", "B", "C", "D", "E", "F"].forEach(function (letter) {
+      var value = Number((map || {})[letter] || 0);
+      if (value > 0) {
+        parts.push(
+          '<span class="tk-letter-chip tk-letter-chip--' + tone + '">' +
+          esc(letter + " " + formatQty(value)) +
+          "</span>"
+        );
+      }
+    });
+    return parts.length ? parts.join("") : '<span class="tk-letter-chip">нет</span>';
+  }
+
+  function loadHintText(list) {
+    list = list || [];
+    return list.length ? list.join(", ") : "не требуется";
+  }
+
+  function loadHintBadges(list) {
+    list = list || [];
+    if (!list.length) return '<span class="tk-letter-chip">не требуется</span>';
+    return list.map(function (letter) {
+      return '<span class="tk-letter-chip tk-letter-chip--hint">' + esc(letter) + '</span>';
+    }).join("");
+  }
+
+  function ringDeficitTone(data) {
+    data = data || {};
+    if (Number(data.next_extra_k_blocks_missing || 0) > 0) return "danger";
+    var deficits = data.next_extra_deficits || {};
+    if (Object.keys(deficits).some(function (key) { return Number(deficits[key] || 0) > 0; })) {
+      return "warn";
+    }
+    return "ok";
+  }
+
+  function renderRingDeficit(stats) {
+    var box = $("ringDeficit");
+    if (!box) return;
+    box.innerHTML = "";
+    stats = stats || {};
+    var statuses = stats.statuses || {};
+    var byOrigin = stats.by_origin || {};
+    var cards = [
+      { title: "Всего по циклу", data: statuses.all_sent || {} },
+      { title: "В пути / Кодар", data: statuses.transit || {} },
+      { title: "В вагонах", data: statuses.wagons || {} },
+      { title: "Сдано БТС", data: statuses.bts || {} },
+      { title: "Туран", data: byOrigin["ТУРАН"] || {} },
+      { title: "Грузовой", data: byOrigin["ГРУЗОВОЙ"] || {} },
+    ];
+    cards.forEach(function (item) {
+      var data = item.data || {};
+      var card = document.createElement("div");
+      var tone = ringDeficitTone(data);
+      card.className = "tk-card tk-ring-deficit-card tk-ring-deficit-card--" + tone;
+      card.innerHTML =
+        "<div class='tk-card-title'>" + esc(item.title) + "</div>" +
+        "<div class='tk-card-meta'>Доборы A–F</div>" +
+        '<div class="tk-letter-row">' + compactLetterBadges(data.extra_blocks || {}, "have") + "</div>" +
+        "<div class='tk-card-meta'>До следующего допкольца не хватает</div>" +
+        '<div class="tk-letter-row">' + compactLetterBadges(data.next_extra_deficits || {}, "need") + "</div>" +
+        "<div class='tk-card-meta'>K блоков не хватает: <b>" + esc(formatQty(data.next_extra_k_blocks_missing || 0)) + "</b></div>" +
+        "<div class='tk-card-meta'>Доп. колец можно закрыть: <b>" + esc(formatQty(data.additional_rings_possible || 0)) + "</b></div>" +
+        "<div class='tk-card-meta'>Грузить сейчас</div>" +
+        '<div class="tk-letter-row">' + loadHintBadges(data.load_hint || []) + "</div>";
+      box.appendChild(card);
+    });
+  }
+
   function renderReturnQueue(items) {
     var box = $("returnQueue");
     if (!box) return;
@@ -449,8 +597,11 @@
         units = data.units || units;
         renderSummary(data);
         renderSchemeSummary(data.scheme_summary || {});
+        renderRingSummary(data.ring_summary || {});
+        renderRingDeficit(data.ring_summary || {});
         renderTemplates(data.templates || []);
         renderMaterials(data.materials || []);
+        renderRingRegistry(data.ring_registry || []);
         renderReturnQueue(data.return_queue || []);
         renderWagons(data.wagons || []);
         refreshSelectors();

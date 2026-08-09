@@ -135,8 +135,12 @@
     return zone === "ХРАНЕНИЯ";
   }
 
-  function needsWagon(zone) {
+  function usesDefaultWagon(zone) {
     return zone === "ГРУЗОВОЙ" || zone === "ТУРАН";
+  }
+
+  function needsWagon(zone) {
+    return usesDefaultWagon(zone) || zone === "В КОДАР";
   }
 
   function updatePlatformHint() {
@@ -222,7 +226,7 @@
     var sel = $("defaultWagon");
     if (!row || !sel) return;
     var zone = $("defaultPlatform").value;
-    if (!needsWagon(zone)) {
+    if (!usesDefaultWagon(zone)) {
       row.hidden = true;
       sel.innerHTML = '<option value="">— выберите вагон —</option>';
       return;
@@ -271,7 +275,12 @@
         wagonSel.value = "";
       } else {
         refreshRowWagonSelect(row);
-        if (!wagonSel.value && $("defaultWagon") && $("defaultWagon").value) {
+        if (
+          usesDefaultWagon(z) &&
+          !wagonSel.value &&
+          $("defaultWagon") &&
+          $("defaultWagon").value
+        ) {
           wagonSel.value = $("defaultWagon").value;
         }
       }
@@ -1499,7 +1508,7 @@
       wagonOptionsForZone(
         data.platform_zone || $("defaultPlatform").value || "ХРАНЕНИЯ",
         data.wagon_number ||
-          ($("defaultWagon") && needsWagon(data.platform_zone || $("defaultPlatform").value) && $("defaultWagon").value) ||
+          ($("defaultWagon") && usesDefaultWagon(data.platform_zone || $("defaultPlatform").value) && $("defaultWagon").value) ||
           ""
       ) +
       "</select>";
@@ -2624,7 +2633,7 @@
     if (!w) return;
     document.querySelectorAll("#slabRows .tk-slab-row").forEach(function (row) {
       var zone = row.querySelector('[data-field="platform_zone"]').value;
-      if (!needsWagon(zone)) return;
+      if (!usesDefaultWagon(zone)) return;
       var ws = row.querySelector('[data-field="wagon_number"]');
       if (ws && !ws.disabled) ws.value = w;
     });

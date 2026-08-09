@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#141820">
   <title>MAX · Мастер отгрузки</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/taksimo.css?v=59">
+  <link rel="stylesheet" href="/taksimo.css?v=60">
 </head>
 <body>
   <div class="app taksimo-app">
@@ -231,6 +231,14 @@
         </div>
 
         <div>
+          <h3 class="tk-section-title">Реестр колец</h3>
+          <div class="tk-card">
+            <p class="tk-card-meta">Реестр накопительный: по умолчанию показывает весь период перевозки колец с тупиков Туран и Грузовой. Базовые кольца считаются по фактическим отправкам вагонов, а допы A–F и K показываются как накопление для следующих колец.</p>
+          </div>
+          <div class="tk-material-summary" id="ringSummary"></div>
+          <div class="tk-material-list" id="ringDeficit"></div>
+          <div class="tk-material-list" id="ringRegistry"></div>
+
           <h3 class="tk-section-title">Циклы схем</h3>
           <div class="tk-material-summary" id="schemeSummary"></div>
 
@@ -252,6 +260,6 @@
 
     <div class="tk-toast" id="toast" hidden></div>
   </div>
-    <script src="/master-materials.js?v=8"></script>
+    <script src="/master-materials.js?v=14"></script>
 </body>
 </html>

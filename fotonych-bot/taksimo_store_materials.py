@@ -21,6 +21,94 @@ SCHEME_CODES = {"scheme1", "scheme2", "scheme3"}
 RETURN_STATUS_PLANNED = "planned_return"
 RETURN_STATUS_IN_TRANSIT = "in_transit_back"
 RETURN_STATUS_RETURNED = "returned_to_zone"
+EXTRA_RING_AF_UNITS = 6
+K_RING_UNITS = 16
+
+
+def _ts_label(raw_ts) -> str:
+    if not raw_ts:
+        return ""
+    return time.strftime("%d.%m.%Y %H:%M", time.localtime(float(raw_ts)))
+
+
+def _empty_ring_counter() -> dict:
+    return {
+        "blocks": {letter: 0 for letter in store.SLAB_LETTERS},
+        "slab_total": 0,
+        "af_ring_capacity": 0,
+        "ring_total": 0,
+        "k_shortage": 0,
+        "extra_units_total": 0,
+        "k_units_total": 0,
+        "base_ring_wagons": 0,
+        "scheme2_wagons": 0,
+        "extra_af_sets": 0,
+        "extra_k_blocks": 0,
+        "extra_k_sets": 0,
+        "additional_rings_possible": 0,
+        "additional_k_blocks_missing": 0,
+        "additional_k_sets_missing": 0,
+    }
+
+
+def _finalize_ring_counter(counter: dict) -> dict:
+    blocks = counter["blocks"]
+    af_ring_capacity = min(int(blocks.get(letter, 0)) for letter in ("A", "B", "C", "D", "E", "F"))
+    k_count = int(blocks.get("K", 0))
+    counter["af_ring_capacity"] = af_ring_capacity
+    counter["ring_total"] = min(af_ring_capacity, k_count)
+    counter["k_shortage"] = max(0, af_ring_capacity - k_count)
+    base_ring_wagons = int(counter.get("base_ring_wagons", 0) or 0)
+    extra_af_sets = min(
+        max(0, int(blocks.get(letter, 0)) - base_ring_wagons)
+        for letter in ("A", "B", "C", "D", "E", "F")
+    )
+    extra_k_blocks = max(0, k_count - base_ring_wagons)
+    extra_k_sets = extra_k_blocks // K_RING_UNITS
+    extra_blocks = {
+        letter: max(0, int(blocks.get(letter, 0)) - base_ring_wagons)
+        for letter in ("A", "B", "C", "D", "E", "F")
+    }
+    next_extra_target = extra_af_sets + 1
+    next_extra_deficits = {
+        letter: max(0, next_extra_target - extra_blocks[letter])
+        for letter in ("A", "B", "C", "D", "E", "F")
+    }
+    counter["extra_af_sets"] = extra_af_sets
+    counter["extra_blocks"] = extra_blocks
+    counter["extra_k_blocks"] = extra_k_blocks
+    counter["extra_k_sets"] = extra_k_sets
+    counter["additional_rings_possible"] = min(extra_af_sets, extra_k_sets)
+    counter["additional_k_blocks_missing"] = max(0, extra_af_sets * K_RING_UNITS - extra_k_blocks)
+    counter["additional_k_sets_missing"] = max(0, extra_af_sets - extra_k_sets)
+    counter["next_extra_target"] = next_extra_target
+    counter["next_extra_deficits"] = next_extra_deficits
+    counter["next_extra_k_blocks_missing"] = max(0, next_extra_target * K_RING_UNITS - extra_k_blocks)
+    counter["load_hint"] = _pick_load_hint(next_extra_deficits)
+    return counter
+
+
+def _additional_ring_metrics(extra_units: int, k_units: int) -> dict:
+    extra_af_sets = max(0, int(extra_units or 0)) // EXTRA_RING_AF_UNITS
+    extra_k_sets = max(0, int(k_units or 0)) // K_RING_UNITS
+    return {
+        "extra_af_sets": extra_af_sets,
+        "extra_k_sets": extra_k_sets,
+        "additional_rings_possible": min(extra_af_sets, extra_k_sets),
+        "additional_k_blocks_missing": max(0, extra_af_sets * K_RING_UNITS - int(k_units or 0)),
+        "additional_k_sets_missing": max(0, extra_af_sets - extra_k_sets),
+    }
+
+
+def _pick_load_hint(deficits: dict[str, int]) -> list[str]:
+    pool: list[str] = []
+    for letter, qty in sorted(deficits.items(), key=lambda item: (-int(item[1]), item[0])):
+        pool.extend([letter] * max(0, int(qty)))
+    if len(pool) >= 2:
+        return pool[:2]
+    if len(pool) == 1:
+        return [pool[0], pool[0]]
+    return []
 
 
 def migrate_materials(conn: sqlite3.Connection) -> None:
@@ -1725,6 +1813,27 @@ def materials_dashboard() -> dict:
             ORDER BY dispatched_at DESC, id DESC
             """
         ).fetchall()
+        ring_block_rows = conn.execute(
+            """
+            SELECT
+                slabs.letter,
+                CASE
+                    WHEN slabs.platform_zone = 'БТС ВОСТОК' THEN 'bts'
+                    WHEN slabs.platform_zone = 'В КОДАР' THEN 'transit'
+                    WHEN slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН') THEN 'wagons'
+                    ELSE 'other'
+                END AS bucket,
+                CASE
+                    WHEN slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН') THEN slabs.platform_zone
+                    ELSE COALESCE(wd.origin_zone, '')
+                END AS origin_zone,
+                COUNT(*) AS cnt
+            FROM slabs
+            LEFT JOIN wagon_dispatches wd ON wd.id = slabs.wagon_dispatch_id
+            WHERE slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН', 'В КОДАР', 'БТС ВОСТОК')
+            GROUP BY slabs.letter, bucket, origin_zone
+            """
+        ).fetchall()
     reserved_by_wagon: dict[str, dict[int, float]] = {}
     for row in rows:
         wagon_number = (row["wagon_number"] or "").strip()
@@ -1772,14 +1881,227 @@ def materials_dashboard() -> dict:
         "return_capacity_wagons": 0,
         "returned_box_wagons": 0,
     }
+    ring_summary = {
+        "base_rings_total": 0,
+        "base_rings_in_transit": 0,
+        "base_rings_delivered": 0,
+        "base_rings_in_wagons": 0,
+        "extra_units_total": 0,
+        "extra_units_delivered": 0,
+        "extra_units_in_transit": 0,
+        "extra_units_in_wagons": 0,
+        "k_units_total": 0,
+        "k_units_delivered": 0,
+        "k_units_in_transit": 0,
+        "k_units_in_wagons": 0,
+        "potential_rings_total": 0,
+        "potential_rings_delivered": 0,
+        "k_shortage_total": 0,
+        "k_shortage_in_transit": 0,
+        "k_shortage_delivered": 0,
+        "k_shortage_in_wagons": 0,
+        "by_origin": {
+            "ТУРАН": _empty_ring_counter(),
+            "ГРУЗОВОЙ": _empty_ring_counter(),
+        },
+        "statuses": {
+            "bts": _empty_ring_counter(),
+            "transit": _empty_ring_counter(),
+            "wagons": _empty_ring_counter(),
+            "all_sent": _empty_ring_counter(),
+        },
+        "origin_statuses": {
+            "ТУРАН": {
+                "bts": _empty_ring_counter(),
+                "transit": _empty_ring_counter(),
+                "wagons": _empty_ring_counter(),
+                "all_sent": _empty_ring_counter(),
+            },
+            "ГРУЗОВОЙ": {
+                "bts": _empty_ring_counter(),
+                "transit": _empty_ring_counter(),
+                "wagons": _empty_ring_counter(),
+                "all_sent": _empty_ring_counter(),
+            },
+        },
+    }
+    ring_registry = []
     for row in dispatch_rows:
         code = _normalize_scheme_code(row["scheme_code"] or SCHEME_CODE_DEFAULT)
+        base_rings = 1 if code in {"scheme1", "scheme3"} else 0
+        extra_units = int(row["extra_units"] or 0)
+        k_units = int(row["k_goal"] or 0)
+        delivered = (row["status"] or "") == "delivered"
+        bucket = "bts" if delivered else "transit"
+        origin_zone = (row["origin_zone"] or "").strip().upper()
         scheme_summary["dispatched"][code] += 1
-        scheme_summary["historical_k_total"] += int(row["k_goal"] or 0)
-        scheme_summary["historical_extra_units"] += int(row["extra_units"] or 0)
+        scheme_summary["historical_k_total"] += k_units
+        scheme_summary["historical_extra_units"] += extra_units
+        ring_summary["k_units_total"] += k_units
+        ring_summary["extra_units_total"] += extra_units
+        if delivered:
+            ring_summary["extra_units_delivered"] += extra_units
+            ring_summary["k_units_delivered"] += k_units
+        else:
+            ring_summary["extra_units_in_transit"] += extra_units
+            ring_summary["k_units_in_transit"] += k_units
+        if origin_zone in ring_summary["by_origin"]:
+            ring_summary["by_origin"][origin_zone]["extra_units_total"] += extra_units
+            ring_summary["by_origin"][origin_zone]["k_units_total"] += k_units
+        if code in {"scheme1", "scheme3"}:
+            ring_summary["statuses"][bucket]["base_ring_wagons"] += 1
+            ring_summary["statuses"]["all_sent"]["base_ring_wagons"] += 1
+            if origin_zone in ring_summary["origin_statuses"]:
+                ring_summary["origin_statuses"][origin_zone][bucket]["base_ring_wagons"] += 1
+                ring_summary["origin_statuses"][origin_zone]["all_sent"]["base_ring_wagons"] += 1
+        elif code == "scheme2":
+            ring_summary["statuses"][bucket]["scheme2_wagons"] += 1
+            ring_summary["statuses"]["all_sent"]["scheme2_wagons"] += 1
+            if origin_zone in ring_summary["origin_statuses"]:
+                ring_summary["origin_statuses"][origin_zone][bucket]["scheme2_wagons"] += 1
+                ring_summary["origin_statuses"][origin_zone]["all_sent"]["scheme2_wagons"] += 1
+        ring_registry.append(
+            {
+                "wagon_number": (row["wagon_number"] or "").strip(),
+                "scheme_code": code,
+                "scheme_name": row["scheme_name"] or "",
+                "base_rings": base_rings,
+                "extra_units": extra_units,
+                "k_units": k_units,
+                "additional_rings_possible": 0,
+                "has_box": bool(row["has_box"]),
+                "returns_materials": bool(row["returns_materials"]),
+                "origin_zone": origin_zone,
+                "return_status": row["return_status"] or "",
+                "return_target_zone": row["return_target_zone"] or "",
+                "return_actual_zone": row["return_actual_zone"] or "",
+                "status": row["status"] or "in_transit",
+                "status_label": "Сдано БТС Восток" if delivered else "В пути / Кодар",
+                "dispatched_at": float(row["dispatched_at"] or 0),
+                "dispatched_at_label": _ts_label(row["dispatched_at"]),
+                "received_at": float(row["received_at"] or 0),
+                "received_at_label": _ts_label(row["received_at"]),
+            }
+        )
     for prep in prep_by_wagon.values():
         code = _normalize_scheme_code(prep.get("scheme_code") or SCHEME_CODE_DEFAULT)
         scheme_summary["assigned"][code] += 1
+    for wagon_number, prep in prep_by_wagon.items():
+        wagon = active_by_number.get(wagon_number) or {}
+        if (wagon.get("stage") or "") != "at_slot":
+            continue
+        code = _normalize_scheme_code(prep.get("scheme_code") or SCHEME_CODE_DEFAULT)
+        extra_units = int(prep.get("extra_units") or 0)
+        k_units = int(prep.get("k_goal") or 0)
+        origin_zone = (
+            (prep.get("origin_zone") or "").strip().upper()
+            or _zone_from_location_label(wagon.get("location_label") or "")
+        )
+        ring_summary["extra_units_in_wagons"] += extra_units
+        ring_summary["k_units_in_wagons"] += k_units
+        ring_summary["extra_units_total"] += extra_units
+        ring_summary["k_units_total"] += k_units
+        if origin_zone in ring_summary["by_origin"]:
+            ring_summary["by_origin"][origin_zone]["extra_units_total"] += extra_units
+            ring_summary["by_origin"][origin_zone]["k_units_total"] += k_units
+        if code in {"scheme1", "scheme3"}:
+            ring_summary["statuses"]["wagons"]["base_ring_wagons"] += 1
+            ring_summary["statuses"]["all_sent"]["base_ring_wagons"] += 1
+            if origin_zone in ring_summary["origin_statuses"]:
+                ring_summary["origin_statuses"][origin_zone]["wagons"]["base_ring_wagons"] += 1
+                ring_summary["origin_statuses"][origin_zone]["all_sent"]["base_ring_wagons"] += 1
+        elif code == "scheme2":
+            ring_summary["statuses"]["wagons"]["scheme2_wagons"] += 1
+            ring_summary["statuses"]["all_sent"]["scheme2_wagons"] += 1
+            if origin_zone in ring_summary["origin_statuses"]:
+                ring_summary["origin_statuses"][origin_zone]["wagons"]["scheme2_wagons"] += 1
+                ring_summary["origin_statuses"][origin_zone]["all_sent"]["scheme2_wagons"] += 1
+    for row in ring_block_rows:
+        bucket = row["bucket"] or ""
+        letter = (row["letter"] or "").strip().upper()
+        cnt = int(row["cnt"] or 0)
+        if bucket not in ring_summary["statuses"]:
+            continue
+        ring_summary["statuses"][bucket]["blocks"][letter] += cnt
+        ring_summary["statuses"][bucket]["slab_total"] += cnt
+        ring_summary["statuses"]["all_sent"]["blocks"][letter] += cnt
+        ring_summary["statuses"]["all_sent"]["slab_total"] += cnt
+        origin_zone = (row["origin_zone"] or "").strip().upper()
+        zone_summary = ring_summary["by_origin"].get(origin_zone)
+        if zone_summary is not None:
+            zone_summary["blocks"][letter] += cnt
+            zone_summary["slab_total"] += cnt
+            origin_status = ring_summary["origin_statuses"][origin_zone]
+            origin_status[bucket]["blocks"][letter] += cnt
+            origin_status[bucket]["slab_total"] += cnt
+            origin_status["all_sent"]["blocks"][letter] += cnt
+            origin_status["all_sent"]["slab_total"] += cnt
+    for key, counter in ring_summary["statuses"].items():
+        ring_summary["statuses"][key] = _finalize_ring_counter(counter)
+    for zone, counter in list(ring_summary["by_origin"].items()):
+        finished = _finalize_ring_counter(counter)
+        statuses = ring_summary["origin_statuses"][zone]
+        for key, status_counter in list(statuses.items()):
+            statuses[key] = _finalize_ring_counter(status_counter)
+        finished["base_rings_total"] = statuses["all_sent"]["ring_total"]
+        finished["base_rings_in_transit"] = statuses["transit"]["ring_total"]
+        finished["base_rings_delivered"] = statuses["bts"]["ring_total"]
+        finished["base_rings_in_wagons"] = statuses["wagons"]["ring_total"]
+        finished["k_units_total"] = finished.get("k_units_total", 0)
+        finished["potential_rings_total"] = statuses["all_sent"]["ring_total"]
+        finished["k_shortage"] = statuses["all_sent"]["k_shortage"]
+        extra_metrics = _additional_ring_metrics(
+            finished.get("extra_units_total", 0),
+            finished.get("k_units_total", 0),
+        )
+        finished["additional_rings_possible"] = extra_metrics["additional_rings_possible"]
+        finished["additional_k_blocks_missing"] = extra_metrics["additional_k_blocks_missing"]
+        finished["additional_k_sets_missing"] = extra_metrics["additional_k_sets_missing"]
+        finished["statuses"] = statuses
+        ring_summary["by_origin"][zone] = finished
+    ring_summary["base_rings_total"] = ring_summary["statuses"]["all_sent"]["ring_total"]
+    ring_summary["base_rings_in_transit"] = ring_summary["statuses"]["transit"]["ring_total"]
+    ring_summary["base_rings_delivered"] = ring_summary["statuses"]["bts"]["ring_total"]
+    ring_summary["base_rings_in_wagons"] = ring_summary["statuses"]["wagons"]["ring_total"]
+    ring_summary["k_units_total"] = ring_summary.get("k_units_total", 0)
+    ring_summary["k_units_delivered"] = ring_summary.get("k_units_delivered", 0)
+    ring_summary["potential_rings_total"] = ring_summary["statuses"]["all_sent"]["ring_total"]
+    ring_summary["potential_rings_delivered"] = ring_summary["statuses"]["bts"]["ring_total"]
+    ring_summary["k_shortage_total"] = ring_summary["statuses"]["all_sent"]["k_shortage"]
+    ring_summary["k_shortage_in_transit"] = ring_summary["statuses"]["transit"]["k_shortage"]
+    ring_summary["k_shortage_delivered"] = ring_summary["statuses"]["bts"]["k_shortage"]
+    ring_summary["k_shortage_in_wagons"] = ring_summary["statuses"]["wagons"]["k_shortage"]
+    total_extra_metrics = _additional_ring_metrics(
+        ring_summary.get("extra_units_total", 0),
+        ring_summary.get("k_units_total", 0),
+    )
+    transit_extra_metrics = _additional_ring_metrics(
+        ring_summary.get("extra_units_in_transit", 0),
+        ring_summary.get("k_units_in_transit", 0),
+    )
+    delivered_extra_metrics = _additional_ring_metrics(
+        ring_summary.get("extra_units_delivered", 0),
+        ring_summary.get("k_units_delivered", 0),
+    )
+    wagon_extra_metrics = _additional_ring_metrics(
+        ring_summary.get("extra_units_in_wagons", 0),
+        ring_summary.get("k_units_in_wagons", 0),
+    )
+    ring_summary["additional_rings_possible_total"] = total_extra_metrics["additional_rings_possible"]
+    ring_summary["additional_rings_possible_in_transit"] = transit_extra_metrics["additional_rings_possible"]
+    ring_summary["additional_rings_possible_delivered"] = delivered_extra_metrics["additional_rings_possible"]
+    ring_summary["additional_rings_possible_in_wagons"] = wagon_extra_metrics["additional_rings_possible"]
+    ring_summary["additional_k_blocks_missing_total"] = total_extra_metrics["additional_k_blocks_missing"]
+    ring_summary["additional_k_blocks_missing_in_transit"] = transit_extra_metrics["additional_k_blocks_missing"]
+    ring_summary["additional_k_blocks_missing_in_wagons"] = wagon_extra_metrics["additional_k_blocks_missing"]
+    ring_summary["potential_rings_total"] = min(
+        ring_summary["extra_units_total"] // EXTRA_RING_AF_UNITS,
+        ring_summary["k_units_total"] // K_RING_UNITS,
+    )
+    ring_summary["potential_rings_delivered"] = min(
+        ring_summary["extra_units_delivered"] // EXTRA_RING_AF_UNITS,
+        ring_summary["k_units_delivered"] // K_RING_UNITS,
+    )
     return_queue = []
     for wagon_number, prep in prep_by_wagon.items():
         if not prep.get("returns_materials"):
@@ -1891,6 +2213,8 @@ def materials_dashboard() -> dict:
         "templates": templates,
         "wagons": wagons,
         "scheme_summary": scheme_summary,
+        "ring_summary": ring_summary,
+        "ring_registry": ring_registry,
         "return_queue": return_queue,
         "summary": {
             "material_count": len(materials),
@@ -1902,5 +2226,8 @@ def materials_dashboard() -> dict:
             "historical_extra_units": scheme_summary["historical_extra_units"],
             "returning_box_wagons": scheme_summary["returning_box_wagons"],
             "return_capacity_wagons": scheme_summary["return_capacity_wagons"],
+            "base_rings_total": ring_summary["base_rings_total"],
+            "base_rings_delivered": ring_summary["base_rings_delivered"],
+            "potential_rings_total": ring_summary["potential_rings_total"],
         },
     }

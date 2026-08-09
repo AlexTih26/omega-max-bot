@@ -235,12 +235,31 @@ def _format_vehicle_block_lines(
     return lines
 
 
+def _wagon_full_state_key(info: dict) -> str:
+    zone = (info.get("zone") or "").strip().upper()
+    wagon = (info.get("wagon_number") or "").strip()
+    return f"{zone}|{wagon}"
+
+
+def _wagon_full_signature(info: dict) -> str:
+    labels = sorted(str(label).strip() for label in (info.get("labels") or []) if str(label).strip())
+    parts = [
+        (info.get("zone") or "").strip().upper(),
+        (info.get("wagon_number") or "").strip(),
+        str(int(info.get("count") or 0)),
+        "|".join(labels),
+    ]
+    return "||".join(parts)
+
+
 def _dispatch_blocks(dispatch: dict) -> list[dict]:
     blocks = dispatch.get("blocks") or []
     if blocks:
         return blocks
     return [{"label": label} for label in (dispatch.get("block_labels") or []) if label]
 
+
+def format_wagon_full_message(info: dict) -> str:
     zone = info.get("zone") or "—"
     wagon = (info.get("wagon_number") or "").strip() or "—"
     count = int(info.get("count") or 0)
@@ -630,7 +649,17 @@ def handle_session_notifications(
 async def notify_wagon_full(info: dict) -> None:
     if notify_chat_id() is None:
         return
-    await send_text(format_wagon_full_message(info), with_menu=False)
+    state = _load_state()
+    sent = state.get("wagon_full_signatures") or {}
+    key = _wagon_full_state_key(info)
+    signature = _wagon_full_signature(info)
+    if sent.get(key) == signature:
+        return
+    ok = await send_text(format_wagon_full_message(info), with_menu=False)
+    if ok:
+        sent[key] = signature
+        state["wagon_full_signatures"] = sent
+        _save_state(state)
 
 
 def schedule_wagon_full_checks(
@@ -640,8 +669,7 @@ def schedule_wagon_full_checks(
     if notify_chat_id() is None:
         return
     for key, new_count in after.items():
-        old_count = before.get(key, 0)
-        if old_count < MAX_WAGON_SLABS and new_count >= MAX_WAGON_SLABS:
+        if new_count >= MAX_WAGON_SLABS:
             zone, wagon = key
             info = get_wagon_load_info(wagon, zone)
             asyncio.create_task(notify_wagon_full(info))

@@ -148,9 +148,15 @@ def _parse_loading_datetime(raw: str) -> datetime | None:
     text = (raw or "").strip()
     if not text:
         return None
-    for fmt, size in (("%d.%m.%Y %H:%M", 16), ("%d.%m.%Y", 10)):
+    normalized = text.replace("T", " ")
+    for fmt, size in (
+        ("%d.%m.%Y %H:%M", 16),
+        ("%d.%m.%Y", 10),
+        ("%Y-%m-%d %H:%M", 16),
+        ("%Y-%m-%d", 10),
+    ):
         try:
-            dt = datetime.strptime(text[:size], fmt)
+            dt = datetime.strptime(normalized[:size], fmt)
             return dt.replace(tzinfo=report_tz())
         except ValueError:
             continue
@@ -1165,12 +1171,28 @@ def list_wagon_loads_for_daily_report(
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT slabs.platform_zone, slabs.wagon_number, slabs.letter, slabs.number,
-                   slabs.suffix, slabs.loading_date, vehicles.plate AS vehicle_plate
+            SELECT
+                   CASE
+                       WHEN slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН') THEN slabs.platform_zone
+                       ELSE COALESCE(NULLIF(wd.origin_zone, ''), NULLIF(wd.slot_zone, ''), slabs.platform_zone)
+                   END AS report_zone,
+                   slabs.platform_zone,
+                   slabs.wagon_number,
+                   slabs.letter,
+                   slabs.number,
+                   slabs.suffix,
+                   slabs.loading_date,
+                   vehicles.plate AS vehicle_plate
             FROM slabs
             JOIN unload_sessions ON unload_sessions.id = slabs.session_id
             LEFT JOIN vehicles ON vehicles.id = unload_sessions.vehicle_id
-            WHERE slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН') AND slabs.wagon_number != ''
+            LEFT JOIN wagon_dispatches wd ON wd.id = slabs.wagon_dispatch_id
+            WHERE slabs.wagon_number != ''
+              AND (
+                  slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН')
+                  OR slabs.platform_zone = 'В КОДАР'
+                  OR slabs.platform_zone = 'БТС ВОСТОК'
+              )
             """
         ).fetchall()
 
@@ -1178,7 +1200,8 @@ def list_wagon_loads_for_daily_report(
     activity_keys: set[tuple[str, str]] = set()
 
     for row in rows:
-        key = (str(row["platform_zone"]), str(row["wagon_number"]))
+        zone = (row["report_zone"] or row["platform_zone"] or "").strip()
+        key = (zone, str(row["wagon_number"]))
         if key not in wagons:
             wagons[key] = {
                 "zone": key[0],

@@ -77,6 +77,7 @@
   var dashboard = null;
   var activeWagon = "";
   var canManageMaterials = false;
+  var wagonSearchQuery = "";
 
   function renderDbStatus(db) {
     var el = $("dbStatus");
@@ -86,13 +87,7 @@
   }
 
   function setManagementVisibility() {
-    [
-      "templateCreateCard",
-      "templateItemCard",
-      "prepAssignCard",
-      "materialCreateCard",
-      "materialReserveCard"
-    ].forEach(function (id) {
+    ["materialCreateCard", "materialReserveCard"].forEach(function (id) {
       var el = $(id);
       if (el) el.hidden = !canManageMaterials;
     });
@@ -108,18 +103,40 @@
     }).join("");
   }
 
+  function getScheme1() {
+    return ((dashboard && dashboard.templates) || []).find(function (item) {
+      return String(item.scheme_code || "") === "scheme1";
+    }) || ((dashboard && dashboard.templates) || [])[0] || null;
+  }
+
   function renderSummary(data) {
     var box = $("materialSummary");
     var summary = (data && data.summary) || {};
     box.innerHTML =
       '<div class="tk-material-metric"><b>' + esc(summary.material_count || 0) + '</b><span>материалов</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(summary.template_count || 0) + '</b><span>схем крепления</span></div>' +
+      '<div class="tk-material-metric"><b>1</b><span>схема сейчас</span></div>' +
       '<div class="tk-material-metric"><b>' + esc(summary.low_stock_count || 0) + '</b><span>ниже минимума</span></div>' +
       '<div class="tk-material-metric"><b>' + esc(summary.ready_wagons || 0) + '</b><span>готовых вагонов</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(summary.overall_wagons_left != null ? summary.overall_wagons_left : "—") + '</b><span>хватит ещё на вагонов</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(summary.historical_k_total || 0) + '</b><span>K по истории</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(summary.returning_box_wagons || 0) + '</b><span>возвратов в пути</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(summary.return_capacity_wagons || 0) + '</b><span>ёмкость возврата, вагонов</span></div>';
+      '<div class="tk-material-metric"><b>' + esc(summary.overall_wagons_left != null ? summary.overall_wagons_left : "—") + '</b><span>хватит ещё на вагонов</span></div>';
+  }
+
+  function renderScheme1Norms() {
+    var box = $("scheme1NormList");
+    if (!box) return;
+    var scheme = getScheme1();
+    var items = (scheme && scheme.items) || [];
+    if (!items.length) {
+      box.innerHTML = "<div class='tk-card-meta'>Нормы схемы 1 пока не заданы. Укажите «Норма на вагон» у материалов.</div>";
+      return;
+    }
+    box.innerHTML = items.map(function (item) {
+      return (
+        '<div class="tk-material-metric">' +
+        '<b>' + esc(formatQty(item.qty_norm)) + ' ' + esc(item.material_unit || "") + '</b>' +
+        '<span>' + esc(item.material_name || "—") + '</span>' +
+        '</div>'
+      );
+    }).join("");
   }
 
   function renderSchemeSummary(stats) {
@@ -142,33 +159,81 @@
     if (!box) return;
     stats = stats || {};
     var statuses = stats.statuses || {};
-    var allSent = statuses.all_sent || {};
-    var bts = statuses.bts || {};
-    var transit = statuses.transit || {};
+    var sent = statuses.all_sent || {};
     var wagons = statuses.wagons || {};
-    var byOrigin = stats.by_origin || {};
-    var turan = byOrigin["ТУРАН"] || {};
-    var gruz = byOrigin["ГРУЗОВОЙ"] || {};
+    var platforms = Math.round(Number(sent.slab_total || 0) / 9);
     box.innerHTML =
-      '<div class="tk-material-metric"><b>' + esc(allSent.slab_total || 0) + '</b><span>плит всего вышло с тупиков</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(allSent.ring_total || 0) + '</b><span>полных колец в общем цикле</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(bts.slab_total || 0) + '</b><span>плит сдано БТС</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(bts.ring_total || 0) + '</b><span>колец сдано БТС</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(transit.slab_total || 0) + '</b><span>плит в пути / Кодар</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(transit.ring_total || 0) + '</b><span>колец в пути / Кодар</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(wagons.slab_total || 0) + '</b><span>плит в вагонах</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(wagons.ring_total || 0) + '</b><span>колец в вагонах</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.k_shortage_total || 0) + '</b><span>K не хватает всего</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.k_shortage_in_transit || 0) + '</b><span>K не хватает в пути</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.k_shortage_in_wagons || 0) + '</b><span>K не хватает в вагонах</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.additional_rings_possible_total || 0) + '</b><span>доп. колец можно закрыть</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.additional_k_blocks_missing_total || 0) + '</b><span>K блоков не хватает для допколец</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.additional_rings_possible_in_transit || 0) + '</b><span>доп. колец в пути можно закрыть</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.additional_rings_possible_in_wagons || 0) + '</b><span>доп. колец в вагонах можно закрыть</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(turan.ring_total || turan.base_rings_total || 0) + '</b><span>Туран · колец за весь период</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(turan.k_shortage || 0) + '</b><span>Туран · K не хватает</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(gruz.ring_total || gruz.base_rings_total || 0) + '</b><span>Грузовой · колец за весь период</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(gruz.k_shortage || 0) + '</b><span>Грузовой · K не хватает</span></div>';
+      '<div class="tk-material-metric"><b>' + esc(platforms) + '</b><span>платформ отправлено БТС + Кодар</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(sent.slab_total || 0) + '</b><span>плит отправлено</span></div>' +
+      '<div class="tk-material-metric"><b>' + esc(wagons.slab_total || 0) + '</b><span>★★ плит ещё в вагонах</span></div>';
+  }
+
+  function renderManagerRingReport(data) {
+    data = data || {};
+    var closed = Number(data.ring_total || 0);
+    var closedBlocks = Number(data.closed_ring_blocks != null ? data.closed_ring_blocks : closed * 7);
+    var openRings = Number(data.open_rings || 0);
+    var openBlocks = Number(data.extra_blocks_total || 0);
+    var kMissing = Number(data.open_rings_k_missing != null ? data.open_rings_k_missing : openRings);
+    var missingRows = data.open_ring_missing || [];
+    var html =
+      '<div class="tk-card">' +
+      '<div class="tk-card-title">Из отправленных БТС + Кодар</div>' +
+      '<div class="tk-card-meta">' +
+      esc(closed) + ' закрытых колец (' + esc(closedBlocks) + ' блоков)<br>' +
+      esc(openRings) + ' незакрытых колец (' + esc(openBlocks) + ' блоков)';
+    if (missingRows.length) {
+      html += ' — не хватает:<br>';
+      missingRows.forEach(function (row) {
+        html += esc((row || []).join(", ")) + '<br>';
+      });
+    } else if (openRings > 0) {
+      html += ' — по буквам A–F комплекты уже есть<br>';
+    } else {
+      html += '<br>';
+    }
+    html +=
+      'и блоков K не хватает: <b>' + esc(kMissing) + '</b>' +
+      '</div></div>';
+    return html;
+  }
+
+  function renderWagonHintReport(data) {
+    data = data || {};
+    var slabs = Number(data.slab_total || 0);
+    if (!slabs) {
+      return '<div class="tk-card"><div class="tk-card-title">★★ В вагонах</div><div class="tk-card-meta">Сейчас в вагонах плит нет.</div></div>';
+    }
+    var extras = data.extra_blocks || {};
+    var missingRows = data.open_ring_missing || [];
+    var html =
+      '<div class="tk-card">' +
+      '<div class="tk-card-title">★★ Подсказка по текущим вагонам</div>' +
+      '<div class="tk-card-meta">' +
+      'плит: ' + esc(slabs) +
+      ' · полных колец: ' + esc(data.ring_total || 0) +
+      ' · незакрытых: ' + esc(data.open_rings || 0);
+    if (Object.keys(extras).some(function (key) { return Number(extras[key] || 0) > 0; })) {
+      html += '<br>допы: ' + esc(compactLetterMap(extras));
+    }
+    if (missingRows.length) {
+      html += '<br>не хватает:<br>';
+      missingRows.forEach(function (row) {
+        html += esc((row || []).join(", ")) + '<br>';
+      });
+    }
+    html += '</div></div>';
+    return html;
+  }
+
+  function renderRingDeficit(stats) {
+    var box = $("ringDeficit");
+    if (!box) return;
+    stats = stats || {};
+    var statuses = stats.statuses || {};
+    box.innerHTML =
+      renderManagerRingReport(statuses.all_sent || {}) +
+      renderWagonHintReport(statuses.wagons || {});
   }
 
   function renderRingRegistry(items) {
@@ -177,31 +242,100 @@
     box.innerHTML = "";
     if (!(items || []).length) {
       box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>По кольцам отправок пока нет.</div></div>";
+      closeRingRegistryDetail();
       return;
     }
     items.forEach(function (item) {
       var card = document.createElement("div");
-      card.className = "tk-card";
+      card.className = "tk-card tk-card--click";
       var scheme = item.scheme_name || schemeCodeLabel(item.scheme_code);
-      var lines = [
-        "Статус: " + (item.status_label || "—"),
-        "Базовых колец: " + formatQty(item.base_rings || 0) +
-          " · допы A–F: " + formatQty(item.extra_units || 0) +
-          " · K: " + formatQty(item.k_units || 0),
-        "Отправка: " + (item.dispatched_at_label || "—"),
-      ];
-      if (item.received_at_label) {
-        lines.push("Сдача БТС: " + item.received_at_label);
-      }
-      if (item.origin_zone) {
-        lines.push("Откуда грузили: " + item.origin_zone);
-      }
+      var lines = ["Статус: " + (item.status_label || "—")];
+      if (item.origin_zone) lines.push("Тупик: " + item.origin_zone);
+      if (item.dispatched_at_label) lines.push("Отправка: " + item.dispatched_at_label);
+      if (item.received_at_label) lines.push("БТС: " + item.received_at_label);
       card.innerHTML =
         "<div class='tk-card-title'>Вагон " + esc(item.wagon_number || "—") + "</div>" +
         "<div class='tk-card-meta'>" + esc(scheme) + "</div>" +
         "<div class='tk-card-meta'>" + esc(lines.join(" · ")) + "</div>";
+      card.addEventListener("click", function () {
+        openRingRegistryDetail(item);
+      });
       box.appendChild(card);
     });
+  }
+
+  function closeRingRegistryDetail() {
+    var box = $("ringRegistryDetail");
+    if (!box) return;
+    box.hidden = true;
+    box.innerHTML = "";
+  }
+
+  function openRingRegistryDetail(item) {
+    var box = $("ringRegistryDetail");
+    if (!box) return;
+    item = item || {};
+    var blocks = item.blocks || [];
+    var letters = { A: 0, B: 0, C: 0, D: 0, E: 0, F: 0, K: 0 };
+    blocks.forEach(function (block) {
+      var letter = String(block.letter || "").trim().toUpperCase();
+      if (letters[letter] != null) letters[letter] += 1;
+    });
+    var afCapacity = Math.min(letters.A, letters.B, letters.C, letters.D, letters.E, letters.F);
+    var ringTotal = Math.min(afCapacity, letters.K);
+    var extras = {};
+    ["A", "B", "C", "D", "E", "F"].forEach(function (letter) {
+      var qty = Math.max(0, letters[letter] - ringTotal);
+      if (qty > 0) extras[letter] = qty;
+    });
+    var scheme = item.scheme_name || schemeCodeLabel(item.scheme_code);
+    var meta = [];
+    meta.push(item.status_label || "—");
+    if (item.origin_zone) meta.push("тупик " + item.origin_zone);
+    if (item.slot_zone) meta.push("слот " + item.slot_zone + (item.slot_index ? " №" + item.slot_index : ""));
+    if (item.dispatched_at_label) meta.push("отправка " + item.dispatched_at_label);
+    if (item.received_at_label) meta.push("БТС " + item.received_at_label);
+    var html =
+      "<div class='tk-card'>" +
+      "<div class='tk-material-card-top'>" +
+      "<div class='tk-card-title'>Вагон " + esc(item.wagon_number || "—") + "</div>" +
+      "<button type='button' class='tk-btn' id='ringRegistryDetailClose'>Закрыть</button>" +
+      "</div>" +
+      "<div class='tk-card-meta'><strong>" + esc(scheme) + "</strong></div>" +
+      "<div class='tk-card-meta'>" + esc(meta.join(" · ")) + "</div>" +
+      "<div class='tk-material-grid' style='margin-top:10px'>" +
+      "<div class='tk-material-metric'><b>" + esc(item.slab_count || blocks.length || 0) + "</b><span>плит в отправке</span></div>" +
+      "<div class='tk-material-metric'><b>" + esc(ringTotal) + "</b><span>полных колец по факту</span></div>" +
+      "</div>" +
+      "<div class='tk-card-meta'>Блоки по буквам</div>" +
+      '<div class="tk-letter-row">' + compactLetterBadges(letters, "have") + "</div>" +
+      "<div class='tk-card-meta'>Допы A–F по факту</div>" +
+      '<div class="tk-letter-row">' + compactLetterBadges(extras, "hint") + "</div>";
+    if (item.returns_materials) {
+      html +=
+        "<div class='tk-card-meta'>Возврат: " + esc(returnStatusLabel(item.return_status)) +
+        " · куда: " + esc(item.return_target_zone || item.origin_zone || "—") +
+        (item.return_actual_zone ? " · принято: " + esc(item.return_actual_zone) : "") +
+        "</div>";
+    }
+    if (blocks.length) {
+      html += "<div class='tk-card-meta' style='margin-top:8px'>Плиты в вагоне</div><ul class='tk-list'>";
+      blocks.forEach(function (block) {
+        html +=
+          "<li class='tk-card'>" +
+          "<div class='tk-card-title'>" + esc(block.label || ((block.letter || "") + " " + (block.number || "")).trim() || "—") + "</div>" +
+          (block.vehicle_plate ? "<div class='tk-card-meta'>машина " + esc(block.vehicle_plate) + "</div>" : "") +
+          "</li>";
+      });
+      html += "</ul>";
+    } else {
+      html += "<div class='tk-card-meta'>Список плит по этой отправке пока пуст.</div>";
+    }
+    html += "</div>";
+    box.hidden = false;
+    box.innerHTML = html;
+    $("ringRegistryDetailClose").addEventListener("click", closeRingRegistryDetail);
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   function compactLetterMap(map) {
@@ -226,63 +360,6 @@
       }
     });
     return parts.length ? parts.join("") : '<span class="tk-letter-chip">нет</span>';
-  }
-
-  function loadHintText(list) {
-    list = list || [];
-    return list.length ? list.join(", ") : "не требуется";
-  }
-
-  function loadHintBadges(list) {
-    list = list || [];
-    if (!list.length) return '<span class="tk-letter-chip">не требуется</span>';
-    return list.map(function (letter) {
-      return '<span class="tk-letter-chip tk-letter-chip--hint">' + esc(letter) + '</span>';
-    }).join("");
-  }
-
-  function ringDeficitTone(data) {
-    data = data || {};
-    if (Number(data.next_extra_k_blocks_missing || 0) > 0) return "danger";
-    var deficits = data.next_extra_deficits || {};
-    if (Object.keys(deficits).some(function (key) { return Number(deficits[key] || 0) > 0; })) {
-      return "warn";
-    }
-    return "ok";
-  }
-
-  function renderRingDeficit(stats) {
-    var box = $("ringDeficit");
-    if (!box) return;
-    box.innerHTML = "";
-    stats = stats || {};
-    var statuses = stats.statuses || {};
-    var byOrigin = stats.by_origin || {};
-    var cards = [
-      { title: "Всего по циклу", data: statuses.all_sent || {} },
-      { title: "В пути / Кодар", data: statuses.transit || {} },
-      { title: "В вагонах", data: statuses.wagons || {} },
-      { title: "Сдано БТС", data: statuses.bts || {} },
-      { title: "Туран", data: byOrigin["ТУРАН"] || {} },
-      { title: "Грузовой", data: byOrigin["ГРУЗОВОЙ"] || {} },
-    ];
-    cards.forEach(function (item) {
-      var data = item.data || {};
-      var card = document.createElement("div");
-      var tone = ringDeficitTone(data);
-      card.className = "tk-card tk-ring-deficit-card tk-ring-deficit-card--" + tone;
-      card.innerHTML =
-        "<div class='tk-card-title'>" + esc(item.title) + "</div>" +
-        "<div class='tk-card-meta'>Доборы A–F</div>" +
-        '<div class="tk-letter-row">' + compactLetterBadges(data.extra_blocks || {}, "have") + "</div>" +
-        "<div class='tk-card-meta'>До следующего допкольца не хватает</div>" +
-        '<div class="tk-letter-row">' + compactLetterBadges(data.next_extra_deficits || {}, "need") + "</div>" +
-        "<div class='tk-card-meta'>K блоков не хватает: <b>" + esc(formatQty(data.next_extra_k_blocks_missing || 0)) + "</b></div>" +
-        "<div class='tk-card-meta'>Доп. колец можно закрыть: <b>" + esc(formatQty(data.additional_rings_possible || 0)) + "</b></div>" +
-        "<div class='tk-card-meta'>Грузить сейчас</div>" +
-        '<div class="tk-letter-row">' + loadHintBadges(data.load_hint || []) + "</div>";
-      box.appendChild(card);
-    });
   }
 
   function renderReturnQueue(items) {
@@ -314,39 +391,16 @@
   function refreshSelectors() {
     var reserveWagonValue = $("materialReserveWagon").value;
     var reserveMaterialValue = $("materialReserveMaterial").value;
-    var templatePickValue = $("templatePick").value;
-    var prepTemplateValue = $("prepTemplate").value;
-    var prepWagonValue = $("prepWagon").value;
-    $("materialUnit").innerHTML = unitOptions(($("materialUnit").value || "шт"));
-    var materials = (dashboard && dashboard.materials) || [];
+    if ($("materialUnit")) {
+      $("materialUnit").innerHTML = unitOptions(($("materialUnit").value || "шт"));
+    }
     var wagons = (dashboard && dashboard.wagons) || [];
-    var templates = (dashboard && dashboard.templates) || [];
     $("materialReserveWagon").innerHTML =
       '<option value="">— выберите вагон —</option>' +
       wagons.map(function (wagon) {
         return '<option value="' + esc(wagon.number) + '">' + esc(wagon.number + " · " + (wagon.stage_label || "")) + '</option>';
       }).join("");
-    $("templateMaterial").innerHTML =
-      '<option value="">— выберите материал —</option>' +
-      materials.map(function (item) {
-        return '<option value="' + item.id + '">' + esc(item.name) + '</option>';
-      }).join("");
-    var templateOptions =
-      '<option value="">— выберите схему —</option>' +
-      templates.map(function (item) {
-        return '<option value="' + item.id + '">' + esc(item.name) + '</option>';
-      }).join("");
-    $("templatePick").innerHTML = templateOptions;
-    $("prepTemplate").innerHTML = templateOptions;
-    $("prepWagon").innerHTML =
-      '<option value="">— выберите вагон —</option>' +
-      wagons.map(function (wagon) {
-        return '<option value="' + esc(wagon.number) + '">' + esc(wagon.number) + '</option>';
-      }).join("");
     $("materialReserveWagon").value = reserveWagonValue;
-    $("templatePick").value = templatePickValue;
-    $("prepTemplate").value = prepTemplateValue;
-    $("prepWagon").value = prepWagonValue;
     refreshReserveMaterialSelect();
     $("materialReserveMaterial").value = reserveMaterialValue;
   }
@@ -368,23 +422,14 @@
   function refreshReserveMaterialSelect() {
     var sel = $("materialReserveMaterial");
     if (!sel) return;
-    var wagon = getWagonByNumber($("materialReserveWagon").value);
-    if (!wagon) {
-      sel.innerHTML = '<option value="">— сначала выберите вагон —</option>';
-      return;
-    }
-    if (!wagon.template_id) {
-      sel.innerHTML = '<option value="">— сначала назначьте схему —</option>';
-      return;
-    }
-    var template = getTemplateById(wagon.template_id);
-    var templateItems = (template && template.items) || [];
+    var scheme = getScheme1();
+    var templateItems = (scheme && scheme.items) || [];
     if (!templateItems.length) {
-      sel.innerHTML = '<option value="">— в схеме нет материалов —</option>';
+      sel.innerHTML = '<option value="">— нет норм схемы 1 —</option>';
       return;
     }
     sel.innerHTML =
-      '<option value="">— выберите материал схемы —</option>' +
+      '<option value="">— выберите материал схемы 1 —</option>' +
       templateItems.map(function (item) {
         return '<option value="' + item.material_id + '">' +
           esc(item.material_name) + " · норма " + esc(formatQty(item.qty_norm)) + " " + esc(item.material_unit) +
@@ -392,98 +437,8 @@
       }).join("");
   }
 
-  function renderTemplates(items) {
-    var box = $("templateList");
-    box.innerHTML = "";
-    if (!(items || []).length) {
-      box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>Схем пока нет.</div></div>";
-      return;
-    }
-    items.forEach(function (item) {
-      var card = document.createElement("div");
-      card.className = "tk-card";
-      var tags = [schemeCodeLabel(item.scheme_code)];
-      if (item.extra_units) tags.push("допы " + item.extra_units);
-      if (item.k_goal) tags.push("K " + item.k_goal);
-      if (item.has_box) tags.push("ящик");
-      if (item.returns_materials) tags.push("возврат");
-      var html =
-        "<div class='tk-card-title'>" + esc(item.name) + "</div>" +
-        "<div class='tk-card-meta'>" +
-        esc(item.description || "—") +
-        " · строк: " + esc(item.item_count || 0) +
-        " · норма: " + esc(formatQty(item.total_norm_minutes || 0)) + " мин" +
-        "<br>" + esc(tags.join(" · ")) +
-        "</div>";
-      if (canManageMaterials) {
-        html +=
-          '<div class="tk-row2">' +
-          '<div><label class="tk-label">Название схемы</label><input class="tk-input" data-template-field="name" value="' + esc(item.name) + '"></div>' +
-          '<div><label class="tk-label">Описание</label><input class="tk-input" data-template-field="description" value="' + esc(item.description || "") + '"></div>' +
-          '</div>' +
-          '<div class="tk-row2">' +
-          '<div><label class="tk-label">Тип схемы</label><select class="tk-select" data-template-field="scheme_code">' +
-          '<option value="scheme1"' + (item.scheme_code === "scheme1" ? " selected" : "") + '>Схема 1</option>' +
-          '<option value="scheme2"' + (item.scheme_code === "scheme2" ? " selected" : "") + '>Схема 2</option>' +
-          '<option value="scheme3"' + (item.scheme_code === "scheme3" ? " selected" : "") + '>Схема 3</option>' +
-          '</select></div>' +
-          '<div><label class="tk-label">Допы A–F</label><input class="tk-input" data-template-field="extra_units" type="number" min="0" step="1" value="' + esc(item.extra_units || 0) + '"></div>' +
-          '</div>' +
-          '<div class="tk-row2">' +
-          '<div><label class="tk-label">K по схеме</label><input class="tk-input" data-template-field="k_goal" type="number" min="0" step="1" value="' + esc(item.k_goal || 0) + '"></div>' +
-          '<div><label class="tk-label">Ёмкость ящика</label><input class="tk-input" data-template-field="box_capacity_wagons" type="number" min="0" step="1" value="' + esc(item.box_capacity_wagons || 0) + '"></div>' +
-          '</div>' +
-          '<div class="tk-row2">' +
-          '<label class="tk-card-meta"><input type="checkbox" data-template-field="has_box"' + (item.has_box ? " checked" : "") + '> есть ящик</label>' +
-          '<label class="tk-card-meta"><input type="checkbox" data-template-field="returns_materials"' + (item.returns_materials ? " checked" : "") + '> возвращает материалы</label>' +
-          '</div>' +
-          '<div class="tk-actions"><button type="button" class="tk-btn tk-btn--primary" data-template-act="save">Сохранить схему</button></div>';
-      }
-      if ((item.items || []).length) {
-        html += "<div class='tk-card-meta'>Материалы схемы:</div><ul class='tk-list'>";
-        (item.items || []).forEach(function (row) {
-          html +=
-            "<li class='tk-card tk-master-scheme-row'>" +
-            '<div class="tk-row2">' +
-            '<div><label class="tk-label">Материал</label><select class="tk-select" data-item-id="' + row.id + '" data-item-field="material_id">' +
-            ((dashboard && dashboard.materials) || []).map(function (mat) {
-              return '<option value="' + mat.id + '"' + (mat.id === row.material_id ? " selected" : "") + '>' + esc(mat.name) + '</option>';
-            }).join("") +
-            '</select></div>' +
-            '<div><label class="tk-label">Норма</label><input class="tk-input" data-item-id="' + row.id + '" data-item-field="qty_norm" type="number" min="0" step="0.001" value="' + esc(row.qty_norm) + '"></div>' +
-            '</div>' +
-            '<div class="tk-row2">' +
-            '<div><label class="tk-label">Операция</label><input class="tk-input" data-item-id="' + row.id + '" data-item-field="work_type" value="' + esc(row.work_type || "") + '"></div>' +
-            '<div><label class="tk-label">Минуты</label><input class="tk-input" data-item-id="' + row.id + '" data-item-field="norm_minutes" type="number" min="0" step="0.001" value="' + esc(row.norm_minutes) + '"></div>' +
-            '</div>' +
-            '<label class="tk-label">Особенность</label><input class="tk-input" data-item-id="' + row.id + '" data-item-field="feature_text" value="' + esc(row.feature_text || "") + '">' +
-            '<label class="tk-label">Инструмент</label><input class="tk-input" data-item-id="' + row.id + '" data-item-field="tool_text" value="' + esc(row.tool_text || "") + '">' +
-            '<div class="tk-material-inline-actions">' +
-            '<button type="button" class="tk-btn tk-btn--primary" data-item-act="save" data-item-id="' + row.id + '">Сохранить строку</button>' +
-            '<button type="button" class="tk-btn tk-btn--danger" data-item-act="delete" data-item-id="' + row.id + '">Удалить строку</button>' +
-            '</div>' +
-            "</li>";
-        });
-        html += "</ul>";
-      }
-      card.innerHTML = html;
-      if (canManageMaterials) {
-        card.querySelector('[data-template-act="save"]').addEventListener("click", function () {
-          saveTemplate(item.id, card);
-        });
-        card.querySelectorAll('[data-item-act="save"]').forEach(function (btn) {
-          btn.addEventListener("click", function () {
-            saveTemplateItem(Number(btn.dataset.itemId), card);
-          });
-        });
-        card.querySelectorAll('[data-item-act="delete"]').forEach(function (btn) {
-          btn.addEventListener("click", function () {
-            deleteTemplateItemUi(Number(btn.dataset.itemId));
-          });
-        });
-      }
-      box.appendChild(card);
-    });
+  function renderTemplates() {
+    renderScheme1Norms();
   }
 
   function renderMaterials(items) {
@@ -547,18 +502,52 @@
     });
   }
 
+  function wagonSearchHaystack(wagon) {
+    return [
+      wagon.number,
+      wagon.stage_label,
+      wagon.location_label,
+      wagon.template_name,
+      schemeCodeLabel(wagon.scheme_code),
+      wagon.origin_zone,
+      wagon.is_ready ? "готов" : "",
+      (wagon.shortage_names || []).join(" "),
+    ].join(" ").toLowerCase();
+  }
+
+  function filterWagons(items) {
+    var q = String(wagonSearchQuery || "").trim().toLowerCase();
+    if (!q) return items || [];
+    return (items || []).filter(function (wagon) {
+      return wagonSearchHaystack(wagon).indexOf(q) !== -1;
+    });
+  }
+
   function renderWagons(items) {
     var box = $("materialWagonList");
+    var searchInput = $("wagonSearchQ");
+    if (searchInput) wagonSearchQuery = searchInput.value;
     box.innerHTML = "";
-    if (!(items || []).length) {
+    var allItems = items || [];
+    var visible = filterWagons(allItems);
+    if (!allItems.length) {
       box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>Вагоны для подготовки пока не найдены.</div></div>";
       return;
     }
-    items.forEach(function (wagon) {
+    if (!visible.length) {
+      box.innerHTML = "<div class='tk-card'><div class='tk-card-meta'>По запросу «" + esc(wagonSearchQuery) + "» вагоны не найдены.</div></div>";
+      return;
+    }
+    visible.forEach(function (wagon) {
       var card = document.createElement("div");
       card.className = "tk-card tk-card--click";
       if (wagon.is_ready) card.classList.add("tk-material-wagon-card--ready");
       else if (wagon.shortage_count > 0) card.classList.add("tk-material-wagon-card--warn");
+      var stateLine = wagon.is_ready
+        ? "Готов к отправке"
+        : (wagon.shortage_count > 0
+          ? "Не хватает: " + (wagon.shortage_names && wagon.shortage_names.length ? wagon.shortage_names.join(", ") : wagon.shortage_count || 0)
+          : "Подготовка в работе");
       card.innerHTML =
         '<div class="tk-material-card-top">' +
         '<div class="tk-card-title">Вагон ' + esc(wagon.number) + '</div>' +
@@ -568,22 +557,19 @@
         (wagon.template_name ? " · " + esc(schemeCodeLabel(wagon.scheme_code)) : "") +
         (wagon.norm_minutes ? " · " + esc(formatQty(wagon.norm_minutes)) + " мин" : "") +
         '</div>' +
-        '<div class="tk-card-meta">' +
-        (wagon.returns_materials
-          ? "Возврат: " + esc(returnStatusLabel(wagon.return_status)) +
-            " · куда: " + esc(wagon.return_target_zone || wagon.origin_zone || "—")
-          : "Без возврата материалов") +
-        '</div>' +
         '<div class="tk-card-meta">' + esc(wagon.location_label || "—") + '</div>' +
-        '<div class="tk-card-meta">Резервов: ' + esc(wagon.reserved_item_count || 0) +
-        " · дефицит: " + esc(wagon.shortage_count || 0) +
-        (wagon.shortage_names && wagon.shortage_names.length ? " · " + esc(wagon.shortage_names.join(", ")) : "") +
-        '</div>';
+        '<div class="tk-card-meta">' + esc(stateLine) + '</div>';
       card.addEventListener("click", function () {
         loadWagon(wagon.number);
       });
       box.appendChild(card);
     });
+  }
+
+  function applyWagonSearch() {
+    var input = $("wagonSearchQ");
+    wagonSearchQuery = input ? input.value : "";
+    renderWagons((dashboard && dashboard.wagons) || []);
   }
 
   function loadOverview(options) {
@@ -596,13 +582,11 @@
         dashboard = data;
         units = data.units || units;
         renderSummary(data);
-        renderSchemeSummary(data.scheme_summary || {});
+        renderScheme1Norms();
         renderRingSummary(data.ring_summary || {});
         renderRingDeficit(data.ring_summary || {});
-        renderTemplates(data.templates || []);
         renderMaterials(data.materials || []);
         renderRingRegistry(data.ring_registry || []);
-        renderReturnQueue(data.return_queue || []);
         renderWagons(data.wagons || []);
         refreshSelectors();
         if (activeWagon && !options.skipDetail) return loadWagon(activeWagon, { scroll: false });
@@ -893,52 +877,26 @@
           "<h4>Вагон " + esc(wagon.wagon_number) + "</h4>" +
           "<p>" + esc((wagon.wagon && wagon.wagon.stage_label) || "—") +
           ((wagon.wagon && wagon.wagon.location_label) ? " · " + esc(wagon.wagon.location_label) : "") +
-          (wagon.prep && wagon.prep.template_name ? "<br>Схема: <strong>" + esc(wagon.prep.template_name) + "</strong>" : "") +
-          (wagon.prep && wagon.prep.template_name ? " · " + esc(schemeCodeLabel(wagon.prep.scheme_code)) : "") +
+          (wagon.prep && wagon.prep.template_name ? "<br>Схема: <strong>" + esc(wagon.prep.template_name) + "</strong>" : "<br>Схема: <strong>Схема 1 общая</strong>") +
           "<br>Резервов: " + esc(wagon.reserved_item_count || 0) +
           " · дефицит: " + esc(wagon.shortage_count || 0) +
-          " · норма: " + esc(formatQty(wagon.total_norm_minutes || 0)) + " мин" +
-          "<br>Важно: при отправке вагона из тупика зарезервированный комплект спишется автоматически." +
           "</p>";
-        if (wagon.prep && wagon.prep.returns_materials) {
-          html +=
-            "<p class='tk-card-meta'>" +
-            "Возврат: " + esc(returnStatusLabel(wagon.prep.return_status)) +
-            " · откуда: " + esc(wagon.prep.origin_zone || "—") +
-            " · куда: " + esc(wagon.prep.return_target_zone || wagon.prep.origin_zone || "—") +
-            " · ёмкость: " + esc(wagon.prep.box_capacity_wagons || 0) + " ваг." +
-            (wagon.prep.actual_return_zone ? " · принято: " + esc(wagon.prep.actual_return_zone) : "") +
-            "</p>";
-        }
         if (items.length) {
           html += "<ul class='tk-list'>";
           items.forEach(function (item) {
+            var detail = [];
+            detail.push("норма " + formatQty(item.norm_per_wagon) + " " + item.unit);
+            detail.push("резерв " + formatQty(item.reserved_qty));
+            if (Number(item.shortage_qty || 0) > 0) detail.push("не хватает " + formatQty(item.shortage_qty) + " " + item.unit);
             html +=
               "<li class='tk-card'>" +
               "<div class='tk-material-card-top'><div class='tk-card-title'>" + esc(item.name) + "</div>" +
-              "<div class='tk-card-meta'>норма " + esc(formatQty(item.norm_per_wagon)) + " " + esc(item.unit) + "</div></div>" +
-              "<div class='tk-card-meta'>резерв: " + esc(formatQty(item.reserved_qty)) + " · уже ушло: " + esc(formatQty(item.consumed_qty)) + " · дефицит: " + esc(formatQty(item.shortage_qty)) + " " + esc(item.unit) + "</div>" +
+              "<div class='tk-card-meta'>" + esc(detail.join(" · ")) + "</div></div>" +
               "</li>";
           });
           html += "</ul>";
         } else {
           html += "<p class='tk-card-meta'>По этому вагону ещё нет расходников.</p>";
-        }
-        if ((wagon.operations || []).length) {
-          html += "<h5 class='tk-wagon-card-subtitle'>Операции по схеме</h5><ul class='tk-list'>";
-          (wagon.operations || []).forEach(function (op) {
-            html +=
-              "<li class='tk-card'>" +
-              "<div class='tk-card-title'>#" + esc(op.line_no) + " · " + esc(op.material_name) + " · " + esc(op.work_type || "операция") + "</div>" +
-              "<div class='tk-card-meta'>" +
-              "кол-во: " + esc(formatQty(op.qty_norm)) +
-              (op.feature_text ? " · " + esc(op.feature_text) : "") +
-              (op.tool_text ? " · " + esc(op.tool_text) : "") +
-              " · норма: " + esc(formatQty(op.norm_minutes || 0)) + " мин" +
-              "</div>" +
-              "</li>";
-          });
-          html += "</ul>";
         }
         box.innerHTML = html;
         if (options.scroll !== false) {
@@ -967,14 +925,12 @@
 
   function init() {
     setManagementVisibility();
-    $("materialUnit").innerHTML = unitOptions("шт");
-    $("materialCreateBtn").addEventListener("click", createMaterial);
-    $("materialReserveBtn").addEventListener("click", reserveMaterial);
-    $("templateCreateBtn").addEventListener("click", createTemplate);
-    $("templateItemAddBtn").addEventListener("click", addTemplateItem);
-    $("prepAssignBtn").addEventListener("click", assignTemplateToWagon);
+    if ($("materialUnit")) $("materialUnit").innerHTML = unitOptions("шт");
+    if ($("materialCreateBtn")) $("materialCreateBtn").addEventListener("click", createMaterial);
+    if ($("materialReserveBtn")) $("materialReserveBtn").addEventListener("click", reserveMaterial);
     loadCurrentUser();
-    $("materialReserveWagon").addEventListener("change", refreshReserveMaterialSelect);
+    if ($("materialReserveWagon")) $("materialReserveWagon").addEventListener("change", refreshReserveMaterialSelect);
+    if ($("wagonSearchQ")) $("wagonSearchQ").addEventListener("input", applyWagonSearch);
     apiFetch("/api/taksimo/stats")
       .then(parseApiResponse)
       .then(function (res) { renderDbStatus((res.data || {}).db || {}); })

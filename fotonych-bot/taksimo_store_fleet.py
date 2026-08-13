@@ -6,7 +6,14 @@ import json
 import sqlite3
 import time
 
-from taksimo_wagon_logic import analyze_fleet, analyze_wagon
+from taksimo_wagon_logic import (
+    analyze_fleet,
+    analyze_wagon,
+    normalize_scheme_code,
+    scheme_label,
+    scheme_max_slabs,
+    SCHEME_CODE_DEFAULT,
+)
 
 import taksimo_store as store
 
@@ -354,7 +361,8 @@ def wagon_plan() -> dict:
         conn.commit()
         rows = conn.execute(
             """
-            SELECT id, zone, slot_index, wagon_number, expected_blocks, updated_at
+            SELECT id, zone, slot_index, wagon_number, expected_blocks,
+                   scheme_code, has_box, updated_at
             FROM wagon_slots
             ORDER BY zone, slot_index
             """
@@ -369,14 +377,29 @@ def wagon_plan() -> dict:
             wagon_number = (row["wagon_number"] or "").strip()
             zone = str(row["zone"])
             slot_id = int(row["id"])
+            scheme_code = (row["scheme_code"] or SCHEME_CODE_DEFAULT).strip() or SCHEME_CODE_DEFAULT
+            try:
+                scheme_code = normalize_scheme_code(scheme_code)
+            except ValueError:
+                scheme_code = SCHEME_CODE_DEFAULT
+            has_box = bool(int(row["has_box"] or 0))
+            max_slabs = scheme_max_slabs(scheme_code)
             slabs = _slot_slabs(conn, zone, wagon_number)
-            logistics = analyze_wagon(slabs, max_slabs=MAX_WAGON_SLABS, wagon_number=wagon_number)
+            logistics = analyze_wagon(
+                slabs,
+                scheme_code=scheme_code,
+                wagon_number=wagon_number,
+            )
             manual_complete = _slot_is_complete(expected, slabs)
             slot_data = {
                 "id": slot_id,
                 "zone": zone,
                 "slot_index": row["slot_index"],
                 "wagon_number": wagon_number,
+                "scheme_code": scheme_code,
+                "scheme_label": scheme_label(scheme_code),
+                "has_box": has_box,
+                "max_slabs": max_slabs,
                 "expected_blocks": expected,
                 "slabs": slabs,
                 "slab_count": len(slabs),
@@ -425,10 +448,14 @@ def update_wagon_slot(
     *,
     wagon_number: str | None = None,
     expected_blocks: list[str] | str | None = None,
+    scheme_code: str | None = None,
 ) -> dict:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, zone, slot_index, wagon_number FROM wagon_slots WHERE id = ?",
+            """
+            SELECT id, zone, slot_index, wagon_number, scheme_code, has_box
+            FROM wagon_slots WHERE id = ?
+            """,
             (slot_id,),
         ).fetchone()
         if not row:
@@ -439,6 +466,9 @@ def update_wagon_slot(
         new_wagon = prev_wagon
         if wagon_number is not None:
             new_wagon = wagon_number.strip()
+            assigning = bool(new_wagon) and new_wagon != prev_wagon
+            if assigning and not scheme_code:
+                raise ValueError("Укажите схему погрузки: 1, 2 или 3")
             if new_wagon:
                 taken = conn.execute(
                     """
@@ -463,6 +493,23 @@ def update_wagon_slot(
                         raise ValueError(f"Вагон {new_wagon} в пути в Кодар")
             updates.append("wagon_number = ?")
             params.append(new_wagon)
+            if assigning and scheme_code:
+                code = normalize_scheme_code(scheme_code)
+                updates.append("scheme_code = ?")
+                params.append(code)
+                updates.append("has_box = ?")
+                params.append(1 if code == "scheme3" else 0)
+            elif not new_wagon:
+                updates.append("scheme_code = ?")
+                params.append(SCHEME_CODE_DEFAULT)
+                updates.append("has_box = ?")
+                params.append(0)
+        elif scheme_code is not None and prev_wagon:
+            code = normalize_scheme_code(scheme_code)
+            updates.append("scheme_code = ?")
+            params.append(code)
+            updates.append("has_box = ?")
+            params.append(1 if code == "scheme3" else 0)
         if expected_blocks is not None:
             normalized = _normalize_expected_blocks(expected_blocks)
             updates.append("expected_blocks = ?")
@@ -858,7 +905,10 @@ def list_wagon_cards(*, query: str = "", limit: int = 80) -> list[dict]:
 def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT id, zone, slot_index, wagon_number FROM wagon_slots WHERE id = ?",
+            """
+            SELECT id, zone, slot_index, wagon_number, scheme_code, has_box
+            FROM wagon_slots WHERE id = ?
+            """,
             (slot_id,),
         ).fetchone()
         if not row:
@@ -869,18 +919,40 @@ def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
         if not wagon_number:
             raise ValueError("В слоте нет вагона")
 
+        scheme_code = (row["scheme_code"] or SCHEME_CODE_DEFAULT).strip() or SCHEME_CODE_DEFAULT
+        try:
+            scheme_code = normalize_scheme_code(scheme_code)
+        except ValueError:
+            scheme_code = SCHEME_CODE_DEFAULT
+        has_box = bool(int(row["has_box"] or 0))
+        max_slabs = scheme_max_slabs(scheme_code)
+
         slabs = _slot_slabs(conn, zone, wagon_number)
-        if len(slabs) != MAX_WAGON_SLABS:
+        if len(slabs) != max_slabs:
             raise ValueError(
-                f"Нужно 9/9 блоков — сейчас {len(slabs)}/{MAX_WAGON_SLABS}"
+                f"Нужно {max_slabs}/{max_slabs} блоков — сейчас {len(slabs)}/{max_slabs} "
+                f"({scheme_label(scheme_code)})"
             )
 
         logistics = analyze_wagon(
-            slabs, max_slabs=MAX_WAGON_SLABS, wagon_number=wagon_number
+            slabs, scheme_code=scheme_code, wagon_number=wagon_number
         )
         if not logistics["is_complete"]:
+            label = scheme_label(scheme_code)
+            if scheme_code == "scheme2":
+                raise ValueError(
+                    f"Вагон не соответствует {label} — нужны только K, {max_slabs}/{max_slabs}"
+                )
+            if scheme_code == "scheme3":
+                missing = logistics.get("ring_letters_missing") or []
+                extra = f" — не хватает: {', '.join(missing)}" if missing else ""
+                raise ValueError(
+                    f"Вагон не соответствует {label} — 8 блоков A–F без K{extra}"
+                )
+            missing = logistics.get("ring_letters_missing") or []
+            extra = f" — не хватает: {', '.join(missing)}" if missing else ""
             raise ValueError(
-                "Вагон неполный — нужно кольцо 9/9 перед отправкой в Кодар"
+                f"Вагон неполный — кольцо A–K не закрыто{extra}. На Кодар не отправлять"
             )
 
         in_flight = conn.execute(
@@ -939,8 +1011,8 @@ def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
             )
 
         conn.execute(
-            "UPDATE wagon_slots SET wagon_number = '', updated_at = ? WHERE id = ?",
-            (now, slot_id),
+            "UPDATE wagon_slots SET wagon_number = '', scheme_code = ?, has_box = 0, updated_at = ? WHERE id = ?",
+            (SCHEME_CODE_DEFAULT, now, slot_id),
         )
         conn.execute(
             """
@@ -961,6 +1033,8 @@ def dispatch_wagon_to_kodar(slot_id: int, *, operator: str = "") -> dict:
             wagon_number=wagon_number,
             dispatch_id=dispatch_id,
             slot_zone=zone,
+            slot_scheme_code=scheme_code,
+            slot_has_box=has_box,
         )
         conn.commit()
 

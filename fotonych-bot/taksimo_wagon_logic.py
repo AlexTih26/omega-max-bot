@@ -6,10 +6,63 @@ import re
 
 RING_LETTERS = ("A", "B", "C", "D", "E", "F", "K")
 EXTRA_LETTERS = ("A", "B", "C", "D", "E", "F")
+SCHEME3_LETTERS = EXTRA_LETTERS
 RING_EXTRAS = 2
 SCHEME1_WAGON_SLOTS = 9
 SCHEME2_K_GOAL = 16
+SCHEME3_WAGON_SLOTS = 8
+SCHEME_CODE_DEFAULT = "scheme1"
+SCHEME_CODES = frozenset({"scheme1", "scheme2", "scheme3"})
 WAGON_DEAD_ENDS = ("ГРУЗОВОЙ", "ТУРАН")
+
+_SCHEME_LABELS = {
+    "scheme1": "Схема 1",
+    "scheme2": "Схема 2",
+    "scheme3": "Схема 3",
+}
+
+
+def normalize_scheme_code(value) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "1": "scheme1",
+        "2": "scheme2",
+        "3": "scheme3",
+        "scheme1": "scheme1",
+        "scheme2": "scheme2",
+        "scheme3": "scheme3",
+        "схема1": "scheme1",
+        "схема2": "scheme2",
+        "схема3": "scheme3",
+    }
+    code = aliases.get(raw, raw or SCHEME_CODE_DEFAULT)
+    if code not in SCHEME_CODES:
+        raise ValueError("Тип схемы: 1, 2 или 3")
+    return code
+
+
+def scheme_max_slabs(scheme_code: str) -> int:
+    code = normalize_scheme_code(scheme_code)
+    if code == "scheme2":
+        return SCHEME2_K_GOAL
+    if code == "scheme3":
+        return SCHEME3_WAGON_SLOTS
+    return SCHEME1_WAGON_SLOTS
+
+
+def scheme_label(scheme_code: str) -> str:
+    return _SCHEME_LABELS.get(normalize_scheme_code(scheme_code), "Схема 1")
+
+
+def validate_slab_letter_for_scheme(letter: str, scheme_code: str) -> None:
+    letter = (letter or "").strip().upper()
+    code = normalize_scheme_code(scheme_code)
+    if code == "scheme2" and letter != "K":
+        raise ValueError("Схема 2: только блоки K")
+    if code == "scheme3" and letter == "K":
+        raise ValueError("Схема 3: блок K не допускается")
+    if code == "scheme3" and letter not in SCHEME3_LETTERS:
+        raise ValueError("Схема 3: только буквы A–F")
 
 
 def _letter_counts(slabs: list[dict]) -> dict[str, int]:
@@ -39,6 +92,44 @@ def ring_is_complete(
 def missing_ring_letters(slabs: list[dict]) -> list[str]:
     counts = _letter_counts(slabs)
     return [letter for letter in RING_LETTERS if counts[letter] < 1]
+
+
+def _scheme3_letter_counts(slabs: list[dict]) -> dict[str, int]:
+    counts = {letter: 0 for letter in SCHEME3_LETTERS}
+    for slab in slabs:
+        letter = (slab.get("letter") or "").strip().upper()
+        if letter in counts:
+            counts[letter] += 1
+    return counts
+
+
+def missing_scheme3_letters(slabs: list[dict]) -> list[str]:
+    counts = _scheme3_letter_counts(slabs)
+    return [letter for letter in SCHEME3_LETTERS if counts[letter] < 1]
+
+
+def scheme3_is_complete(slabs: list[dict]) -> bool:
+    if len(slabs) != SCHEME3_WAGON_SLOTS:
+        return False
+    counts = _scheme3_letter_counts(slabs)
+    if any((slab.get("letter") or "").strip().upper() == "K" for slab in slabs):
+        return False
+    return all(counts[letter] >= 1 for letter in SCHEME3_LETTERS)
+
+
+def scheme2_is_complete(slabs: list[dict]) -> bool:
+    if len(slabs) != SCHEME2_K_GOAL:
+        return False
+    return all((slab.get("letter") or "").strip().upper() == "K" for slab in slabs)
+
+
+def wagon_scheme_is_complete(slabs: list[dict], scheme_code: str) -> bool:
+    code = normalize_scheme_code(scheme_code)
+    if code == "scheme2":
+        return scheme2_is_complete(slabs)
+    if code == "scheme3":
+        return scheme3_is_complete(slabs)
+    return ring_is_complete(slabs, max_slabs=SCHEME1_WAGON_SLOTS)
 
 
 def decompose_wagon_ring(
@@ -79,13 +170,125 @@ def decompose_wagon_ring(
     }
 
 
+def _analyze_wagon_scheme2(
+    slabs: list[dict],
+    *,
+    wagon_number: str = "",
+) -> dict:
+    max_slabs = SCHEME2_K_GOAL
+    n = len(slabs)
+    has_wagon = bool((wagon_number or "").strip())
+    non_k = [
+        (slab.get("letter") or "").strip().upper()
+        for slab in slabs
+        if (slab.get("letter") or "").strip().upper() != "K"
+    ]
+    k_count = n - len(non_k)
+    is_complete = scheme2_is_complete(slabs)
+    if is_complete:
+        return {
+            "scheme": "scheme2",
+            "scheme_code": "scheme2",
+            "is_complete": True,
+            "show_hint_star": False,
+            "slab_count": n,
+            "max_slabs": max_slabs,
+            "k_count": k_count,
+            "ring_letters_missing": [],
+            "hints": [],
+            "summary": f"{max_slabs}/{max_slabs} ✓",
+        }
+    hints: list[str] = []
+    if non_k:
+        hints.append("Только K на вагон (схема 2)")
+    if n == 0:
+        hints.append(f"Схема 2: {max_slabs} блоков K")
+    elif n < max_slabs:
+        hints.append(f"Нужно ещё {max_slabs - n} K")
+    elif n == max_slabs and non_k:
+        hints.insert(0, "Уберите лишние блоки — только K")
+    return {
+        "scheme": "scheme2",
+        "scheme_code": "scheme2",
+        "is_complete": False,
+        "show_hint_star": has_wagon,
+        "slab_count": n,
+        "max_slabs": max_slabs,
+        "k_count": k_count,
+        "ring_letters_missing": [],
+        "hints": hints[:3],
+        "summary": f"{n}/{max_slabs}",
+    }
+
+
+def _analyze_wagon_scheme3(
+    slabs: list[dict],
+    *,
+    wagon_number: str = "",
+) -> dict:
+    max_slabs = SCHEME3_WAGON_SLOTS
+    n = len(slabs)
+    has_wagon = bool((wagon_number or "").strip())
+    missing = missing_scheme3_letters(slabs)
+    has_k = any((slab.get("letter") or "").strip().upper() == "K" for slab in slabs)
+    is_complete = scheme3_is_complete(slabs)
+    if is_complete:
+        return {
+            "scheme": "scheme3",
+            "scheme_code": "scheme3",
+            "is_complete": True,
+            "show_hint_star": False,
+            "slab_count": n,
+            "max_slabs": max_slabs,
+            "k_count": 0,
+            "ring_letters_missing": [],
+            "hints": ["Ящик с крепежом — возврат"],
+            "summary": f"{max_slabs}/{max_slabs} ✓",
+        }
+    hints: list[str] = []
+    if has_k:
+        hints.append("Схема 3: без K")
+    if n == 0:
+        hints.append("8 блоков A–F: по одному + 2 запасных")
+    else:
+        for letter in missing:
+            if len(hints) >= 3:
+                break
+            hints.append(f"Нужен {letter}")
+        if len(hints) < 3 and not missing and not has_k and n < max_slabs:
+            hints.append(f"Ещё {max_slabs - n} из A–F")
+        if len(hints) < 3 and n == max_slabs and missing:
+            need = ", ".join(missing[:3])
+            hints.insert(0, f"Довезите {need}")
+    return {
+        "scheme": "scheme3",
+        "scheme_code": "scheme3",
+        "is_complete": False,
+        "show_hint_star": has_wagon,
+        "slab_count": n,
+        "max_slabs": max_slabs,
+        "k_count": 0,
+        "ring_letters_missing": missing,
+        "hints": hints[:3],
+        "summary": f"{n}/{max_slabs}",
+    }
+
+
 def analyze_wagon(
     slabs: list[dict],
     *,
-    max_slabs: int = SCHEME1_WAGON_SLOTS,
+    max_slabs: int | None = None,
+    scheme_code: str = SCHEME_CODE_DEFAULT,
     wagon_number: str = "",
 ) -> dict:
     """★ Подсказки по одному вагону — без номеров плит и без сводки по двору."""
+    code = normalize_scheme_code(scheme_code)
+    if code == "scheme2":
+        return _analyze_wagon_scheme2(slabs, wagon_number=wagon_number)
+    if code == "scheme3":
+        return _analyze_wagon_scheme3(slabs, wagon_number=wagon_number)
+
+    max_slabs = max_slabs or SCHEME1_WAGON_SLOTS
     n = len(slabs)
     counts = _letter_counts(slabs)
     k_count = counts.get("K", 0)
@@ -95,7 +298,8 @@ def analyze_wagon(
 
     if is_complete:
         return {
-            "scheme": "ring",
+            "scheme": "scheme1",
+            "scheme_code": "scheme1",
             "is_complete": True,
             "show_hint_star": False,
             "slab_count": n,
@@ -103,7 +307,7 @@ def analyze_wagon(
             "k_count": k_count,
             "ring_letters_missing": [],
             "hints": [],
-            "summary": "9/9 ✓",
+            "summary": f"{max_slabs}/{max_slabs} ✓",
         }
 
     hints: list[str] = []
@@ -128,7 +332,8 @@ def analyze_wagon(
             hints.insert(0, f"Довезите {need} до полного кольца")
 
     return {
-        "scheme": "ring",
+        "scheme": "scheme1",
+        "scheme_code": "scheme1",
         "is_complete": False,
         "show_hint_star": has_wagon,
         "slab_count": n,

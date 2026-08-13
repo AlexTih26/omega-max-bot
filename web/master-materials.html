@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#141820">
   <title>MAX · Мастер отгрузки</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/taksimo.css?v=60">
+  <link rel="stylesheet" href="/taksimo.css?v=64">
 </head>
 <body>
   <div class="app taksimo-app">
@@ -27,144 +27,16 @@
     </header>
 
     <main class="content tk-main">
-      <p class="tk-yard-legend">Отдельная программа мастера в общей базе: остатки, нормы, резерв под вагон и автосписание при отправке вагона из тупика.</p>
-      <div class="tk-card tk-master-intro">
-        <div class="tk-card-title">Это один экран, не разные документы</div>
-        <p class="tk-card-meta">Слева сначала настраивается схема, ниже идут шаги работы по вагону. Цвета показывают, что к чему относится.</p>
-        <div class="tk-master-legend">
-          <div class="tk-master-legend-item tk-master-legend-item--scheme">Фиолетовый: сама схема</div>
-          <div class="tk-master-legend-item tk-master-legend-item--scheme-lines">Сиреневый: строки внутри схемы</div>
-          <div class="tk-master-legend-item tk-master-legend-item--step1">Шаг 1: открыть вагон</div>
-          <div class="tk-master-legend-item tk-master-legend-item--step2">Шаг 2: назначить схему</div>
-          <div class="tk-master-legend-item tk-master-legend-item--step3">Шаг 3: резервировать материалы</div>
-          <div class="tk-master-legend-item tk-master-legend-item--step4">Шаг 4: списание при отправке</div>
-        </div>
-      </div>
+      <p class="tk-yard-legend">Упрощённый режим: сейчас работает только Схема 1 общая и её расход материалов на вагон.</p>
 
       <div class="tk-material-summary" id="materialSummary"></div>
 
       <div class="tk-material-layout">
         <div>
-          <h3 class="tk-section-title">Схема крепления</h3>
-          <div class="tk-card tk-material-form tk-master-block tk-master-block--scheme" id="templateCreateCard">
-            <p class="tk-card-meta"><b>Фиолетовый блок</b>: здесь создаётся и редактируется сама схема.</p>
-            <label class="tk-label" for="templateName">Название схемы</label>
-            <input class="tk-input" id="templateName" placeholder="Схема 1, Схема 2">
-            <label class="tk-label" for="templateDescription">Описание</label>
-            <input class="tk-input" id="templateDescription" placeholder="деревянная, металлоемкая, под блок-пакет">
-            <div class="tk-row2">
-              <div>
-                <label class="tk-label" for="templateSchemeCode">Тип схемы</label>
-                <select class="tk-select" id="templateSchemeCode">
-                  <option value="scheme1">Схема 1 · кольцо + допы</option>
-                  <option value="scheme2">Схема 2 · 16 K</option>
-                  <option value="scheme3">Схема 3 · с ящиком</option>
-                </select>
-              </div>
-              <div>
-                <label class="tk-label" for="templateExtraUnits">Допы A–F</label>
-                <input class="tk-input" id="templateExtraUnits" type="number" min="0" step="1" placeholder="2">
-              </div>
-            </div>
-            <div class="tk-row2">
-              <div>
-                <label class="tk-label" for="templateKGoal">K по схеме</label>
-                <input class="tk-input" id="templateKGoal" type="number" min="0" step="1" placeholder="0 или 16">
-              </div>
-              <div>
-                <label class="tk-label" for="templateBoxCapacity">Ёмкость ящика, вагонов</label>
-                <input class="tk-input" id="templateBoxCapacity" type="number" min="0" step="1" placeholder="0, 1, 2">
-              </div>
-            </div>
-            <div class="tk-row2">
-              <label class="tk-card-meta"><input type="checkbox" id="templateHasBox"> есть ящик</label>
-              <label class="tk-card-meta"><input type="checkbox" id="templateReturnsMaterials"> возвращает материалы</label>
-            </div>
-            <div class="tk-actions">
-              <button type="button" class="tk-btn tk-btn--primary" id="templateCreateBtn">Создать схему</button>
-            </div>
-            <div class="tk-material-list" id="templateList" style="margin-top:10px"></div>
-          </div>
-
-          <h3 class="tk-section-title">Строка схемы</h3>
-          <div class="tk-card tk-material-form tk-master-block tk-master-block--scheme-lines" id="templateItemCard">
-            <p class="tk-card-meta"><b>Сиреневый блок</b>: здесь прописываются строки внутри выбранной схемы.</p>
-            <label class="tk-label" for="templatePick">Схема</label>
-            <select class="tk-select" id="templatePick">
-              <option value="">— выберите схему —</option>
-            </select>
-            <div class="tk-row2">
-              <div>
-                <label class="tk-label" for="templateMaterial">Материал</label>
-                <select class="tk-select" id="templateMaterial">
-                  <option value="">— выберите материал —</option>
-                </select>
-              </div>
-              <div>
-                <label class="tk-label" for="templateQty">Количество</label>
-                <input class="tk-input" id="templateQty" type="number" min="0" step="0.001" placeholder="0">
-              </div>
-            </div>
-            <div class="tk-row2">
-              <div>
-                <label class="tk-label" for="templateWorkType">Операция</label>
-                <input class="tk-input" id="templateWorkType" placeholder="заготовка, установка, скрутка">
-              </div>
-              <div>
-                <label class="tk-label" for="templateMinutes">Норма времени, мин</label>
-                <input class="tk-input" id="templateMinutes" type="number" min="0" step="0.001" placeholder="0">
-              </div>
-            </div>
-            <label class="tk-label" for="templateFeature">Особенность</label>
-            <input class="tk-input" id="templateFeature" placeholder="подгонка по месту, 8 нитей">
-            <label class="tk-label" for="templateTool">Инструмент</label>
-            <input class="tk-input" id="templateTool" placeholder="бензопила, кран, болгарка">
-            <div class="tk-actions">
-              <button type="button" class="tk-btn tk-btn--primary" id="templateItemAddBtn">Добавить строку в схему</button>
-            </div>
-          </div>
-
-          <h3 class="tk-section-title">Порядок по вагону</h3>
-          <div class="tk-master-flow">
-            <div class="tk-card tk-master-step tk-master-step--step1">
-              <div class="tk-card-title">1. Открыть вагон</div>
-              <p class="tk-card-meta">Нажмите вагон ниже в блоке <b>Вагоны в подготовке</b>, чтобы открыть его карточку.</p>
-            </div>
-            <div class="tk-card tk-master-step tk-master-step--step2">
-              <div class="tk-card-title">2. Назначить вагону схему</div>
-              <p class="tk-card-meta">Выберите вагон и схему, чтобы привязать к нему комплект расходников.</p>
-            </div>
-            <div class="tk-card tk-master-step tk-master-step--step3">
-              <div class="tk-card-title">3. Резервировать материалы</div>
-              <p class="tk-card-meta">После назначения схемы резервируются только материалы этой схемы.</p>
-            </div>
-            <div class="tk-card tk-master-step tk-master-step--step4">
-              <div class="tk-card-title">4. Автосписание</div>
-              <p class="tk-card-meta">Когда вагон уходит из тупика, резерв автоматически списывается.</p>
-            </div>
-          </div>
-
-          <h3 class="tk-section-title">Назначить схему вагону</h3>
-          <div class="tk-card tk-material-form tk-master-block tk-master-block--step2" id="prepAssignCard">
-            <div class="tk-row2">
-              <div>
-                <label class="tk-label" for="prepWagon">Вагон</label>
-                <select class="tk-select" id="prepWagon">
-                  <option value="">— выберите вагон —</option>
-                </select>
-              </div>
-              <div>
-                <label class="tk-label" for="prepTemplate">Схема</label>
-                <select class="tk-select" id="prepTemplate">
-                  <option value="">— выберите схему —</option>
-                </select>
-              </div>
-            </div>
-            <label class="tk-label" for="prepNote">Примечание</label>
-            <input class="tk-input" id="prepNote" placeholder="особый вагон, срочная подготовка">
-            <div class="tk-actions">
-              <button type="button" class="tk-btn tk-btn--primary" id="prepAssignBtn">Назначить схему вагону</button>
-            </div>
+          <h3 class="tk-section-title">Схема 1 общая · расход на вагон</h3>
+          <div class="tk-card tk-master-block tk-master-block--scheme">
+            <p class="tk-card-meta">Это вшитый расход материалов на 1 вагон. Позже добавим схемы 2 и 3 с другим расходом.</p>
+            <div class="tk-material-list" id="scheme1NormList"></div>
           </div>
 
           <h3 class="tk-section-title">Новый материал</h3>
@@ -177,7 +49,7 @@
                 <select class="tk-select" id="materialUnit"></select>
               </div>
               <div>
-                <label class="tk-label" for="materialNorm">Норма на вагон</label>
+                <label class="tk-label" for="materialNorm">Норма на вагон · схема 1</label>
                 <input class="tk-input" id="materialNorm" type="number" min="0" step="0.001" placeholder="0">
               </div>
             </div>
@@ -190,7 +62,7 @@
 
           <h3 class="tk-section-title">Резерв под вагон</h3>
           <div class="tk-card tk-material-form tk-master-block tk-master-block--step3" id="materialReserveCard">
-            <p class="tk-card-meta">Сначала назначьте вагону схему. Ниже для резерва будут доступны только материалы этой схемы.</p>
+            <p class="tk-card-meta">Резерв идёт по расходу Схемы 1 общей. При отправке вагона из тупика резерв спишется автоматически.</p>
             <div class="tk-row2">
               <div>
                 <label class="tk-label" for="materialReserveWagon">Вагон</label>
@@ -199,9 +71,9 @@
                 </select>
               </div>
               <div>
-                <label class="tk-label" for="materialReserveMaterial">Материал схемы</label>
+                <label class="tk-label" for="materialReserveMaterial">Материал схемы 1</label>
                 <select class="tk-select" id="materialReserveMaterial">
-                  <option value="">— сначала выберите вагон —</option>
+                  <option value="">— выберите материал —</option>
                 </select>
               </div>
             </div>
@@ -220,11 +92,6 @@
             </div>
           </div>
 
-          <h3 class="tk-section-title">Схемы и тайминг</h3>
-          <div class="tk-card tk-master-block tk-master-block--step4">
-            <p class="tk-card-meta">Для каждой схемы можно заводить строки с операцией, особенностью, инструментом и нормой времени. Это уже соответствует логике твоих таблиц по вагонам.</p>
-            <p class="tk-card-meta">Резервы списываются автоматически в момент отправки вагона из тупика.</p>
-          </div>
           <div class="tk-card" id="materialsReadonlyNote" hidden>
             <p class="tk-card-meta">Редактирование расходников доступно только оператору1. Для мастеров этот контур будет идти через чат-бот.</p>
           </div>
@@ -233,25 +100,23 @@
         <div>
           <h3 class="tk-section-title">Реестр колец</h3>
           <div class="tk-card">
-            <p class="tk-card-meta">Реестр накопительный: по умолчанию показывает весь период перевозки колец с тупиков Туран и Грузовой. Базовые кольца считаются по фактическим отправкам вагонов, а допы A–F и K показываются как накопление для следующих колец.</p>
+            <p class="tk-card-meta">Считаем только отправленные: БТС + Кодар. Формат как у менеджера: закрытые кольца, незакрытые и чего не хватает.</p>
           </div>
           <div class="tk-material-summary" id="ringSummary"></div>
           <div class="tk-material-list" id="ringDeficit"></div>
           <div class="tk-material-list" id="ringRegistry"></div>
-
-          <h3 class="tk-section-title">Циклы схем</h3>
-          <div class="tk-material-summary" id="schemeSummary"></div>
+          <div class="tk-detail" id="ringRegistryDetail" hidden></div>
 
           <h3 class="tk-section-title">Остатки расходников</h3>
           <div class="tk-material-list" id="materialList"></div>
-
-          <h3 class="tk-section-title">Возвраты по ящикам</h3>
-          <div class="tk-material-list" id="returnQueue"></div>
         </div>
       </div>
 
       <h3 class="tk-section-title">Вагоны в подготовке</h3>
-      <div class="tk-material-wagons" id="materialWagonList"></div>
+      <label class="tk-label" for="wagonSearchQ">Поиск по вагонам</label>
+      <input class="tk-input" id="wagonSearchQ" type="search" inputmode="search"
+        placeholder="номер · тупик · статус" autocomplete="off">
+      <div class="tk-material-wagons" id="materialWagonList" style="margin-top:10px"></div>
       <div class="tk-detail" id="materialWagonDetail" hidden></div>
 
       <p class="tk-db-status" id="dbStatus">База: …</p>
@@ -260,6 +125,6 @@
 
     <div class="tk-toast" id="toast" hidden></div>
   </div>
-    <script src="/master-materials.js?v=14"></script>
+  <script src="/master-materials.js?v=21"></script>
 </body>
 </html>

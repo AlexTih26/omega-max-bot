@@ -339,6 +339,7 @@
           <select class="tk-select" id="wagonSlotPick">
             <option value="">— пусто —</option>
           </select>
+          <p class="tk-yard-legend" id="wagonSlotScheme" hidden></p>
           <label class="tk-label" for="wagonSlotExpected">Комплект блоков (для зелёной подсветки)</label>
           <input class="tk-input" id="wagonSlotExpected" placeholder="B4415, A123, …">
           <div class="tk-sheet-actions">
@@ -346,6 +347,31 @@
             <button type="button" class="tk-btn tk-btn--warn" id="wagonSlotClear">Освободить слот</button>
           </div>
         </details>
+      </div>
+    </div>
+
+    <div class="tk-sheet" id="wagonSchemeSheet" hidden>
+      <div class="tk-sheet-backdrop" id="wagonSchemeBackdrop"></div>
+      <div class="tk-sheet-panel tk-sheet-panel--narrow">
+        <div class="tk-sheet-header">
+          <h3 class="tk-sheet-title">Какая схема?</h3>
+          <button type="button" class="tk-sheet-close" id="wagonSchemeClose" aria-label="Закрыть">Закрыть</button>
+        </div>
+        <p class="tk-yard-legend" id="wagonSchemeHint">Выберите схему погрузки перед постановкой вагона в слот.</p>
+        <div class="tk-scheme-picker">
+          <button type="button" class="tk-btn tk-scheme-btn" data-scheme="scheme1">
+            <strong>Схема 1</strong>
+            <span>9 блоков · A–K + 2 запасных</span>
+          </button>
+          <button type="button" class="tk-btn tk-scheme-btn" data-scheme="scheme2">
+            <strong>Схема 2</strong>
+            <span>16 блоков · только K</span>
+          </button>
+          <button type="button" class="tk-btn tk-scheme-btn" data-scheme="scheme3">
+            <strong>Схема 3</strong>
+            <span>8 блоков · A–F + ящик</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -383,6 +409,6 @@
       </nav>
     </div>
   </div>
-  <script src="/taksimo.js?v=38"></script>
+  <script src="/taksimo.js?v=39"></script>
 </body>
 </html>

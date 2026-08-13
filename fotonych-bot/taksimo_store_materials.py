@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 
@@ -22,13 +23,46 @@ RETURN_STATUS_PLANNED = "planned_return"
 RETURN_STATUS_IN_TRANSIT = "in_transit_back"
 RETURN_STATUS_RETURNED = "returned_to_zone"
 EXTRA_RING_AF_UNITS = 6
-K_RING_UNITS = 16
+K_RING_UNITS = 1
 
 
 def _ts_label(raw_ts) -> str:
     if not raw_ts:
         return ""
     return time.strftime("%d.%m.%Y %H:%M", time.localtime(float(raw_ts)))
+
+
+def _dispatch_blocks_for_registry(raw_json) -> list[dict]:
+    try:
+        data = json.loads(raw_json or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    blocks = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        letter = str(item.get("letter") or "").strip().upper()
+        number = str(item.get("number") or "").strip()
+        if not letter and label:
+            parts = label.split()
+            letter = (parts[0] if parts else "").strip().upper()
+            if not number and len(parts) > 1:
+                number = parts[1].strip()
+        if not label and letter:
+            label = f"{letter} {number}".strip()
+        blocks.append(
+            {
+                "label": label,
+                "letter": letter,
+                "number": number,
+                "suffix": str(item.get("suffix") or "").strip(),
+                "vehicle_plate": str(item.get("vehicle_plate") or "").strip(),
+            }
+        )
+    return blocks
 
 
 def _empty_ring_counter() -> dict:
@@ -43,8 +77,13 @@ def _empty_ring_counter() -> dict:
         "base_ring_wagons": 0,
         "scheme2_wagons": 0,
         "extra_af_sets": 0,
+        "extra_blocks_total": 0,
         "extra_k_blocks": 0,
         "extra_k_sets": 0,
+        "closed_ring_blocks": 0,
+        "open_rings": 0,
+        "open_ring_missing": [],
+        "open_rings_k_missing": 0,
         "additional_rings_possible": 0,
         "additional_k_blocks_missing": 0,
         "additional_k_sets_missing": 0,
@@ -53,51 +92,61 @@ def _empty_ring_counter() -> dict:
 
 def _finalize_ring_counter(counter: dict) -> dict:
     blocks = counter["blocks"]
-    af_ring_capacity = min(int(blocks.get(letter, 0)) for letter in ("A", "B", "C", "D", "E", "F"))
+    af_letters = ("A", "B", "C", "D", "E", "F")
+    af_ring_capacity = min(int(blocks.get(letter, 0)) for letter in af_letters)
     k_count = int(blocks.get("K", 0))
+    ring_total = min(af_ring_capacity, k_count)
     counter["af_ring_capacity"] = af_ring_capacity
-    counter["ring_total"] = min(af_ring_capacity, k_count)
+    counter["ring_total"] = ring_total
     counter["k_shortage"] = max(0, af_ring_capacity - k_count)
-    base_ring_wagons = int(counter.get("base_ring_wagons", 0) or 0)
-    extra_af_sets = min(
-        max(0, int(blocks.get(letter, 0)) - base_ring_wagons)
-        for letter in ("A", "B", "C", "D", "E", "F")
-    )
-    extra_k_blocks = max(0, k_count - base_ring_wagons)
-    extra_k_sets = extra_k_blocks // K_RING_UNITS
     extra_blocks = {
-        letter: max(0, int(blocks.get(letter, 0)) - base_ring_wagons)
-        for letter in ("A", "B", "C", "D", "E", "F")
+        letter: max(0, int(blocks.get(letter, 0)) - ring_total)
+        for letter in af_letters
     }
-    next_extra_target = extra_af_sets + 1
-    next_extra_deficits = {
-        letter: max(0, next_extra_target - extra_blocks[letter])
-        for letter in ("A", "B", "C", "D", "E", "F")
+    extra_af_sets = min(extra_blocks.values()) if extra_blocks else 0
+    extra_k_blocks = max(0, k_count - ring_total)
+    extra_blocks_total = sum(extra_blocks.values())
+    open_rings = max(extra_blocks.values()) if extra_blocks else 0
+    open_ring_missing: list[list[str]] = []
+    for index in range(open_rings):
+        have = {letter for letter, qty in extra_blocks.items() if qty > index}
+        missing = [letter for letter in af_letters if letter not in have]
+        if missing:
+            open_ring_missing.append(missing)
+    additional_rings_possible = min(extra_af_sets, extra_k_blocks)
+    additional_k_blocks_missing = max(0, open_rings - extra_k_blocks)
+    remaining_extra_blocks = {
+        letter: max(0, qty - additional_rings_possible)
+        for letter, qty in extra_blocks.items()
     }
+    remaining_k_blocks = max(0, extra_k_blocks - additional_rings_possible)
+    ready_next_extra_ring = min(remaining_extra_blocks.values()) if remaining_extra_blocks else 0
+    if ready_next_extra_ring > 0:
+        next_extra_deficits = {letter: 0 for letter in af_letters}
+        next_extra_k_blocks_missing = max(0, K_RING_UNITS - remaining_k_blocks)
+    else:
+        next_extra_deficits = {
+            letter: max(0, 1 - remaining_extra_blocks[letter])
+            for letter in af_letters
+        }
+        next_extra_k_blocks_missing = 0
     counter["extra_af_sets"] = extra_af_sets
     counter["extra_blocks"] = extra_blocks
+    counter["extra_blocks_total"] = extra_blocks_total
     counter["extra_k_blocks"] = extra_k_blocks
-    counter["extra_k_sets"] = extra_k_sets
-    counter["additional_rings_possible"] = min(extra_af_sets, extra_k_sets)
-    counter["additional_k_blocks_missing"] = max(0, extra_af_sets * K_RING_UNITS - extra_k_blocks)
-    counter["additional_k_sets_missing"] = max(0, extra_af_sets - extra_k_sets)
-    counter["next_extra_target"] = next_extra_target
+    counter["extra_k_sets"] = extra_k_blocks // K_RING_UNITS
+    counter["closed_ring_blocks"] = ring_total * 7
+    counter["open_rings"] = open_rings
+    counter["open_ring_missing"] = open_ring_missing
+    counter["open_rings_k_missing"] = additional_k_blocks_missing
+    counter["additional_rings_possible"] = additional_rings_possible
+    counter["additional_k_blocks_missing"] = additional_k_blocks_missing
+    counter["additional_k_sets_missing"] = additional_k_blocks_missing
+    counter["next_extra_target"] = additional_rings_possible + 1
     counter["next_extra_deficits"] = next_extra_deficits
-    counter["next_extra_k_blocks_missing"] = max(0, next_extra_target * K_RING_UNITS - extra_k_blocks)
+    counter["next_extra_k_blocks_missing"] = next_extra_k_blocks_missing
     counter["load_hint"] = _pick_load_hint(next_extra_deficits)
     return counter
-
-
-def _additional_ring_metrics(extra_units: int, k_units: int) -> dict:
-    extra_af_sets = max(0, int(extra_units or 0)) // EXTRA_RING_AF_UNITS
-    extra_k_sets = max(0, int(k_units or 0)) // K_RING_UNITS
-    return {
-        "extra_af_sets": extra_af_sets,
-        "extra_k_sets": extra_k_sets,
-        "additional_rings_possible": min(extra_af_sets, extra_k_sets),
-        "additional_k_blocks_missing": max(0, extra_af_sets * K_RING_UNITS - int(k_units or 0)),
-        "additional_k_sets_missing": max(0, extra_af_sets - extra_k_sets),
-    }
 
 
 def _pick_load_hint(deficits: dict[str, int]) -> list[str]:
@@ -709,6 +758,107 @@ def adjust_material_stock(
         )
 
 
+def ensure_scheme1_general() -> dict:
+    """Одна рабочая схема: Схема 1 общая. Расход берётся из норм материалов."""
+    now = time.time()
+    target_name = "Схема 1 общая"
+    with _connect() as conn:
+        materials = conn.execute(
+            """
+            SELECT id, name, unit, norm_per_wagon
+            FROM material_items
+            WHERE active = 1 AND norm_per_wagon > 0
+            ORDER BY sort_order, name, id
+            """
+        ).fetchall()
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM material_templates
+            ORDER BY id
+            """
+        ).fetchall()
+        row = None
+        for candidate in rows:
+            name = str(candidate["name"] or "").strip().lower().replace("ё", "е")
+            code = str(candidate["scheme_code"] or "").strip().lower()
+            if name == "схема 1 общая":
+                row = candidate
+                break
+            if row is None and code == "scheme1" and (
+                name in {"схема 1", "схема общая 1", "1"}
+                or name.startswith("схема общая")
+                or name.startswith("схема 1 ")
+            ):
+                row = candidate
+        if row:
+            template_id = int(row["id"])
+            conn.execute(
+                """
+                UPDATE material_templates
+                SET name = ?, description = ?, scheme_code = 'scheme1',
+                    has_box = 0, returns_materials = 0, extra_ring_mode = '',
+                    extra_units = 2, k_goal = 1, box_capacity_wagons = 0,
+                    active = 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    target_name,
+                    "Общий расход материалов на 1 вагон",
+                    now,
+                    template_id,
+                ),
+            )
+        else:
+            cur = conn.execute(
+                """
+                INSERT INTO material_templates (
+                    name, description, scheme_code, has_box, returns_materials,
+                    extra_ring_mode, extra_units, k_goal, box_capacity_wagons,
+                    active, created_at, updated_at
+                )
+                VALUES (?, ?, 'scheme1', 0, 0, '', 2, 1, 0, 1, ?, ?)
+                """,
+                (
+                    target_name,
+                    "Общий расход материалов на 1 вагон",
+                    now,
+                    now,
+                ),
+            )
+            template_id = int(cur.lastrowid)
+        conn.execute(
+            "UPDATE material_templates SET active = 0, updated_at = ? WHERE id != ?",
+            (now, template_id),
+        )
+        conn.execute(
+            "DELETE FROM material_template_items WHERE template_id = ?",
+            (template_id,),
+        )
+        for index, material in enumerate(materials, start=1):
+            conn.execute(
+                """
+                INSERT INTO material_template_items (
+                    template_id, material_id, norm_qty, sort_order, line_no,
+                    work_type, feature_text, tool_text, norm_minutes
+                )
+                VALUES (?, ?, ?, ?, ?, 'расход схемы 1', '', '', 0)
+                """,
+                (
+                    template_id,
+                    int(material["id"]),
+                    round(float(material["norm_per_wagon"] or 0), 3),
+                    index,
+                    index,
+                ),
+            )
+        conn.commit()
+    templates = [item for item in list_material_templates() if int(item["id"]) == template_id]
+    if not templates:
+        raise RuntimeError("Не удалось подготовить Схему 1 общую")
+    return templates[0]
+
+
 def list_material_templates() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
@@ -1259,23 +1409,21 @@ def reserve_material_for_wagon(
     if not wagon_number:
         raise ValueError("Укажите номер вагона")
     qty = _normalize_quantity(quantity)
+    scheme1 = ensure_scheme1_general()
+    allowed = {int(item["material_id"]) for item in scheme1.get("items") or []}
+    if allowed and material_id not in allowed:
+        raise ValueError("Для схемы 1 выбирайте материал только из её расхода")
+    with _connect() as conn:
+        prep = _latest_prep_row(conn, wagon_number)
+    if not prep or not prep["template_id"]:
+        assign_template_to_wagon(
+            wagon_number,
+            int(scheme1["id"]),
+            operator=operator,
+            note="авто: схема 1 общая",
+        )
     with _connect() as conn:
         row = _get_material_row(conn, material_id)
-        prep = _latest_prep_row(conn, wagon_number)
-        if prep and prep["template_id"]:
-            allowed = {
-                int(item["material_id"])
-                for item in conn.execute(
-                    """
-                    SELECT material_id
-                    FROM material_template_items
-                    WHERE template_id = ?
-                    """,
-                    (int(prep["template_id"]),),
-                ).fetchall()
-            }
-            if allowed and material_id not in allowed:
-                raise ValueError("Для этого вагона выбирайте материал только из назначенной схемы")
         snap = _material_snapshot(conn, material_id)
         if qty > snap["available"]:
             raise ValueError(
@@ -1599,20 +1747,55 @@ def sync_dispatch_scheme(
     wagon_number: str,
     dispatch_id: int,
     slot_zone: str = "",
+    slot_scheme_code: str | None = None,
+    slot_has_box: int | None = None,
 ) -> None:
     prep = _latest_prep_row(conn, wagon_number)
-    if not prep:
-        return
-    origin_zone = (slot_zone or prep["origin_zone"] or "").strip().upper()
-    if origin_zone and origin_zone != (prep["origin_zone"] or "").strip().upper():
-        conn.execute(
-            """
-            UPDATE master_wagon_prep
-            SET origin_zone = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (origin_zone, time.time(), int(prep["id"])),
+    origin_zone = (slot_zone or "").strip().upper()
+    if prep:
+        if origin_zone and origin_zone != (prep["origin_zone"] or "").strip().upper():
+            conn.execute(
+                """
+                UPDATE master_wagon_prep
+                SET origin_zone = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (origin_zone, time.time(), int(prep["id"])),
+            )
+        elif not origin_zone:
+            origin_zone = (prep["origin_zone"] or "").strip().upper()
+    if slot_scheme_code:
+        scheme_code = _normalize_scheme_code(slot_scheme_code)
+        has_box = (
+            int(slot_has_box or 0)
+            if slot_has_box is not None
+            else (1 if scheme_code == "scheme3" else 0)
         )
+        returns_materials = 1 if scheme_code == "scheme3" else 0
+        k_goal = 16 if scheme_code == "scheme2" else 0
+        scheme_name = {
+            "scheme1": "Схема 1",
+            "scheme2": "Схема 2",
+            "scheme3": "Схема 3",
+        }.get(scheme_code, "")
+        template_id = int(prep["template_id"] or 0) if prep else 0
+        extra_units = int(prep["extra_units"] or 0) if prep else 0
+        return_status = prep["return_status"] or "" if prep else ""
+        return_target = prep["return_target_zone"] or "" if prep else ""
+        return_actual = prep["actual_return_zone"] or "" if prep else ""
+    elif prep:
+        scheme_code = prep["scheme_code"] or SCHEME_CODE_DEFAULT
+        has_box = int(prep["has_box"] or 0)
+        returns_materials = int(prep["returns_materials"] or 0)
+        k_goal = int(prep["k_goal"] or 0)
+        scheme_name = prep["template_name"] or ""
+        template_id = int(prep["template_id"] or 0)
+        extra_units = int(prep["extra_units"] or 0)
+        return_status = prep["return_status"] or ""
+        return_target = prep["return_target_zone"] or ""
+        return_actual = prep["actual_return_zone"] or ""
+    else:
+        return
     conn.execute(
         """
         UPDATE wagon_dispatches
@@ -1622,17 +1805,17 @@ def sync_dispatch_scheme(
         WHERE id = ?
         """,
         (
-            int(prep["template_id"] or 0),
-            prep["template_name"] or "",
-            prep["scheme_code"] or SCHEME_CODE_DEFAULT,
-            int(prep["has_box"] or 0),
-            int(prep["returns_materials"] or 0),
-            int(prep["extra_units"] or 0),
-            int(prep["k_goal"] or 0),
+            template_id,
+            scheme_name,
+            scheme_code,
+            has_box,
+            returns_materials,
+            extra_units,
+            k_goal,
             origin_zone,
-            prep["return_status"] or "",
-            prep["return_target_zone"] or "",
-            prep["actual_return_zone"] or "",
+            return_status,
+            return_target,
+            return_actual,
             int(dispatch_id),
         ),
     )
@@ -1738,7 +1921,8 @@ def materials_dashboard() -> dict:
     materials = list_material_items()
     from taksimo_store_fleet import list_wagon_cards
 
-    templates = list_material_templates()
+    scheme1 = ensure_scheme1_general()
+    templates = [scheme1]
     active_wagons = [
         wagon
         for wagon in list_wagon_cards(limit=120)
@@ -1794,6 +1978,7 @@ def materials_dashboard() -> dict:
         dispatch_rows = conn.execute(
             """
             SELECT
+                id,
                 wagon_number,
                 scheme_code,
                 scheme_name,
@@ -1807,7 +1992,11 @@ def materials_dashboard() -> dict:
                 return_actual_zone,
                 dispatched_at,
                 received_at,
-                status
+                status,
+                slab_count,
+                blocks_json,
+                slot_zone,
+                slot_index
             FROM wagon_dispatches
             WHERE COALESCE(scheme_code, '') != ''
             ORDER BY dispatched_at DESC, id DESC
@@ -1962,6 +2151,7 @@ def materials_dashboard() -> dict:
                 ring_summary["origin_statuses"][origin_zone]["all_sent"]["scheme2_wagons"] += 1
         ring_registry.append(
             {
+                "id": int(row["id"] or 0),
                 "wagon_number": (row["wagon_number"] or "").strip(),
                 "scheme_code": code,
                 "scheme_name": row["scheme_name"] or "",
@@ -1972,6 +2162,8 @@ def materials_dashboard() -> dict:
                 "has_box": bool(row["has_box"]),
                 "returns_materials": bool(row["returns_materials"]),
                 "origin_zone": origin_zone,
+                "slot_zone": (row["slot_zone"] or "").strip(),
+                "slot_index": int(row["slot_index"] or 0),
                 "return_status": row["return_status"] or "",
                 "return_target_zone": row["return_target_zone"] or "",
                 "return_actual_zone": row["return_actual_zone"] or "",
@@ -1981,6 +2173,8 @@ def materials_dashboard() -> dict:
                 "dispatched_at_label": _ts_label(row["dispatched_at"]),
                 "received_at": float(row["received_at"] or 0),
                 "received_at_label": _ts_label(row["received_at"]),
+                "slab_count": int(row["slab_count"] or 0),
+                "blocks": _dispatch_blocks_for_registry(row["blocks_json"]),
             }
         )
     for prep in prep_by_wagon.values():
@@ -1999,23 +2193,14 @@ def materials_dashboard() -> dict:
         )
         ring_summary["extra_units_in_wagons"] += extra_units
         ring_summary["k_units_in_wagons"] += k_units
-        ring_summary["extra_units_total"] += extra_units
-        ring_summary["k_units_total"] += k_units
-        if origin_zone in ring_summary["by_origin"]:
-            ring_summary["by_origin"][origin_zone]["extra_units_total"] += extra_units
-            ring_summary["by_origin"][origin_zone]["k_units_total"] += k_units
         if code in {"scheme1", "scheme3"}:
             ring_summary["statuses"]["wagons"]["base_ring_wagons"] += 1
-            ring_summary["statuses"]["all_sent"]["base_ring_wagons"] += 1
             if origin_zone in ring_summary["origin_statuses"]:
                 ring_summary["origin_statuses"][origin_zone]["wagons"]["base_ring_wagons"] += 1
-                ring_summary["origin_statuses"][origin_zone]["all_sent"]["base_ring_wagons"] += 1
         elif code == "scheme2":
             ring_summary["statuses"]["wagons"]["scheme2_wagons"] += 1
-            ring_summary["statuses"]["all_sent"]["scheme2_wagons"] += 1
             if origin_zone in ring_summary["origin_statuses"]:
                 ring_summary["origin_statuses"][origin_zone]["wagons"]["scheme2_wagons"] += 1
-                ring_summary["origin_statuses"][origin_zone]["all_sent"]["scheme2_wagons"] += 1
     for row in ring_block_rows:
         bucket = row["bucket"] or ""
         letter = (row["letter"] or "").strip().upper()
@@ -2024,18 +2209,20 @@ def materials_dashboard() -> dict:
             continue
         ring_summary["statuses"][bucket]["blocks"][letter] += cnt
         ring_summary["statuses"][bucket]["slab_total"] += cnt
-        ring_summary["statuses"]["all_sent"]["blocks"][letter] += cnt
-        ring_summary["statuses"]["all_sent"]["slab_total"] += cnt
+        if bucket != "wagons":
+            ring_summary["statuses"]["all_sent"]["blocks"][letter] += cnt
+            ring_summary["statuses"]["all_sent"]["slab_total"] += cnt
         origin_zone = (row["origin_zone"] or "").strip().upper()
         zone_summary = ring_summary["by_origin"].get(origin_zone)
         if zone_summary is not None:
-            zone_summary["blocks"][letter] += cnt
-            zone_summary["slab_total"] += cnt
             origin_status = ring_summary["origin_statuses"][origin_zone]
             origin_status[bucket]["blocks"][letter] += cnt
             origin_status[bucket]["slab_total"] += cnt
-            origin_status["all_sent"]["blocks"][letter] += cnt
-            origin_status["all_sent"]["slab_total"] += cnt
+            if bucket != "wagons":
+                zone_summary["blocks"][letter] += cnt
+                zone_summary["slab_total"] += cnt
+                origin_status["all_sent"]["blocks"][letter] += cnt
+                origin_status["all_sent"]["slab_total"] += cnt
     for key, counter in ring_summary["statuses"].items():
         ring_summary["statuses"][key] = _finalize_ring_counter(counter)
     for zone, counter in list(ring_summary["by_origin"].items()):
@@ -2050,13 +2237,6 @@ def materials_dashboard() -> dict:
         finished["k_units_total"] = finished.get("k_units_total", 0)
         finished["potential_rings_total"] = statuses["all_sent"]["ring_total"]
         finished["k_shortage"] = statuses["all_sent"]["k_shortage"]
-        extra_metrics = _additional_ring_metrics(
-            finished.get("extra_units_total", 0),
-            finished.get("k_units_total", 0),
-        )
-        finished["additional_rings_possible"] = extra_metrics["additional_rings_possible"]
-        finished["additional_k_blocks_missing"] = extra_metrics["additional_k_blocks_missing"]
-        finished["additional_k_sets_missing"] = extra_metrics["additional_k_sets_missing"]
         finished["statuses"] = statuses
         ring_summary["by_origin"][zone] = finished
     ring_summary["base_rings_total"] = ring_summary["statuses"]["all_sent"]["ring_total"]
@@ -2071,37 +2251,13 @@ def materials_dashboard() -> dict:
     ring_summary["k_shortage_in_transit"] = ring_summary["statuses"]["transit"]["k_shortage"]
     ring_summary["k_shortage_delivered"] = ring_summary["statuses"]["bts"]["k_shortage"]
     ring_summary["k_shortage_in_wagons"] = ring_summary["statuses"]["wagons"]["k_shortage"]
-    total_extra_metrics = _additional_ring_metrics(
-        ring_summary.get("extra_units_total", 0),
-        ring_summary.get("k_units_total", 0),
-    )
-    transit_extra_metrics = _additional_ring_metrics(
-        ring_summary.get("extra_units_in_transit", 0),
-        ring_summary.get("k_units_in_transit", 0),
-    )
-    delivered_extra_metrics = _additional_ring_metrics(
-        ring_summary.get("extra_units_delivered", 0),
-        ring_summary.get("k_units_delivered", 0),
-    )
-    wagon_extra_metrics = _additional_ring_metrics(
-        ring_summary.get("extra_units_in_wagons", 0),
-        ring_summary.get("k_units_in_wagons", 0),
-    )
-    ring_summary["additional_rings_possible_total"] = total_extra_metrics["additional_rings_possible"]
-    ring_summary["additional_rings_possible_in_transit"] = transit_extra_metrics["additional_rings_possible"]
-    ring_summary["additional_rings_possible_delivered"] = delivered_extra_metrics["additional_rings_possible"]
-    ring_summary["additional_rings_possible_in_wagons"] = wagon_extra_metrics["additional_rings_possible"]
-    ring_summary["additional_k_blocks_missing_total"] = total_extra_metrics["additional_k_blocks_missing"]
-    ring_summary["additional_k_blocks_missing_in_transit"] = transit_extra_metrics["additional_k_blocks_missing"]
-    ring_summary["additional_k_blocks_missing_in_wagons"] = wagon_extra_metrics["additional_k_blocks_missing"]
-    ring_summary["potential_rings_total"] = min(
-        ring_summary["extra_units_total"] // EXTRA_RING_AF_UNITS,
-        ring_summary["k_units_total"] // K_RING_UNITS,
-    )
-    ring_summary["potential_rings_delivered"] = min(
-        ring_summary["extra_units_delivered"] // EXTRA_RING_AF_UNITS,
-        ring_summary["k_units_delivered"] // K_RING_UNITS,
-    )
+    ring_summary["additional_rings_possible_total"] = ring_summary["statuses"]["all_sent"]["additional_rings_possible"]
+    ring_summary["additional_rings_possible_in_transit"] = ring_summary["statuses"]["transit"]["additional_rings_possible"]
+    ring_summary["additional_rings_possible_delivered"] = ring_summary["statuses"]["bts"]["additional_rings_possible"]
+    ring_summary["additional_rings_possible_in_wagons"] = ring_summary["statuses"]["wagons"]["additional_rings_possible"]
+    ring_summary["additional_k_blocks_missing_total"] = ring_summary["statuses"]["all_sent"]["additional_k_blocks_missing"]
+    ring_summary["additional_k_blocks_missing_in_transit"] = ring_summary["statuses"]["transit"]["additional_k_blocks_missing"]
+    ring_summary["additional_k_blocks_missing_in_wagons"] = ring_summary["statuses"]["wagons"]["additional_k_blocks_missing"]
     return_queue = []
     for wagon_number, prep in prep_by_wagon.items():
         if not prep.get("returns_materials"):

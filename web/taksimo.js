@@ -1871,8 +1871,8 @@
           canDelete = data.can_delete !== false;
           canKodar = data.can_kodar === true;
           if (el) {
-            el.textContent = data.user;
-            el.hidden = false;
+        el.textContent = data.user;
+        el.hidden = false;
           }
         }
         applyDeleteUi();
@@ -1961,7 +1961,10 @@
           return blockList.indexOf(item) === -1;
         }).join(" ");
         var count = slot.slab_count || 0;
-        var maxSlabs = (data && data.max_slabs_per_wagon) || meta.max_wagon_slabs || 9;
+        var maxSlabs = slot.max_slabs || slotMaxSlabs(slot);
+        var schemeBadge = slot.scheme_label
+          ? '<span class="tk-wagon-slot-scheme">' + esc(slot.scheme_label) + "</span>"
+          : "";
         var starBtn =
           slot.logistics && slot.logistics.show_hint_star
             ? '<button type="button" class="tk-hint-star-btn" aria-label="Подсказка по вагону">★</button>'
@@ -1974,7 +1977,7 @@
           starBtn +
           '<div class="tk-wagon-slot-head">' +
           '<span class="tk-wagon-slot-no">№' + slot.slot_index + "</span>" +
-          '<span class="tk-wagon-slot-num">' + esc(slot.wagon_number || "+ вагон") + "</span>" +
+          '<span class="tk-wagon-slot-num">' + esc(slot.wagon_number || "+ вагон") + schemeBadge + "</span>" +
           '<span class="tk-wagon-count">' + count + "/" + maxSlabs + "</span>" +
           "</div>" +
           '<div class="tk-wagon-blocks">' + esc(blocks || "пусто") + "</div>" +
@@ -2123,6 +2126,13 @@
     return !!(slot.logistics && slot.logistics.is_complete);
   }
 
+  function slotMaxSlabs(slot) {
+    if (!slot) return 9;
+    return slot.max_slabs || (slot.logistics && slot.logistics.max_slabs) || 9;
+  }
+
+  var pendingWagonSlotSave = null;
+
   function slotAssignOptions(slot) {
     var zone = slot.zone || "";
     var assign = (wagonPlanData && wagonPlanData.assignable && wagonPlanData.assignable[zone]) || [];
@@ -2218,7 +2228,9 @@
       return;
     }
     box.hidden = false;
-    var title = log.scheme === "k_only" ? "Схема 2 (K)" : "Схема 1 (кольцо)";
+    var title = (slot && slot.scheme_label) || "Схема 1";
+    if (log.scheme_code === "scheme2") title = "Схема 2 (K)";
+    if (log.scheme_code === "scheme3") title = "Схема 3 (A–F + ящик)";
     box.innerHTML =
       '<p class="tk-wagon-logistics-title"><span class="tk-hint-star" aria-hidden="true">★</span> ' +
       esc(title) + "</p><ul class='tk-wagon-logistics-list'>" +
@@ -2238,8 +2250,29 @@
       $("wagonSlotTitle").textContent += " · " + slot.wagon_number;
     }
     $("wagonSlotHint").textContent = slot.wagon_number
-      ? "Вагон " + slot.wagon_number + (slot.slab_count ? " · блоков " + slot.slab_count + "/9" : " · пусто")
+      ? "Вагон " +
+        slot.wagon_number +
+        (slot.scheme_label ? " · " + slot.scheme_label : "") +
+        (slot.slab_count
+          ? " · блоков " + slot.slab_count + "/" + slotMaxSlabs(slot)
+          : " · пусто")
       : "Пустой слот — выберите вагон из парка";
+    var schemeEl = $("wagonSlotScheme");
+    if (schemeEl) {
+      if (slot.wagon_number && slot.scheme_label) {
+        schemeEl.hidden = false;
+        schemeEl.textContent =
+          "Схема: " +
+          slot.scheme_label +
+          (slot.has_box ? " · с ящиком" : "") +
+          " · максимум " +
+          slotMaxSlabs(slot) +
+          " блоков";
+      } else {
+        schemeEl.hidden = true;
+        schemeEl.textContent = "";
+      }
+    }
     renderWagonSlotSlabs(slot);
     renderWagonSlotLogistics(slot);
     if (!opts.keepSettings) {
@@ -2263,19 +2296,34 @@
     updateWagonKodarButtons(slot);
   }
 
-  function saveWagonSlot(clearSlot) {
+  function closeWagonSchemeSheet() {
+    $("wagonSchemeSheet").hidden = true;
+    pendingWagonSlotSave = null;
+  }
+
+  function openWagonSchemeSheet() {
+    var pending = pendingWagonSlotSave;
+    var hint = $("wagonSchemeHint");
+    if (hint && pending) {
+      hint.textContent =
+        "Вагон " + pending.wagon + " — выберите схему погрузки перед постановкой в слот.";
+    }
+    $("wagonSchemeSheet").hidden = false;
+  }
+
+  function doSaveWagonSlot(wagon, expected, schemeCode, clearSlot) {
     if (!activeWagonSlot) return;
-    var wagon = clearSlot ? "" : ($("wagonSlotPick") && $("wagonSlotPick").value || "").trim();
-    var expectedRaw = ($("wagonSlotExpected") && $("wagonSlotExpected").value || "").trim();
-    var expected = expectedRaw.split(/[,;\s]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var body = { wagon_number: wagon, expected_blocks: expected };
+    if (schemeCode) body.scheme_code = schemeCode;
     apiFetch("/api/taksimo/wagons/slots/" + activeWagonSlot.id, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ wagon_number: wagon, expected_blocks: expected }),
+      body: JSON.stringify(body),
     })
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
       .then(function (res) {
         if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        closeWagonSchemeSheet();
         toast(clearSlot ? "Слот освобождён" : "Слот обновлён");
         var slotId = activeWagonSlot.id;
         loadWagonPlan().then(function () {
@@ -2289,6 +2337,24 @@
       .catch(function (err) { alert(err.message); });
   }
 
+  function saveWagonSlot(clearSlot) {
+    if (!activeWagonSlot) return;
+    var wagon = clearSlot ? "" : ($("wagonSlotPick") && $("wagonSlotPick").value || "").trim();
+    var expectedRaw = ($("wagonSlotExpected") && $("wagonSlotExpected").value || "").trim();
+    var expected = expectedRaw.split(/[,;\s]+/).map(function (x) { return x.trim(); }).filter(Boolean);
+    if (clearSlot) {
+      doSaveWagonSlot("", expected, null, true);
+      return;
+    }
+    var prevWagon = (activeWagonSlot.wagon_number || "").trim();
+    if (wagon && wagon !== prevWagon) {
+      pendingWagonSlotSave = { wagon: wagon, expected: expected };
+      openWagonSchemeSheet();
+      return;
+    }
+    doSaveWagonSlot(wagon, expected, null, false);
+  }
+
   function updateWagonKodarButtons(slot) {
     var dispatchBtn = $("wagonDispatchKodar");
     if (!dispatchBtn) return;
@@ -2298,35 +2364,39 @@
     }
     dispatchBtn.hidden = false;
     var ringOk = wagonRingComplete(slot);
-    var fullCount = slot.slab_count === 9;
+    var maxSlabs = slotMaxSlabs(slot);
+    var fullCount = slot.slab_count === maxSlabs;
     dispatchBtn.classList.remove("tk-btn--primary", "tk-btn--warn", "tk-btn--blocked");
+    var schemeLabel = slot.scheme_label || "Схема 1";
     if (ringOk) {
       dispatchBtn.disabled = false;
       dispatchBtn.classList.add("tk-btn--primary");
       dispatchBtn.textContent = "В Кодар";
-      dispatchBtn.title = "Отправить полный комплект 9/9 в Кодар";
+      dispatchBtn.title =
+        "Отправить полный комплект " + maxSlabs + "/" + maxSlabs + " в Кодар (" + schemeLabel + ")";
     } else if (fullCount) {
       dispatchBtn.disabled = false;
       dispatchBtn.classList.add("tk-btn--blocked");
       dispatchBtn.textContent = "В Кодар";
       var missing = (slot.logistics && slot.logistics.ring_letters_missing) || [];
-      dispatchBtn.title =
-        "Кольцо не целое — не хватает: " +
-        (missing.length ? missing.join(", ") : "буквы") +
-        ". Довезите до полного кольца — на Кодар не отправлять";
+      var missHint =
+        missing.length ? " — не хватает: " + missing.join(", ") : " — комплект не соответствует схеме";
+      dispatchBtn.title = schemeLabel + missHint + ". На Кодар не отправлять";
     } else {
       dispatchBtn.disabled = true;
       dispatchBtn.classList.add("tk-btn--blocked");
       dispatchBtn.textContent = "В Кодар";
-      dispatchBtn.title = "Нужно 9/9 блоков перед отправкой в Кодар";
+      dispatchBtn.title =
+        "Нужно " + maxSlabs + "/" + maxSlabs + " блоков (" + schemeLabel + ") перед отправкой в Кодар";
     }
   }
 
   function dispatchWagonToKodar() {
     if (!canKodar || !activeWagonSlot) return;
+    var maxSlabs = slotMaxSlabs(activeWagonSlot);
     var ringOk = wagonRingComplete(activeWagonSlot);
-    if (activeWagonSlot.slab_count !== 9) {
-      alert("Нужно 9/9 блоков перед отправкой в Кодар");
+    if (activeWagonSlot.slab_count !== maxSlabs) {
+      alert("Нужно " + maxSlabs + "/" + maxSlabs + " блоков перед отправкой в Кодар");
       return;
     }
     if (ringOk) {
@@ -2430,22 +2500,22 @@
   }
 
   function appendHistorySessions(sessions) {
-    var list = $("historyList");
+      var list = $("historyList");
     if (!list) return;
     (sessions || []).forEach(function (s) {
-      var li = document.createElement("li");
-      li.className = "tk-card tk-card--click";
+        var li = document.createElement("li");
+        li.className = "tk-card tk-card--click";
       li.dataset.sessionId = String(s.id);
-      var statusMark = s.status === "draft" ? " · черновик" : "";
-      li.innerHTML =
-        "<div class='tk-card-title'>" + esc(s.unload_date) + " · ТРН " + esc(s.trn || "—") + " · №" + s.id + statusMark + "</div>" +
-        "<div class='tk-card-meta'>" + esc(s.vehicle_plate || s.driver || "") + " · плит: " + s.slab_count +
+        var statusMark = s.status === "draft" ? " · черновик" : "";
+        li.innerHTML =
+          "<div class='tk-card-title'>" + esc(s.unload_date) + " · ТРН " + esc(s.trn || "—") + " · №" + s.id + statusMark + "</div>" +
+          "<div class='tk-card-meta'>" + esc(s.vehicle_plate || s.driver || "") + " · плит: " + s.slab_count +
         (s.wagon_numbers ? " · вагон " + esc(s.wagon_numbers) : "") +
-        (s.operator ? " · " + esc(s.operator) : "") +
-        (s.crane_minutes ? " · кран " + s.crane_minutes + " мин" : "") + "</div>";
-      li.addEventListener("click", function () { loadSessionDetail(s.id); });
-      list.appendChild(li);
-    });
+          (s.operator ? " · " + esc(s.operator) : "") +
+          (s.crane_minutes ? " · кран " + s.crane_minutes + " мин" : "") + "</div>";
+        li.addEventListener("click", function () { loadSessionDetail(s.id); });
+        list.appendChild(li);
+      });
   }
 
   function updateHistoryMoreUi(data) {
@@ -2737,12 +2807,12 @@
         });
       })
       .then(function () {
-        toast("Плита удалена");
-        closeSlabSheet();
+      toast("Плита удалена");
+      closeSlabSheet();
         refreshYardPanel();
-        loadHistory();
+      loadHistory();
         loadStats();
-        $("historyDetail").hidden = true;
+      $("historyDetail").hidden = true;
       })
       .catch(function (err) { alert(err.message || "Ошибка удаления"); });
   });
@@ -2757,7 +2827,7 @@
     resetEditMode();
     $("unloadForm").reset();
     updatePlatformHint();
-  $("unloadDate").value = todayIso();
+    $("unloadDate").value = todayIso();
     toast("Редактирование отменено");
   });
 
@@ -2953,6 +3023,16 @@
     saveWagonSlot(true);
   });
   $("wagonDispatchKodar").addEventListener("click", dispatchWagonToKodar);
+
+  $("wagonSchemeBackdrop").addEventListener("click", closeWagonSchemeSheet);
+  $("wagonSchemeClose").addEventListener("click", closeWagonSchemeSheet);
+  document.querySelectorAll(".tk-scheme-btn[data-scheme]").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var pending = pendingWagonSlotSave;
+      if (!pending || !activeWagonSlot) return;
+      doSaveWagonSlot(pending.wagon, pending.expected, btn.dataset.scheme, false);
+    });
+  });
 
   $("fleetExtrasBackdrop").addEventListener("click", closeFleetExtrasSheet);
   $("fleetExtrasClose").addEventListener("click", closeFleetExtrasSheet);

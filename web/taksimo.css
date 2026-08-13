@@ -1417,6 +1417,43 @@ body {
   opacity: 1;
 }
 
+.tk-sheet-panel--narrow {
+  max-width: 420px;
+}
+
+.tk-scheme-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.tk-scheme-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  padding: 12px 14px;
+  width: 100%;
+}
+
+.tk-scheme-btn strong {
+  font-size: 1rem;
+}
+
+.tk-scheme-btn span {
+  font-size: 0.78rem;
+  opacity: 0.85;
+  font-weight: 400;
+}
+
+.tk-wagon-slot-scheme {
+  font-size: 0.72rem;
+  color: #c4b5fd;
+  margin-left: 6px;
+}
+
 .tk-wagon-slot-hints {
   margin-top: 6px;
   padding: 6px 8px;

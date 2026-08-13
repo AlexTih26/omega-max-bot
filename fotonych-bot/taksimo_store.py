@@ -573,6 +573,7 @@ def init_taksimo_db() -> None:
             """
         )
         _seed_wagon_slots(conn)
+        _migrate_wagon_slots(conn)
         from taksimo_store_fleet import migrate_wagon_pool_fleet
 
         migrate_wagon_pool_fleet(conn)
@@ -690,6 +691,18 @@ def _seed_wagon_slots(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_wagon_slots(conn: sqlite3.Connection) -> None:
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(wagon_slots)")}
+    if "scheme_code" not in cols:
+        conn.execute(
+            "ALTER TABLE wagon_slots ADD COLUMN scheme_code TEXT NOT NULL DEFAULT 'scheme1'"
+        )
+    if "has_box" not in cols:
+        conn.execute(
+            "ALTER TABLE wagon_slots ADD COLUMN has_box INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def _normalize_expected_blocks(raw: str | list | None) -> list[str]:
     if raw is None:
         return []
@@ -759,6 +772,32 @@ def _ensure_zone_wagon_slot(
         )
 
 
+def _wagon_slot_scheme(
+    conn: sqlite3.Connection, zone: str, wagon_number: str
+) -> tuple[str, int]:
+    from taksimo_wagon_logic import normalize_scheme_code, SCHEME_CODE_DEFAULT
+
+    wagon_number = (wagon_number or "").strip()
+    zone = _normalize_platform(zone)
+    if not wagon_number or zone not in WAGON_ZONES:
+        return SCHEME_CODE_DEFAULT, 0
+    row = conn.execute(
+        """
+        SELECT scheme_code, has_box FROM wagon_slots
+        WHERE zone = ? AND wagon_number = ?
+        LIMIT 1
+        """,
+        (zone, wagon_number),
+    ).fetchone()
+    if not row:
+        return SCHEME_CODE_DEFAULT, 0
+    try:
+        code = normalize_scheme_code(row["scheme_code"] or SCHEME_CODE_DEFAULT)
+    except ValueError:
+        code = SCHEME_CODE_DEFAULT
+    return code, int(row["has_box"] or 0)
+
+
 def _ensure_wagon_capacity(
     conn: sqlite3.Connection,
     wagon_number: str,
@@ -771,6 +810,12 @@ def _ensure_wagon_capacity(
     if not wagon_number:
         return
     exclude_slab_ids = exclude_slab_ids or set()
+    max_slabs = MAX_WAGON_SLABS
+    if zone:
+        scheme_code, _ = _wagon_slot_scheme(conn, zone, wagon_number)
+        from taksimo_wagon_logic import scheme_max_slabs
+
+        max_slabs = scheme_max_slabs(scheme_code)
     if zone:
         if exclude_slab_ids:
             placeholders = ",".join("?" * len(exclude_slab_ids))
@@ -789,12 +834,29 @@ def _ensure_wagon_capacity(
         current = int(conn.execute(sql, params).fetchone()[0])
     else:
         current = _count_wagon_slabs(conn, wagon_number, exclude_slab_ids=exclude_slab_ids)
-    if current + adding > MAX_WAGON_SLABS:
+    if current + adding > max_slabs:
         where = f" ({zone})" if zone else ""
         raise ValueError(
-            f"Вагон {wagon_number}{where}: максимум {MAX_WAGON_SLABS} блоков "
+            f"Вагон {wagon_number}{where}: максимум {max_slabs} блоков "
             f"(сейчас {current}, добавляете {adding})"
         )
+
+
+def _ensure_slab_letter_for_wagon(
+    conn: sqlite3.Connection,
+    *,
+    zone: str,
+    wagon_number: str,
+    letter: str,
+) -> None:
+    wagon_number = (wagon_number or "").strip()
+    zone = _normalize_platform(zone)
+    if not wagon_number or zone not in WAGON_ZONES:
+        return
+    scheme_code, _ = _wagon_slot_scheme(conn, zone, wagon_number)
+    from taksimo_wagon_logic import validate_slab_letter_for_scheme
+
+    validate_slab_letter_for_scheme(letter, scheme_code)
 
 
 def _session_crane_end_ts(crane_end: str, *, previous: str | None = None) -> float | None:
@@ -909,6 +971,7 @@ def _persist_session_slabs(
                 exclude_slab_ids=form_slab_ids,
                 adding=wagon_batch[key],
             )
+            _ensure_slab_letter_for_wagon(conn, zone=zone, wagon_number=w, letter=letter)
         if slab_id:
             locked = conn.execute(
                 "SELECT platform_zone FROM slabs WHERE id = ? AND session_id = ?",
@@ -1134,6 +1197,15 @@ def get_wagon_load_info(wagon_number: str, zone: str) -> dict:
             """,
             (wagon_number, zone),
         ).fetchall()
+        scheme_code, has_box = _wagon_slot_scheme(conn, zone, wagon_number)
+    from taksimo_wagon_logic import analyze_wagon, scheme_max_slabs, scheme_label
+
+    slabs = [
+        {"letter": row["letter"], "number": row["number"]} for row in rows
+    ]
+    logistics = analyze_wagon(
+        slabs, scheme_code=scheme_code, wagon_number=wagon_number
+    )
     labels: list[str] = []
     last_loading = ""
     last_dt: datetime | None = None
@@ -1144,11 +1216,16 @@ def get_wagon_load_info(wagon_number: str, zone: str) -> dict:
         if loading_dt and (last_dt is None or loading_dt > last_dt):
             last_dt = loading_dt
             last_loading = loading_raw
+    max_slabs = scheme_max_slabs(scheme_code)
     return {
         "wagon_number": wagon_number,
         "zone": zone,
         "count": len(labels),
-        "max": MAX_WAGON_SLABS,
+        "max": max_slabs,
+        "scheme_code": scheme_code,
+        "scheme_label": scheme_label(scheme_code),
+        "has_box": bool(has_box),
+        "is_complete": logistics["is_complete"],
         "labels": labels,
         "last_loading": last_loading,
     }
@@ -1696,6 +1773,12 @@ def update_slab(slab_id: int, *, data: dict) -> dict:
                 zone=placement["platform_zone"],
                 exclude_slab_ids={slab_id},
                 adding=1,
+            )
+            _ensure_slab_letter_for_wagon(
+                conn,
+                zone=placement["platform_zone"],
+                wagon_number=placement["wagon_number"],
+                letter=letter,
             )
         conn.execute(
             """

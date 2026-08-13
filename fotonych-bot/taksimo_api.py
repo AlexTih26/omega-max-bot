@@ -528,6 +528,7 @@ async def handle_taksimo_wagon_slot(request: web.Request) -> web.Response:
             slot_id,
             wagon_number=body.get("wagon_number"),
             expected_blocks=body.get("expected_blocks"),
+            scheme_code=body.get("scheme_code"),
         )
     except KeyError:
         return _json({"error": "not found"}, 404)

@@ -669,9 +669,12 @@ def schedule_wagon_full_checks(
     if notify_chat_id() is None:
         return
     for key, new_count in after.items():
-        if new_count >= MAX_WAGON_SLABS:
-            zone, wagon = key
-            info = get_wagon_load_info(wagon, zone)
+        old_count = before.get(key, 0)
+        if new_count <= old_count:
+            continue
+        zone, wagon = key
+        info = get_wagon_load_info(wagon, zone)
+        if info.get("is_complete"):
             asyncio.create_task(notify_wagon_full(info))
 
 

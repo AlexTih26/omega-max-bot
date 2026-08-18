@@ -139,21 +139,6 @@
     }).join("");
   }
 
-  function renderSchemeSummary(stats) {
-    var box = $("schemeSummary");
-    if (!box) return;
-    stats = stats || {};
-    var assigned = stats.assigned || {};
-    var dispatched = stats.dispatched || {};
-    box.innerHTML =
-      '<div class="tk-material-metric"><b>' + esc(assigned.scheme1 || 0) + '</b><span>схема 1 назначено</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(assigned.scheme2 || 0) + '</b><span>схема 2 назначено</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(assigned.scheme3 || 0) + '</b><span>схема 3 назначено</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(dispatched.scheme2 || 0) + '</b><span>вагонов 16K ушло</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.historical_k_total || 0) + '</b><span>K накоплено</span></div>' +
-      '<div class="tk-material-metric"><b>' + esc(stats.historical_extra_units || 0) + '</b><span>допов A–F по истории</span></div>';
-  }
-
   function renderRingSummary(stats) {
     var box = $("ringSummary");
     if (!box) return;
@@ -388,35 +373,129 @@
     });
   }
 
+  function reserveWagonOptionLabel(wagon) {
+    var bits = [wagon.number];
+    if (wagon.location_label) bits.push(wagon.location_label);
+    else if (wagon.stage_label) bits.push(wagon.stage_label);
+    if (wagon.scheme_code) bits.push(schemeCodeLabel(wagon.scheme_code));
+    return bits.join(" · ");
+  }
+
+  function getReserveWagonNumber() {
+    var hidden = $("materialReserveWagon");
+    return hidden ? String(hidden.value || "").trim() : "";
+  }
+
+  function setReserveWagon(wagonNumber, label) {
+    var hidden = $("materialReserveWagon");
+    var input = $("materialReserveWagonQ");
+    if (hidden) hidden.value = wagonNumber || "";
+    if (input) input.value = label || wagonNumber || "";
+    hideReserveWagonList();
+    refreshReserveMaterialSelect();
+  }
+
+  function hideReserveWagonList() {
+    var list = $("materialReserveWagonList");
+    if (list) list.hidden = true;
+  }
+
+  function showReserveWagonList() {
+    var list = $("materialReserveWagonList");
+    if (list) list.hidden = false;
+  }
+
+  function findReserveWagon(number) {
+    var target = String(number || "").trim();
+    if (!target) return null;
+    return ((dashboard && dashboard.wagons) || []).find(function (wagon) {
+      return String(wagon.number) === target;
+    }) || null;
+  }
+
+  function filterReserveWagons(query) {
+    var q = String(query || "").trim().toLowerCase();
+    var items = (dashboard && dashboard.wagons) || [];
+    if (!q) return items.slice(0, 8);
+    return items.filter(function (wagon) {
+      return wagonMatchesQuery(wagon, q);
+    }).slice(0, 12);
+  }
+
+  function renderReserveWagonSuggestions() {
+    var list = $("materialReserveWagonList");
+    var input = $("materialReserveWagonQ");
+    if (!list || !input) return;
+    var query = input.value;
+    var matches = filterReserveWagons(query);
+    list.innerHTML = "";
+    if (!matches.length) {
+      list.innerHTML = "<div class='tk-combobox-empty'>" +
+        (String(query || "").trim()
+          ? "По запросу «" + esc(query) + "» вагоны не найдены"
+          : "Введите номер вагона или тупик") +
+        "</div>";
+      showReserveWagonList();
+      return;
+    }
+    matches.forEach(function (wagon, index) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tk-combobox-item" + (index === 0 ? " is-active" : "");
+      btn.textContent = reserveWagonOptionLabel(wagon);
+      btn.addEventListener("mousedown", function (ev) {
+        ev.preventDefault();
+        setReserveWagon(wagon.number, reserveWagonOptionLabel(wagon));
+      });
+      list.appendChild(btn);
+    });
+    showReserveWagonList();
+  }
+
+  function applyReserveWagonSearchInput() {
+    var input = $("materialReserveWagonQ");
+    if (!input) return;
+    var query = String(input.value || "").trim();
+    var hidden = $("materialReserveWagon");
+    if (hidden && hidden.value && query !== reserveWagonOptionLabel(findReserveWagon(hidden.value) || { number: hidden.value })) {
+      hidden.value = "";
+    }
+    renderReserveWagonSuggestions();
+  }
+
+  function trySelectReserveWagonFromInput() {
+    var input = $("materialReserveWagonQ");
+    if (!input) return false;
+    var query = String(input.value || "").trim();
+    if (!query) return false;
+    var exact = ((dashboard && dashboard.wagons) || []).find(function (wagon) {
+      return String(wagon.number) === query;
+    });
+    if (exact) {
+      setReserveWagon(exact.number, reserveWagonOptionLabel(exact));
+      return true;
+    }
+    var matches = filterReserveWagons(query);
+    if (matches.length === 1) {
+      setReserveWagon(matches[0].number, reserveWagonOptionLabel(matches[0]));
+      return true;
+    }
+    renderReserveWagonSuggestions();
+    return false;
+  }
+
   function refreshSelectors() {
-    var reserveWagonValue = $("materialReserveWagon").value;
+    var reserveWagonValue = getReserveWagonNumber();
     var reserveMaterialValue = $("materialReserveMaterial").value;
     if ($("materialUnit")) {
       $("materialUnit").innerHTML = unitOptions(($("materialUnit").value || "шт"));
     }
-    var wagons = (dashboard && dashboard.wagons) || [];
-    $("materialReserveWagon").innerHTML =
-      '<option value="">— выберите вагон —</option>' +
-      wagons.map(function (wagon) {
-        return '<option value="' + esc(wagon.number) + '">' + esc(wagon.number + " · " + (wagon.stage_label || "")) + '</option>';
-      }).join("");
-    $("materialReserveWagon").value = reserveWagonValue;
     refreshReserveMaterialSelect();
     $("materialReserveMaterial").value = reserveMaterialValue;
-  }
-
-  function getTemplateById(templateId) {
-    templateId = Number(templateId || 0);
-    return ((dashboard && dashboard.templates) || []).find(function (item) {
-      return Number(item.id) === templateId;
-    }) || null;
-  }
-
-  function getWagonByNumber(wagonNumber) {
-    wagonNumber = String(wagonNumber || "").trim();
-    return ((dashboard && dashboard.wagons) || []).find(function (item) {
-      return String(item.number || "").trim() === wagonNumber;
-    }) || null;
+    if (reserveWagonValue) {
+      var wagon = findReserveWagon(reserveWagonValue);
+      setReserveWagon(reserveWagonValue, wagon ? reserveWagonOptionLabel(wagon) : reserveWagonValue);
+    }
   }
 
   function refreshReserveMaterialSelect() {
@@ -435,10 +514,6 @@
           esc(item.material_name) + " · норма " + esc(formatQty(item.qty_norm)) + " " + esc(item.material_unit) +
           '</option>';
       }).join("");
-  }
-
-  function renderTemplates() {
-    renderScheme1Norms();
   }
 
   function renderMaterials(items) {
@@ -502,11 +577,23 @@
     });
   }
 
+  function wagonSlotShort(wagon) {
+    var loc = String((wagon && wagon.location_label) || "").toLowerCase();
+    var match = loc.match(/(туран|грузовой)\s*№?\s*(\d+)/);
+    if (!match) return "";
+    return (match[1].indexOf("туран") === 0 ? "т" : "г") + match[2];
+  }
+
+  function normalizeWagonQuery(query) {
+    return String(query || "").trim().toLowerCase().replace(/\s+/g, "");
+  }
+
   function wagonSearchHaystack(wagon) {
     return [
       wagon.number,
       wagon.stage_label,
       wagon.location_label,
+      wagonSlotShort(wagon),
       wagon.template_name,
       schemeCodeLabel(wagon.scheme_code),
       wagon.origin_zone,
@@ -515,11 +602,21 @@
     ].join(" ").toLowerCase();
   }
 
+  function wagonMatchesQuery(wagon, query) {
+    var q = String(query || "").trim().toLowerCase();
+    if (!q) return true;
+    var haystack = wagonSearchHaystack(wagon);
+    if (haystack.indexOf(q) !== -1) return true;
+    var compact = normalizeWagonQuery(query);
+    var slotShort = wagonSlotShort(wagon);
+    return !!(compact && slotShort && compact === slotShort);
+  }
+
   function filterWagons(items) {
     var q = String(wagonSearchQuery || "").trim().toLowerCase();
     if (!q) return items || [];
     return (items || []).filter(function (wagon) {
-      return wagonSearchHaystack(wagon).indexOf(q) !== -1;
+      return wagonMatchesQuery(wagon, q);
     });
   }
 
@@ -587,6 +684,7 @@
         renderRingDeficit(data.ring_summary || {});
         renderMaterials(data.materials || []);
         renderRingRegistry(data.ring_registry || []);
+        renderReturnQueue(data.return_queue || []);
         renderWagons(data.wagons || []);
         refreshSelectors();
         if (activeWagon && !options.skipDetail) return loadWagon(activeWagon, { scroll: false });
@@ -679,160 +777,106 @@
       .catch(function (err) { showError(err, "Ошибка добавления"); });
   }
 
-  function createTemplate() {
-    apiFetch("/api/taksimo/materials/templates", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: $("templateName").value.trim(),
-        description: $("templateDescription").value.trim(),
-        scheme_code: $("templateSchemeCode").value,
-        has_box: $("templateHasBox").checked,
-        returns_materials: $("templateReturnsMaterials").checked,
-        extra_ring_mode: "carry_over",
-        extra_units: $("templateExtraUnits").value || 0,
-        k_goal: $("templateKGoal").value || 0,
-        box_capacity_wagons: $("templateBoxCapacity").value || 0,
-      }),
-    })
-      .then(parseApiResponse)
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.data.error || "Ошибка");
-        $("templateName").value = "";
-        $("templateDescription").value = "";
-        $("templateSchemeCode").value = "scheme1";
-        $("templateHasBox").checked = false;
-        $("templateReturnsMaterials").checked = false;
-        $("templateExtraUnits").value = "";
-        $("templateKGoal").value = "";
-        $("templateBoxCapacity").value = "";
-        toast("Схема создана");
-        loadOverview();
-      })
-      .catch(function (err) { showError(err, "Ошибка создания схемы"); });
-  }
-
-  function saveTemplate(templateId, root) {
-    apiFetch("/api/taksimo/materials/templates/" + templateId, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: root.querySelector('[data-template-field="name"]').value.trim(),
-        description: root.querySelector('[data-template-field="description"]').value.trim(),
-        scheme_code: root.querySelector('[data-template-field="scheme_code"]').value,
-        has_box: root.querySelector('[data-template-field="has_box"]').checked,
-        returns_materials: root.querySelector('[data-template-field="returns_materials"]').checked,
-        extra_ring_mode: "carry_over",
-        extra_units: root.querySelector('[data-template-field="extra_units"]').value || 0,
-        k_goal: root.querySelector('[data-template-field="k_goal"]').value || 0,
-        box_capacity_wagons: root.querySelector('[data-template-field="box_capacity_wagons"]').value || 0,
-      }),
-    })
-      .then(parseApiResponse)
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.data.error || "Ошибка");
-        toast("Схема обновлена");
-        loadOverview();
-      })
-      .catch(function (err) { showError(err, "Ошибка обновления схемы"); });
-  }
-
-  function saveTemplateItem(templateItemId, root) {
-    function value(field) {
-      var el = root.querySelector('[data-item-id="' + templateItemId + '"][data-item-field="' + field + '"]');
-      return el ? el.value : "";
+  function kitReserveToastMessage(kitReserve) {
+    var data = kitReserve || {};
+    var reserved = data.reserved || [];
+    var skipped = data.skipped || [];
+    var partial = data.partial || [];
+    if (!reserved.length) {
+      return skipped.length
+        ? "Комплект не зарезервирован — нет остатков на складе"
+        : "Нечего резервировать";
     }
-    apiFetch("/api/taksimo/materials/templates/items/" + templateItemId, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        material_id: value("material_id"),
-        qty_norm: value("qty_norm"),
-        work_type: value("work_type"),
-        feature_text: value("feature_text"),
-        tool_text: value("tool_text"),
-        norm_minutes: value("norm_minutes"),
-      }),
-    })
-      .then(parseApiResponse)
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.data.error || "Ошибка");
-        toast("Строка схемы обновлена");
-        loadOverview();
-      })
-      .catch(function (err) { showError(err, "Ошибка обновления строки"); });
+    var msg = "Зарезервировано: " + reserved.length;
+    if (partial.length) msg += ", частично: " + partial.length;
+    if (skipped.length) msg += ", без остатка: " + skipped.length;
+    return msg;
   }
 
-  function deleteTemplateItemUi(templateItemId) {
-    if (!confirm("Удалить строку схемы?")) return;
-    apiFetch("/api/taksimo/materials/templates/items/" + templateItemId, {
-      method: "DELETE",
-    })
-      .then(parseApiResponse)
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.data.error || "Ошибка");
-        toast("Строка схемы удалена");
-        loadOverview();
-      })
-      .catch(function (err) { showError(err, "Ошибка удаления строки"); });
+  function kitReserveDetails(kitReserve) {
+    var data = kitReserve || {};
+    var lines = [];
+    (data.reserved || []).forEach(function (item) {
+      lines.push("✓ " + item.name + ": +" + formatQty(item.qty) + " " + (item.unit || ""));
+    });
+    (data.partial || []).forEach(function (item) {
+      lines.push("~ " + item.name + ": +" + formatQty(item.reserved_qty) + " из " + formatQty(item.needed_qty) + " " + (item.unit || ""));
+    });
+    (data.skipped || []).forEach(function (item) {
+      lines.push("✗ " + item.name + ": нужно " + formatQty(item.needed_qty) + " " + (item.unit || "") + ", на складе 0");
+    });
+    return lines.join("\n");
   }
 
-  function addTemplateItem() {
-    var templateId = $("templatePick").value;
-    apiFetch("/api/taksimo/materials/templates/" + encodeURIComponent(templateId) + "/items", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        material_id: $("templateMaterial").value,
-        qty_norm: $("templateQty").value,
-        work_type: $("templateWorkType").value.trim(),
-        feature_text: $("templateFeature").value.trim(),
-        tool_text: $("templateTool").value.trim(),
-        norm_minutes: $("templateMinutes").value || 0,
-      }),
-    })
-      .then(parseApiResponse)
-      .then(function (res) {
-        if (!res.ok) throw new Error(res.data.error || "Ошибка");
-        $("templateQty").value = "";
-        $("templateWorkType").value = "";
-        $("templateFeature").value = "";
-        $("templateTool").value = "";
-        $("templateMinutes").value = "";
-        toast("Строка схемы добавлена");
-        loadOverview();
-      })
-      .catch(function (err) { showError(err, "Ошибка добавления строки"); });
-  }
-
-  function assignTemplateToWagon() {
-    var wagonNumber = $("prepWagon").value;
-    apiFetch("/api/taksimo/materials/preps/assign", {
+  function reserveScheme1Kit() {
+    var wagonNumber = getReserveWagonNumber() || activeWagon;
+    if (!wagonNumber) {
+      toast("Выберите вагон");
+      return;
+    }
+    if (!confirm("Зарезервировать весь комплект схемы 1 на вагон " + wagonNumber + "?")) return;
+    apiFetch("/api/taksimo/materials/reserve-kit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         wagon_number: wagonNumber,
-        template_id: $("prepTemplate").value,
-        note: $("prepNote").value.trim(),
+        note: ($("materialReserveNote") && $("materialReserveNote").value.trim()) || "",
       }),
     })
       .then(parseApiResponse)
       .then(function (res) {
         if (!res.ok) throw new Error(res.data.error || "Ошибка");
         activeWagon = wagonNumber;
-        $("prepNote").value = "";
-        toast("Схема назначена вагону");
+        var kitReserve = (res.data && res.data.kit_reserve) || ((res.data.wagon || {}).kit_reserve) || {};
+        toast(kitReserveToastMessage(kitReserve));
+        var details = kitReserveDetails(kitReserve);
+        if (details && ((kitReserve.skipped || []).length || (kitReserve.partial || []).length)) {
+          window.alert(details);
+        }
         loadOverview({ skipDetail: true }).then(function () {
           loadWagon(wagonNumber, { scroll: true });
         });
       })
-      .catch(function (err) { showError(err, "Ошибка назначения схемы"); });
+      .catch(function (err) { showError(err, "Ошибка резерва комплекта"); });
+  }
+
+  function finalizeWagon(wagonNumber, items) {
+    apiFetch("/api/taksimo/materials/wagons/" + encodeURIComponent(wagonNumber) + "/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        items: (items || []).map(function (item) {
+          var input = document.querySelector('[data-actual-material="' + item.material_id + '"]');
+          return {
+            material_id: item.material_id,
+            actual_qty: input ? input.value : item.actual_default_qty,
+          };
+        }),
+      }),
+    })
+      .then(parseApiResponse)
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "Ошибка");
+        toast("Факт расхода списан");
+        loadOverview({ skipDetail: true }).then(function () {
+          loadWagon(wagonNumber, { scroll: false });
+        });
+      })
+      .catch(function (err) { showError(err, "Ошибка списания"); });
   }
 
   function reserveMaterial() {
-    var wagonNumber = $("materialReserveWagon").value;
+    var wagonNumber = getReserveWagonNumber();
+    if (!wagonNumber) {
+      toast("Выберите вагон через поиск");
+      return;
+    }
     if (!$("materialReserveMaterial").value) {
-      toast("Сначала выберите материал из схемы вагона");
+      toast("Выберите материал из схемы 1");
+      return;
+    }
+    if (!wagonNumber) {
+      toast("Выберите вагон");
       return;
     }
     apiFetch("/api/taksimo/materials/reserve", {
@@ -862,8 +906,8 @@
   function loadWagon(wagonNumber, options) {
     options = options || {};
     activeWagon = wagonNumber;
-    $("materialReserveWagon").value = wagonNumber;
-    refreshReserveMaterialSelect();
+    var wagon = findReserveWagon(wagonNumber);
+    setReserveWagon(wagonNumber, wagon ? reserveWagonOptionLabel(wagon) : wagonNumber);
     var box = $("materialWagonDetail");
     box.hidden = false;
     box.innerHTML = "<h4>Вагон " + esc(wagonNumber) + "</h4><p>Загрузка…</p>";
@@ -887,18 +931,38 @@
             var detail = [];
             detail.push("норма " + formatQty(item.norm_per_wagon) + " " + item.unit);
             detail.push("резерв " + formatQty(item.reserved_qty));
-            if (Number(item.shortage_qty || 0) > 0) detail.push("не хватает " + formatQty(item.shortage_qty) + " " + item.unit);
+            detail.push("списано " + formatQty(item.consumed_qty));
+            if (Number(item.shortage_qty || 0) > 0) {
+              detail.push("не хватает " + formatQty(item.shortage_qty) + " " + item.unit);
+            }
             html +=
               "<li class='tk-card'>" +
               "<div class='tk-material-card-top'><div class='tk-card-title'>" + esc(item.name) + "</div>" +
-              "<div class='tk-card-meta'>" + esc(detail.join(" · ")) + "</div></div>" +
-              "</li>";
+              "<div class='tk-card-meta'>" + esc(detail.join(" · ")) + "</div></div>";
+            if (canManageMaterials && Number(item.reserved_qty || 0) > 0) {
+              html +=
+                '<label class="tk-label">Факт списания</label>' +
+                '<input class="tk-input" data-actual-material="' + item.material_id + '" type="number" min="0" step="0.001" value="' + esc(item.actual_default_qty) + '">';
+            }
+            html += "</li>";
           });
           html += "</ul>";
         } else {
-          html += "<p class='tk-card-meta'>По этому вагону ещё нет расходников.</p>";
+          html += "<p class='tk-card-meta'>По этому вагону ещё нет расходников. Нажмите «Комплект схемы 1».</p>";
+        }
+        if (canManageMaterials && wagon.has_reserves) {
+          html +=
+            '<div class="tk-actions">' +
+            '<button type="button" class="tk-btn tk-btn--primary" id="materialFinalizeBtn">Списать факт по вагону</button>' +
+            "</div>";
         }
         box.innerHTML = html;
+        var finalizeBtn = $("materialFinalizeBtn");
+        if (finalizeBtn) {
+          finalizeBtn.addEventListener("click", function () {
+            finalizeWagon(wagon.wagon_number, items);
+          });
+        }
         if (options.scroll !== false) {
           box.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }
@@ -928,8 +992,26 @@
     if ($("materialUnit")) $("materialUnit").innerHTML = unitOptions("шт");
     if ($("materialCreateBtn")) $("materialCreateBtn").addEventListener("click", createMaterial);
     if ($("materialReserveBtn")) $("materialReserveBtn").addEventListener("click", reserveMaterial);
+    if ($("materialReserveKitBtn")) $("materialReserveKitBtn").addEventListener("click", reserveScheme1Kit);
     loadCurrentUser();
-    if ($("materialReserveWagon")) $("materialReserveWagon").addEventListener("change", refreshReserveMaterialSelect);
+    if ($("materialReserveWagonQ")) {
+      $("materialReserveWagonQ").addEventListener("input", applyReserveWagonSearchInput);
+      $("materialReserveWagonQ").addEventListener("focus", renderReserveWagonSuggestions);
+      $("materialReserveWagonQ").addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") {
+          ev.preventDefault();
+          trySelectReserveWagonFromInput();
+        }
+      });
+      $("materialReserveWagonQ").addEventListener("blur", function () {
+        setTimeout(hideReserveWagonList, 150);
+      });
+    }
+    if ($("materialReserveWagonBox")) {
+      $("materialReserveWagonBox").addEventListener("mousedown", function (ev) {
+        if (ev.target && ev.target.closest && ev.target.closest(".tk-combobox-item")) return;
+      });
+    }
     if ($("wagonSearchQ")) $("wagonSearchQ").addEventListener("input", applyWagonSearch);
     apiFetch("/api/taksimo/stats")
       .then(parseApiResponse)

@@ -266,6 +266,8 @@ def _collect_context() -> dict:
                 {
                     "slot_index": int(slot.get("slot_index") or 0),
                     "wagon_number": wagon_number,
+                    "scheme_code": slot.get("scheme_code") or "",
+                    "scheme_label": slot.get("scheme_label") or "",
                     "template_name": prep.get("template_name") or "",
                     "needs_setup": needs_setup,
                     "shortage_lines": shortage_lines,
@@ -326,8 +328,11 @@ def _collect_context() -> dict:
 
 def _format_zone_line(wagon: dict) -> str:
     bits = [f"вагон {wagon['wagon_number']}"]
-    if wagon.get("template_name"):
-        bits.append(_scheme_label(wagon["template_name"]))
+    scheme = (wagon.get("scheme_label") or "").strip()
+    if not scheme and wagon.get("template_name"):
+        scheme = _scheme_label(wagon["template_name"])
+    if scheme:
+        bits.append(scheme if scheme.startswith("схема") else _scheme_label(scheme))
     else:
         bits.append("схема не назначена")
     bits.append(f"слот {wagon['slot_index']}")
@@ -504,6 +509,142 @@ def format_materials_alerts() -> list[str]:
         )
 
     return blocks
+
+
+def _wagon_lookup(ctx: dict) -> dict[tuple[str, int], dict]:
+    out: dict[tuple[str, int], dict] = {}
+    for zone in ctx.get("zones") or []:
+        zone_name = zone.get("name") or ""
+        for wagon in zone.get("wagons") or []:
+            out[(zone_name, int(wagon.get("slot_index") or 0))] = wagon
+    return out
+
+
+def _format_stock_slot_line(*, slot: dict, wagon_info: dict | None) -> str:
+    slot_index = int(slot.get("slot_index") or 0)
+    wagon_number = (slot.get("wagon_number") or "").strip()
+    if not wagon_number:
+        return f"   слот {slot_index} — пусто"
+
+    info = wagon_info or {}
+    scheme = (slot.get("scheme_label") or info.get("scheme_label") or "").strip()
+    if not scheme and info.get("template_name"):
+        scheme = _scheme_label(info["template_name"])
+    elif scheme and re.search(r"\d", scheme):
+        scheme = _scheme_label(scheme)
+    if not scheme:
+        scheme = "схема не назначена"
+    icon = _wagon_icon(info) if info else "🟢"
+    slab_count = int(slot.get("slab_count") or info.get("slab_count") or 0)
+    bits = [f"слот {slot_index}", f"вагон {wagon_number}", scheme]
+    if slab_count:
+        bits.append(f"{slab_count} плит")
+    return f"   {icon} " + " · ".join(bits)
+
+
+def format_materials_stock_brief() -> list[str]:
+    from taksimo_store import wagon_plan
+
+    ctx = _collect_context()
+    plan = wagon_plan()
+    wagon_lookup = _wagon_lookup(ctx)
+    now = datetime.now(_tz()).strftime("%d.%m.%Y %H:%M")
+    lines = [f"📦 На складе · {now}", "", "Остаток склада:"]
+    materials = ctx.get("materials") or []
+    if not materials:
+        lines.append("   нет материалов в справочнике")
+    else:
+        for item in materials:
+            marker = _material_icon(item)
+            low = " · ниже минимума" if item.get("low_stock") else ""
+            lines.append(
+                f"{marker} {item['name']}\n"
+                f"   факт {_format_qty(item['on_hand'])} {item['unit']}"
+                f" · резерв {_format_qty(item['reserved'])} {item['unit']}"
+                f" · свободно {_format_qty(item['available'])} {item['unit']}"
+                f" · мин. {_format_qty(item['min_level'])} {item['unit']}"
+                f"{low}"
+            )
+
+    for zone_name in ("ТУРАН", "ГРУЗОВОЙ"):
+        zone_slots = (plan.get("dead_ends") or {}).get(zone_name) or []
+        occupied_slots = [
+            slot
+            for slot in zone_slots
+            if (slot.get("wagon_number") or "").strip()
+        ]
+        lines.extend(["", f"📍 {zone_name} · в слотах ({len(occupied_slots)}):"])
+        if not occupied_slots:
+            lines.append("   нет вагонов")
+            continue
+        for slot in sorted(
+            occupied_slots, key=lambda row: int(row.get("slot_index") or 0)
+        ):
+            slot_index = int(slot.get("slot_index") or 0)
+            wagon_info = wagon_lookup.get((zone_name, slot_index))
+            lines.append(_format_stock_slot_line(slot=slot, wagon_info=wagon_info))
+
+    summary = (ctx["dashboard"].get("summary") or {})
+    lines.extend(
+        [
+            "",
+            f"Всего вагонов в слотах: {ctx.get('slot_wagons_total', 0)}",
+            f"Хватит материалов ещё на вагонов: {summary.get('overall_wagons_left', '—')}",
+        ]
+    )
+    return _split_messages("\n".join(lines).strip())
+
+
+def format_materials_need_brief() -> list[str]:
+    ctx = _collect_context()
+    now = datetime.now(_tz()).strftime("%d.%m.%Y %H:%M")
+    blocks: list[str] = []
+
+    urgent = ctx.get("urgent_materials") or []
+    if urgent:
+        lines = [f"🔴 Что надо · {now}", "", "По материалам:"]
+        for item in urgent:
+            tail: list[str] = []
+            if item.get("low_stock"):
+                tail.append(
+                    f"ниже минимума (свободно {_format_qty(item['available'])}"
+                    f" / мин. {_format_qty(item['min_level'])} {item['unit']})"
+                )
+            if float(item.get("shortage_in_slots") or 0) > 0:
+                tail.append(
+                    f"не хватает {_format_qty(item['shortage_in_slots'])} {item['unit']} на вагоны в слотах"
+                )
+            if float(item.get("need_in_slots") or 0) > 0:
+                tail.append(
+                    f"нужно в слотах {_format_qty(item['need_in_slots'])} {item['unit']}"
+                )
+            lines.append(
+                f"🔴 {item['name']} — "
+                + (" · ".join(tail) if tail else "проверить")
+            )
+        blocks.append("\n".join(lines))
+
+    shortage_lines: list[str] = []
+    for zone in ctx.get("zones") or []:
+        for wagon in zone.get("wagons") or []:
+            if wagon.get("has_shortage"):
+                shortage_lines.append(
+                    f"🔴 {zone['name']} · слот {wagon['slot_index']} · "
+                    f"вагон {wagon['wagon_number']} — "
+                    + ", ".join(wagon.get("shortage_lines") or [])
+                )
+    if shortage_lines:
+        blocks.append(
+            "\n".join(["🔴 По вагонам в слотах:", ""] + shortage_lines)
+        )
+
+    if not blocks:
+        return [
+            f"🟢 Что надо · {now}\n\n"
+            "Дефицита нет — по материалам и вагонам в слотах всё закрыто."
+        ]
+
+    return _split_messages("\n\n".join(blocks))
 
 
 async def send_materials_welcome(bot: Bot, *, chat_id: int) -> None:

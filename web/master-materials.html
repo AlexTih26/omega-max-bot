@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#141820">
   <title>MAX · Мастер отгрузки</title>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/taksimo.css?v=64">
+  <link rel="stylesheet" href="/taksimo.css?v=65">
 </head>
 <body>
   <div class="app taksimo-app">
@@ -64,11 +64,12 @@
           <div class="tk-card tk-material-form tk-master-block tk-master-block--step3" id="materialReserveCard">
             <p class="tk-card-meta">Резерв идёт по расходу Схемы 1 общей. При отправке вагона из тупика резерв спишется автоматически.</p>
             <div class="tk-row2">
-              <div>
-                <label class="tk-label" for="materialReserveWagon">Вагон</label>
-                <select class="tk-select" id="materialReserveWagon">
-                  <option value="">— выберите вагон —</option>
-                </select>
+              <div class="tk-combobox" id="materialReserveWagonBox">
+                <label class="tk-label" for="materialReserveWagonQ">Вагон</label>
+                <input class="tk-input" id="materialReserveWagonQ" type="search" inputmode="search"
+                  placeholder="номер · тупик · статус" autocomplete="off">
+                <input type="hidden" id="materialReserveWagon" value="">
+                <div class="tk-combobox-list" id="materialReserveWagonList" hidden></div>
               </div>
               <div>
                 <label class="tk-label" for="materialReserveMaterial">Материал схемы 1</label>
@@ -88,7 +89,8 @@
               </div>
             </div>
             <div class="tk-actions">
-              <button type="button" class="tk-btn tk-btn--primary" id="materialReserveBtn">Зарезервировать</button>
+              <button type="button" class="tk-btn tk-btn--primary" id="materialReserveKitBtn">Комплект схемы 1</button>
+              <button type="button" class="tk-btn" id="materialReserveBtn">Один материал</button>
             </div>
           </div>
 
@@ -106,6 +108,9 @@
           <div class="tk-material-list" id="ringDeficit"></div>
           <div class="tk-material-list" id="ringRegistry"></div>
           <div class="tk-detail" id="ringRegistryDetail" hidden></div>
+
+          <h3 class="tk-section-title">Возврат ящиков · схема 3</h3>
+          <div class="tk-material-list" id="returnQueue"></div>
 
           <h3 class="tk-section-title">Остатки расходников</h3>
           <div class="tk-material-list" id="materialList"></div>
@@ -125,6 +130,6 @@
 
     <div class="tk-toast" id="toast" hidden></div>
   </div>
-  <script src="/master-materials.js?v=21"></script>
+  <script src="/master-materials.js?v=25"></script>
 </body>
 </html>

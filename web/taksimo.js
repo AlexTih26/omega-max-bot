@@ -2275,8 +2275,8 @@
     }
     renderWagonSlotSlabs(slot);
     renderWagonSlotLogistics(slot);
+    $("wagonSlotExpected").value = (slot.expected_blocks || []).join(", ");
     if (!opts.keepSettings) {
-      $("wagonSlotExpected").value = (slot.expected_blocks || []).join(", ");
       var sel = $("wagonSlotPick");
       var pickOpts = ['<option value="">— пусто —</option>'];
       slotAssignOptions(slot).forEach(function (w) {

@@ -1910,6 +1910,48 @@ body {
   border-color: rgba(251, 191, 36, 0.45);
 }
 
+.tk-combobox {
+  position: relative;
+}
+
+.tk-combobox-list {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 280px;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  background: #1a1f28;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.tk-combobox-item {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tk-combobox-item:hover,
+.tk-combobox-item:focus,
+.tk-combobox-item.is-active {
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.tk-combobox-empty {
+  padding: 10px 12px;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.92rem;
+}
+
 .tk-ring-deficit-card {
   border-width: 1.5px;
 }

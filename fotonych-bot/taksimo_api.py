@@ -72,6 +72,8 @@ from taksimo_store import (
     list_wagon_dispatch_history,
     list_wagon_pool,
     reserve_material_for_wagon,
+    reserve_scheme1_kit_for_wagon,
+    format_kit_reserve_report,
     unified_search,
     update_material_item,
     update_material_template,
@@ -975,6 +977,46 @@ async def handle_taksimo_material_reserve(request: web.Request) -> web.Response:
     return _json({"wagon": wagon})
 
 
+async def handle_taksimo_material_reserve_kit(request: web.Request) -> web.Response:
+    operator = _require_materials_admin(request)
+    if isinstance(operator, web.Response):
+        return operator
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _json({"error": "invalid json"}, 400)
+    wagon_number = str(body.get("wagon_number") or "").strip()
+    if not wagon_number:
+        return _json({"error": "wagon_number required"}, 400)
+    try:
+        wagon = reserve_scheme1_kit_for_wagon(
+            wagon_number,
+            operator=operator,
+            note=str(body.get("note") or ""),
+        )
+    except ValueError as e:
+        return _json({"error": str(e)}, 400)
+    kit_reserve = (wagon or {}).get("kit_reserve") or {}
+    location = _material_chat_location(wagon or {})
+    lines = [
+        "🟡 Резерв комплекта схемы 1",
+        "",
+        f"Вагон: {wagon_number}",
+        f"Дефицит позиций: {wagon.get('shortage_count', 0)}",
+    ]
+    if kit_reserve.get("reserved"):
+        lines.append(f"Зарезервировано позиций: {len(kit_reserve.get('reserved') or [])}")
+    if kit_reserve.get("skipped"):
+        lines.append(f"Без остатка на складе: {len(kit_reserve.get('skipped') or [])}")
+    if location:
+        lines.append(f"Где стоит: {location}")
+    report = format_kit_reserve_report(kit_reserve)
+    if report:
+        lines.extend([""] + report[:12])
+    await _safe_notify_materials_chat("\n".join(lines))
+    return _json({"wagon": wagon, "kit_reserve": kit_reserve})
+
+
 async def handle_taksimo_material_wagon(request: web.Request) -> web.Response:
     wagon_number = (request.match_info.get("wagon_number") or "").strip()
     if not wagon_number:
@@ -1070,6 +1112,7 @@ def register_taksimo_routes(app: web.Application) -> None:
     app.router.add_post("/api/taksimo/materials/receipt", handle_taksimo_material_receipt)
     app.router.add_post("/api/taksimo/materials/adjust", handle_taksimo_material_adjust)
     app.router.add_post("/api/taksimo/materials/reserve", handle_taksimo_material_reserve)
+    app.router.add_post("/api/taksimo/materials/reserve-kit", handle_taksimo_material_reserve_kit)
     app.router.add_get("/api/taksimo/materials/wagons/{wagon_number}", handle_taksimo_material_wagon)
     app.router.add_post("/api/taksimo/materials/wagons/{wagon_number}/finalize", handle_taksimo_material_wagon)
     app.router.add_put(

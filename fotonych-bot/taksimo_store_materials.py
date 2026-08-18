@@ -1418,7 +1418,7 @@ def reserve_material_for_wagon(
     if not prep or not prep["template_id"]:
         assign_template_to_wagon(
             wagon_number,
-            int(scheme1["id"]),
+            template_id=int(scheme1["id"]),
             operator=operator,
             note="авто: схема 1 общая",
         )
@@ -1444,6 +1444,141 @@ def reserve_material_for_wagon(
     result = get_wagon_materials(wagon_number)
     if not result:
         raise RuntimeError("Не удалось собрать карточку вагона после резерва")
+    return result
+
+
+def _display_qty(value) -> str:
+    qty = round(float(value or 0), 3)
+    text = f"{qty:.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def format_kit_reserve_report(kit_reserve: dict | None) -> list[str]:
+    """Текстовые строки отчёта по частичному резерву комплекта."""
+    data = kit_reserve or {}
+    lines: list[str] = []
+    reserved = data.get("reserved") or []
+    partial = data.get("partial") or []
+    skipped = data.get("skipped") or []
+
+    if reserved:
+        lines.append("Зарезервировано:")
+        for item in reserved:
+            lines.append(
+                f"• {item.get('name')}: +{_display_qty(item.get('qty'))} {item.get('unit') or ''}".rstrip()
+            )
+    if partial:
+        lines.append("")
+        lines.append("Частично (не хватило на складе):")
+        for item in partial:
+            lines.append(
+                f"• {item.get('name')}: +{_display_qty(item.get('reserved_qty'))} "
+                f"из {_display_qty(item.get('needed_qty'))} {item.get('unit') or ''}".rstrip()
+            )
+    if skipped:
+        lines.append("")
+        lines.append("Не зарезервировано (нет на складе):")
+        for item in skipped:
+            lines.append(
+                f"• {item.get('name')}: нужно {_display_qty(item.get('needed_qty'))} "
+                f"{item.get('unit') or ''}, свободно 0".rstrip()
+            )
+    return lines
+
+
+def reserve_scheme1_kit_for_wagon(
+    wagon_number: str,
+    *,
+    operator: str = "",
+    note: str = "",
+) -> dict:
+    """Зарезервировать по норме схемы 1 всё, чего ещё не хватает на вагоне."""
+    wagon_number = (wagon_number or "").strip()
+    if not wagon_number:
+        raise ValueError("Укажите номер вагона")
+    scheme1 = ensure_scheme1_general()
+    template_items = scheme1.get("items") or []
+    if not template_items:
+        raise ValueError("Нормы схемы 1 не заданы")
+    with _connect() as conn:
+        prep = _latest_prep_row(conn, wagon_number)
+    if not prep or not prep["template_id"]:
+        assign_template_to_wagon(
+            wagon_number,
+            template_id=int(scheme1["id"]),
+            operator=operator,
+            note="авто: схема 1 общая",
+        )
+    wagon = get_wagon_materials(wagon_number)
+    if not wagon:
+        raise RuntimeError("Не удалось загрузить карточку вагона")
+    to_reserve: list[tuple[int, float]] = []
+    if wagon.get("items"):
+        for item in wagon["items"]:
+            shortage = round(float(item.get("shortage_qty") or 0), 3)
+            if shortage > 0:
+                to_reserve.append((int(item["material_id"]), shortage))
+    else:
+        for row in template_items:
+            qty = round(float(row.get("qty_norm") or 0), 3)
+            if qty > 0:
+                to_reserve.append((int(row["material_id"]), qty))
+    kit_reserve = {
+        "reserved": [],
+        "partial": [],
+        "skipped": [],
+    }
+    if not to_reserve:
+        result = wagon
+        result["kit_reserve"] = kit_reserve
+        return result
+    kit_note = note or "комплект схемы 1"
+    for material_id, qty in to_reserve:
+        item = get_material_item(material_id) or {}
+        name = item.get("name") or str(material_id)
+        unit = item.get("unit") or ""
+        available = round(float(item.get("available") or 0), 3)
+        if available <= 0:
+            kit_reserve["skipped"].append(
+                {
+                    "material_id": material_id,
+                    "name": name,
+                    "needed_qty": qty,
+                    "available_qty": 0.0,
+                    "unit": unit,
+                }
+            )
+            continue
+        reserve_qty = round(min(qty, available), 3)
+        reserve_material_for_wagon(
+            material_id,
+            wagon_number=wagon_number,
+            quantity=reserve_qty,
+            operator=operator,
+            note=kit_note,
+        )
+        kit_reserve["reserved"].append(
+            {
+                "material_id": material_id,
+                "name": name,
+                "qty": reserve_qty,
+                "unit": unit,
+            }
+        )
+        if reserve_qty < qty:
+            kit_reserve["partial"].append(
+                {
+                    "material_id": material_id,
+                    "name": name,
+                    "needed_qty": qty,
+                    "reserved_qty": reserve_qty,
+                    "unit": unit,
+                }
+            )
+    result = get_wagon_materials(wagon_number)
+    if not result:
+        raise RuntimeError("Не удалось собрать карточку вагона после резерва комплекта")
+    result["kit_reserve"] = kit_reserve
     return result
 
 

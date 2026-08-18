@@ -1237,7 +1237,7 @@ def list_wagon_loads_for_daily_report(
     end_hour: int = 16,
     end_minute: int = 0,
 ) -> list[dict]:
-    """Вагоны с погрузкой за календарный день до end_hour:end_minute (МСК)."""
+    """Вагоны и блоки, погруженные в тупик за календарный день до end_hour:end_minute (МСК)."""
     try:
         day = date.fromisoformat(report_date)
     except ValueError:
@@ -1249,40 +1249,38 @@ def list_wagon_loads_for_daily_report(
         rows = conn.execute(
             """
             SELECT
-                   CASE
-                       WHEN slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН') THEN slabs.platform_zone
-                       ELSE COALESCE(NULLIF(wd.origin_zone, ''), NULLIF(wd.slot_zone, ''), slabs.platform_zone)
-                   END AS report_zone,
-                   slabs.platform_zone,
-                   slabs.wagon_number,
-                   slabs.letter,
-                   slabs.number,
-                   slabs.suffix,
-                   slabs.loading_date,
-                   vehicles.plate AS vehicle_plate
+                slabs.platform_zone,
+                slabs.wagon_number,
+                slabs.letter,
+                slabs.number,
+                slabs.suffix,
+                slabs.loading_date,
+                vehicles.plate AS vehicle_plate
             FROM slabs
             JOIN unload_sessions ON unload_sessions.id = slabs.session_id
             LEFT JOIN vehicles ON vehicles.id = unload_sessions.vehicle_id
-            LEFT JOIN wagon_dispatches wd ON wd.id = slabs.wagon_dispatch_id
             WHERE slabs.wagon_number != ''
-              AND (
-                  slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН')
-                  OR slabs.platform_zone = 'В КОДАР'
-                  OR slabs.platform_zone = 'БТС ВОСТОК'
-              )
+              AND slabs.platform_zone IN ('ГРУЗОВОЙ', 'ТУРАН')
             """
         ).fetchall()
 
     wagons: dict[tuple[str, str], dict] = {}
-    activity_keys: set[tuple[str, str]] = set()
 
     for row in rows:
-        zone = (row["report_zone"] or row["platform_zone"] or "").strip()
-        key = (zone, str(row["wagon_number"]))
+        zone = (row["platform_zone"] or "").strip()
+        wagon_number = str(row["wagon_number"] or "").strip()
+        if not zone or not wagon_number:
+            continue
+        loading_raw = (row["loading_date"] or "").strip()
+        loading_dt = _parse_loading_datetime(loading_raw)
+        if loading_dt is None or loading_dt.date() != day or loading_dt > window_end:
+            continue
+
+        key = (zone, wagon_number)
         if key not in wagons:
             wagons[key] = {
-                "zone": key[0],
-                "wagon_number": key[1],
+                "zone": zone,
+                "wagon_number": wagon_number,
                 "labels": [],
                 "blocks": [],
                 "last_loading": "",
@@ -1296,24 +1294,21 @@ def list_wagon_loads_for_daily_report(
                 "vehicle_plate": (row["vehicle_plate"] or "").strip(),
             }
         )
-        loading_raw = (row["loading_date"] or "").strip()
-        loading_dt = _parse_loading_datetime(loading_raw)
-        if loading_dt and loading_dt.date() == day and loading_dt <= window_end:
-            activity_keys.add(key)
-            info = wagons[key]
-            if info["last_dt"] is None or loading_dt > info["last_dt"]:
-                info["last_dt"] = loading_dt
-                info["last_loading"] = loading_raw
+        info = wagons[key]
+        if info["last_dt"] is None or loading_dt > info["last_dt"]:
+            info["last_dt"] = loading_dt
+            info["last_loading"] = loading_raw
 
     out: list[dict] = []
-    for key in sorted(activity_keys, key=lambda k: (k[0], k[1])):
+    for key in sorted(wagons.keys(), key=lambda k: (k[0], k[1])):
         info = wagons[key]
+        load_info = get_wagon_load_info(info["wagon_number"], info["zone"])
         out.append(
             {
                 "wagon_number": info["wagon_number"],
                 "zone": info["zone"],
                 "count": len(info["labels"]),
-                "max": MAX_WAGON_SLABS,
+                "max": int(load_info.get("max") or MAX_WAGON_SLABS),
                 "labels": info["labels"],
                 "blocks": info["blocks"],
                 "last_loading": info["last_loading"],
@@ -2158,12 +2153,14 @@ from taksimo_store_materials import (  # noqa: E402
     create_material_template,
     delete_template_item,
     finalize_wagon_materials,
+    format_kit_reserve_report,
     get_material_item,
     get_wagon_materials,
     list_material_items,
     list_material_templates,
     materials_dashboard,
     reserve_material_for_wagon,
+    reserve_scheme1_kit_for_wagon,
     update_material_item,
     update_material_template,
     update_template_item,

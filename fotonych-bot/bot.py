@@ -48,6 +48,18 @@ from materials_chat import (
     set_bot as set_materials_bot,
     MATERIALS_WELCOME,
 )
+from materials_receipt_chat import (
+    handle_materials_receipt_callback,
+    handle_materials_receipt_message,
+    is_materials_master,
+    master_private_attachments,
+    set_bot as set_materials_receipt_bot,
+)
+from materials_reserve_chat import (
+    handle_materials_reserve_callback,
+    handle_materials_reserve_message,
+    set_bot as set_materials_reserve_bot,
+)
 from keyboards import (
     CB_CLEAR,
     CB_HELP,
@@ -180,7 +192,14 @@ async def on_start(event: MessageCreated) -> None:
         return
     sender = event.message.sender
     uid = sender.user_id if sender else None
-    await event.message.answer(MENU_TEXT, attachments=menu_attachments(user_id=uid))
+    extra = master_private_attachments(uid)
+    attachments = menu_attachments(user_id=uid)
+    if extra:
+        attachments = attachments + extra
+        text = MENU_TEXT + "\n\n📦 Материалы — приход, остатки и дефицит (кнопки ниже)."
+    else:
+        text = MENU_TEXT
+    await event.message.answer(text, attachments=attachments)
 
 
 @dp.message_created(Command("admin"))
@@ -285,8 +304,47 @@ def _ai_question_from_message(event: MessageCreated) -> str:
     return parts[1].strip()
 
 
+@dp.message_created(Command("reserve"))
+async def on_materials_reserve_command(event: MessageCreated) -> None:
+    if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
+        event.message.recipient.chat_id
+    ) or is_materials_chat(event.message.recipient.chat_id):
+        return
+    sender = event.message.sender
+    if not sender:
+        await event.message.answer("Не удалось определить пользователя.")
+        return
+    if not is_materials_master(sender.user_id):
+        await event.message.answer("Команда доступна только мастерам склада.")
+        return
+    from materials_reserve_chat import send_materials_reserve_menu
+
+    await send_materials_reserve_menu(user_id=sender.user_id)
+
+
+@dp.message_created(Command("materials"))
+@dp.message_created(Command("receipt"))
+async def on_materials_receipt_command(event: MessageCreated) -> None:
+    if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
+        event.message.recipient.chat_id
+    ) or is_materials_chat(event.message.recipient.chat_id):
+        return
+    sender = event.message.sender
+    if not sender:
+        await event.message.answer("Не удалось определить пользователя.")
+        return
+    if not is_materials_master(sender.user_id):
+        await event.message.answer("Команда доступна только мастерам склада.")
+        return
+    from materials_receipt_chat import send_materials_receipt_menu
+
+    await send_materials_receipt_menu(user_id=sender.user_id)
+
+
 @dp.message_created(Command("id"))
 @dp.message_created(Command("myid"))
+@dp.message_created(Command("my_id"))
+@dp.message_created(Command("whoami"))
 async def on_my_id(event: MessageCreated) -> None:
     if is_drivers_chat(event.message.recipient.chat_id) or is_taksimo_chat(
         event.message.recipient.chat_id
@@ -392,6 +450,12 @@ async def on_callback(event: MessageCallback) -> None:
     if await handle_drivers_callback(event, bot):
         return
 
+    if await handle_materials_reserve_callback(event, bot):
+        return
+
+    if await handle_materials_receipt_callback(event, bot):
+        return
+
     if await handle_taksimo_callback(event, bot):
         return
 
@@ -419,13 +483,27 @@ async def on_message(event: MessageCreated) -> None:
     if sender and sender.is_bot:
         return
 
+    if await handle_materials_reserve_message(event, bot):
+        return
+
+    if await handle_materials_receipt_message(event, bot):
+        return
+
     body = event.message.body
     text = body.text.strip() if body and body.text else ""
     if not text or text.startswith("/"):
         return
 
     if text.lower() in MENU_WORDS:
-        await event.message.answer(MENU_TEXT, attachments=menu_attachments())
+        uid = sender.user_id if sender else None
+        extra = master_private_attachments(uid)
+        attachments = menu_attachments(user_id=uid)
+        if extra:
+            attachments = attachments + extra
+            menu_text = MENU_TEXT + "\n\n📦 Материалы — приход, остатки и дефицит (кнопки ниже)."
+        else:
+            menu_text = MENU_TEXT
+        await event.message.answer(menu_text, attachments=attachments)
         return
 
     await event.message.answer(WORK_BOT_REPLY)
@@ -436,6 +514,11 @@ async def main() -> None:
     await bot.set_my_commands(
         BotCommand(name="start", description="Меню и сервисы"),
         BotCommand(name="id", description="Ваш MAX id (личный чат)"),
+        BotCommand(name="whoami", description="Ваш MAX id (личный чат)"),
+        BotCommand(name="materials", description="Материалы: меню мастера"),
+        BotCommand(name="reserve", description="Резерв материалов (мастер)"),
+        BotCommand(name="stock", description="Остатки на складе (мастер)"),
+        BotCommand(name="need", description="Что надо — дефицит (мастер)"),
         BotCommand(name="ai", description="Служебный ИИ-помощник"),
         BotCommand(name="clear", description="Очистить память ИИ"),
         BotCommand(name="taksimo_chat", description="ID чата уведомлений Таксимо"),
@@ -450,6 +533,8 @@ async def main() -> None:
     set_taksimo_bot(bot)
     set_drivers_bot(bot)
     set_materials_bot(bot)
+    set_materials_receipt_bot(bot)
+    set_materials_reserve_bot(bot)
     backup_taksimo_db(reason="startup")
     api_runner = await start_comments_api()
     drivers_cid = drivers_chat_id()

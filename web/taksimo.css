@@ -1385,6 +1385,16 @@ body {
   background: rgba(167, 139, 250, 0.32);
 }
 
+.tk-fleet-extras-zone + .tk-fleet-extras-zone {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--tk-border, rgba(255, 255, 255, 0.08));
+}
+
+.tk-fleet-extras-zone .tk-section-title {
+  margin: 0 0 0.5rem;
+}
+
 .tk-fleet-extras-bar {
   display: flex;
   align-items: center;

@@ -504,6 +504,17 @@ async def handle_taksimo_fleet_extras(request: web.Request) -> web.Response:
     for zone_slots in (plan.get("dead_ends") or {}).values():
         slots.extend(zone_slots)
     dispatches = list_wagon_dispatch_history(limit=200)
+    if zone.upper() in ("ALL", "ВСЕ", "*"):
+        zones_out = {
+            zone_name: analyze_fleet_extras(
+                slots,
+                max_slabs=MAX_WAGON_SLABS,
+                zone=zone_name,
+                dispatches=dispatches,
+            )
+            for zone_name in ("ТУРАН", "ГРУЗОВОЙ")
+        }
+        return _json({"zone": "ALL", "zones": zones_out})
     extras = analyze_fleet_extras(
         slots,
         max_slabs=MAX_WAGON_SLABS,

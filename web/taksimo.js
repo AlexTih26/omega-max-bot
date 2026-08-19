@@ -2446,6 +2446,22 @@
     );
   }
 
+  function renderFleetExtrasBody(data) {
+    if (data && data.zones) {
+      return ["ТУРАН", "ГРУЗОВОЙ"]
+        .map(function (zoneName) {
+          return (
+            '<div class="tk-fleet-extras-zone">' +
+            '<h4 class="tk-section-title">' + esc(zoneName) + "</h4>" +
+            fleetExtrasHintsHtml(data.zones[zoneName]) +
+            "</div>"
+          );
+        })
+        .join("");
+    }
+    return fleetExtrasHintsHtml(data && data.extras);
+  }
+
   function closeFleetExtrasSheet() {
     var sheet = $("fleetExtrasSheet");
     if (sheet) sheet.hidden = true;
@@ -2458,15 +2474,29 @@
     var title = $("fleetExtrasTitle");
     var hint = $("fleetExtrasHint");
     if (!sheet || !body) return;
-    zone = zone || "ТУРАН";
-    if (title) title.textContent = "★★ Допы · " + zone;
-    if (hint) hint.textContent = zone + ": целые кольца вычтены — остаток допы A–F и счётчик K.";
+    var allZones = !zone || zone === "ALL" || zone === "ВСЕ";
+    if (allZones) {
+      if (title) title.textContent = "★★ Допы · ТУРАН + ГРУЗОВОЙ";
+      if (hint) {
+        hint.textContent =
+          "Оба тупика: целые кольца вычтены — остаток допы A–F и счётчик K по каждому тупику.";
+      }
+      zone = "ALL";
+    } else {
+      if (title) title.textContent = "★★ Допы · " + zone;
+      if (hint) {
+        hint.textContent = zone + ": целые кольца вычтены — остаток допы A–F и счётчик K.";
+      }
+    }
     sheet.hidden = false;
     body.innerHTML = "<p class='tk-yard-legend'>Считаем допы…</p>";
     apiFetch("/api/taksimo/wagons/fleet-extras?zone=" + encodeURIComponent(zone))
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok) throw new Error("fleet-extras " + r.status);
+        return r.json();
+      })
       .then(function (data) {
-        body.innerHTML = fleetExtrasHintsHtml(data.extras);
+        body.innerHTML = renderFleetExtrasBody(data);
       })
       .catch(function () {
         body.innerHTML = "<p class='tk-yard-legend'>Не удалось загрузить допы.</p>";
@@ -3038,7 +3068,7 @@
   $("fleetExtrasClose").addEventListener("click", closeFleetExtrasSheet);
   var menuFleetExtras = $("menuFleetExtras");
   if (menuFleetExtras) {
-    menuFleetExtras.addEventListener("click", function () { openFleetExtrasSheet("ТУРАН"); });
+    menuFleetExtras.addEventListener("click", function () { openFleetExtrasSheet("ALL"); });
   }
 
   $("appMenuOpen").addEventListener("click", openAppMenu);

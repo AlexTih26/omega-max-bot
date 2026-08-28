@@ -25,6 +25,7 @@
         if (direct === "drivers" || direct === "drv") return "drivers";
         if (direct === "admin" || direct === "adm") return "admin";
         if (direct === "taksimo_find" || direct === "find" || direct === "tks") return "find";
+        if (direct === "sklad_master" || direct === "sklad" || direct === "sm") return "sklad";
         if (direct === "chat" || direct === "omega_chat" || direct === "omg") return "chat";
         if (window.location.hash && window.location.hash.length > 1) {
           var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -32,8 +33,9 @@
           if (fromHash === "panel" || fromHash === "pnl") return "panel";
           if (fromHash === "drivers" || fromHash === "drv") return "drivers";
           if (fromHash === "admin" || fromHash === "adm") return "admin";
-            if (fromHash === "taksimo_find" || fromHash === "find" || fromHash === "tks") return "find";
-            if (fromHash === "chat" || fromHash === "omega_chat" || fromHash === "omg") return "chat";
+          if (fromHash === "taksimo_find" || fromHash === "find" || fromHash === "tks") return "find";
+          if (fromHash === "sklad_master" || fromHash === "sklad" || fromHash === "sm") return "sklad";
+          if (fromHash === "chat" || fromHash === "omega_chat" || fromHash === "omg") return "chat";
         }
         try {
           var wa = window.WebApp;
@@ -43,6 +45,7 @@
             if (sp === "drivers" || sp === "drv") return "drivers";
             if (sp === "admin" || sp === "adm") return "admin";
             if (sp === "taksimo_find" || sp === "find" || sp === "tks") return "find";
+            if (sp === "sklad_master" || sp === "sklad" || sp === "sm") return "sklad";
             if (sp === "chat" || sp === "omega_chat" || sp === "omg") return "chat";
           }
         } catch (e) {}
@@ -56,6 +59,7 @@
         if (route === "find") target = "/taksimo-find.html";
         else if (route === "panel") target = "/panel.html";
         else if (route === "admin") target = "/admin.html";
+        else if (route === "sklad") target = "/sklad-master.html";
         else if (route === "chat") target = "/chat.html";
         window.location.replace(target + q + h);
       }

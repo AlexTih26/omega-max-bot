@@ -34,6 +34,7 @@ from taksimo_auth import register_taksimo_auth_routes, taksimo_auth_middleware
 from admin_api import register_admin_routes
 from ai_chat_api import register_ai_chat_routes
 from ai_chat_store import init_omega_chat_db
+from sklad_master_api import register_sklad_master_routes
 from work_store import CATEGORIES, STATUSES, create_request, init_work_db, list_requests_for_user
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/work/requests", handle_work_create)
     register_taksimo_auth_routes(app)
     register_taksimo_routes(app)
+    register_sklad_master_routes(app)
     register_drivers_routes(app)
     register_panel_routes(app)
     register_admin_routes(app)

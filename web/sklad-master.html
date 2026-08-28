@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#121722">
+  <title>Склад Мастер</title>
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/sklad-master.css?v=12">
+</head>
+<body>
+  <div class="sm-app">
+    <header class="sm-topbar">
+      <div>
+        <p class="sm-label">MAX mini-app</p>
+        <h1 class="sm-title">Склад Мастер</h1>
+      </div>
+      <span class="sm-user" id="currentUser" hidden></span>
+    </header>
+
+    <main class="sm-main">
+      <section class="sm-card" id="outsideMax" hidden>
+        <h2>Откройте из MAX</h2>
+        <p>Эта программа работает только как mini-app через `MAX id`.</p>
+      </section>
+
+      <section class="sm-card" id="siteCard">
+        <h2>Площадка</h2>
+        <div class="sm-chip-grid" id="siteList"></div>
+      </section>
+
+      <section class="sm-stats" id="summaryBox"></section>
+
+      <nav class="sm-card sm-nav" aria-label="Основные разделы">
+        <div class="sm-tab-grid" id="tabButtons">
+          <button type="button" class="sm-tab is-active" data-tab="receipt">Приход</button>
+          <button type="button" class="sm-tab" data-tab="issue">Расход</button>
+          <button type="button" class="sm-tab" data-tab="stock">Склад</button>
+          <button type="button" class="sm-tab" data-tab="requests">Заявки</button>
+        </div>
+      </nav>
+
+      <section class="sm-card" id="receiptPanel">
+        <h2>Приход на площадку</h2>
+        <div class="sm-pick-row">
+          <select id="supplierSelect" class="sm-input sm-select">
+            <option value="">Выберите поставщика</option>
+          </select>
+          <button type="button" class="sm-mini-btn" id="showSupplierCreateBtn" aria-label="Добавить поставщика">+</button>
+        </div>
+        <div class="sm-inline sm-inline--stack" id="supplierCreateBox" hidden>
+          <input id="supplierName" class="sm-input" placeholder="Новый поставщик">
+          <button type="button" class="sm-btn" id="supplierCreateBtn">Добавить</button>
+        </div>
+
+        <div class="sm-pick-row">
+          <select id="receiptMaterialSelect" class="sm-input sm-select">
+            <option value="">Выберите материал</option>
+          </select>
+          <button type="button" class="sm-mini-btn" id="showMaterialCreateBtn" aria-label="Добавить материал">+</button>
+        </div>
+        <div class="sm-inline sm-inline--wide" id="materialCreateBox" hidden>
+          <input id="materialName" class="sm-input" placeholder="Новый материал">
+          <select id="materialUnit" class="sm-input sm-select">
+            <option value="шт" selected>шт</option>
+            <option value="кг">кг</option>
+            <option value="м">м</option>
+            <option value="м3">м3</option>
+          </select>
+          <input id="materialMin" class="sm-input" type="number" min="0" step="0.001" placeholder="Минимум">
+          <button type="button" class="sm-btn" id="materialCreateBtn">Добавить</button>
+        </div>
+
+        <label class="sm-subtitle" for="receiptQty">Количество позиции</label>
+        <div class="sm-inline sm-inline--request">
+          <input id="receiptQty" class="sm-input sm-input--big" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="0">
+          <button type="button" class="sm-btn" id="addReceiptItemBtn">Добавить позицию</button>
+        </div>
+        <div class="sm-list sm-section-gap" id="receiptCart"></div>
+
+        <label class="sm-subtitle" for="receiptNote">Примечание</label>
+        <input id="receiptNote" class="sm-input" placeholder="Необязательно">
+
+        <button type="button" class="sm-btn sm-btn--primary sm-submit" id="saveReceiptBtn">Сохранить весь приход</button>
+      </section>
+
+      <section class="sm-card" id="issuePanel" hidden>
+        <h2>Расход со склада</h2>
+        <label class="sm-subtitle" for="issueMaterialSelect">Материал</label>
+        <select id="issueMaterialSelect" class="sm-input sm-select">
+          <option value="">Выберите материал</option>
+        </select>
+        <label class="sm-subtitle" for="issueQty">Количество</label>
+        <input id="issueQty" class="sm-input sm-input--big" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="0">
+        <label class="sm-subtitle" for="issueNote">Примечание</label>
+        <input id="issueNote" class="sm-input" placeholder="Куда или кому выдано">
+        <button type="button" class="sm-btn sm-btn--primary sm-submit" id="saveIssueBtn">Списать со склада</button>
+      </section>
+
+      <section class="sm-card" id="stockPanel" hidden>
+        <h2>Склад</h2>
+        <div class="sm-stock-tabs" id="stockTabButtons">
+          <button type="button" class="sm-tab is-active" data-stock-tab="materials">Материалы</button>
+          <button type="button" class="sm-tab" data-stock-tab="movements">История</button>
+          <button type="button" class="sm-tab" data-stock-tab="transfer">Перемещение</button>
+          <button type="button" class="sm-tab" data-stock-tab="settings">Настройки</button>
+        </div>
+        <div id="stockMaterialsBox">
+          <div class="sm-filter-row">
+            <button type="button" class="sm-filter is-active" data-stock-filter="all">Все</button>
+            <button type="button" class="sm-filter" data-stock-filter="critical">Критично</button>
+            <button type="button" class="sm-filter" data-stock-filter="warning">Внимание</button>
+          </div>
+          <div class="sm-list" id="stockList"></div>
+        </div>
+        <div id="movementsBox" hidden>
+          <button type="button" class="sm-btn sm-btn--ghost sm-full" id="refreshMovementsBtn">Обновить историю</button>
+          <div class="sm-list sm-section-gap" id="movementsList"></div>
+        </div>
+        <form id="transferForm" hidden>
+          <label class="sm-subtitle" for="transferToSite">Куда переместить</label>
+          <select id="transferToSite" class="sm-input sm-select"></select>
+          <label class="sm-subtitle" for="transferMaterial">Материал</label>
+          <select id="transferMaterial" class="sm-input sm-select"></select>
+          <label class="sm-subtitle" for="transferQty">Количество</label>
+          <input id="transferQty" class="sm-input sm-input--big" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="0">
+          <label class="sm-subtitle" for="transferNote">Примечание</label>
+          <input id="transferNote" class="sm-input" placeholder="Необязательно">
+          <button type="submit" class="sm-btn sm-btn--primary sm-submit">Переместить</button>
+        </form>
+        <div id="stockSettingsBox" hidden>
+          <div id="materialAdminSettings">
+            <h3>Справочник материалов</h3>
+            <p class="sm-note">Переименование, единицы измерения и отключение материалов</p>
+            <div class="sm-list" id="materialAdminList"></div>
+          </div>
+          <div id="minimumSettings">
+            <h3 class="sm-settings-title">Минимальные остатки</h3>
+            <p class="sm-note">Для выбранной площадки</p>
+            <div class="sm-list" id="minimumList"></div>
+          </div>
+          <form id="adjustmentForm" class="sm-subpanel">
+            <h3>Корректировка остатка</h3>
+            <select id="adjustmentMaterial" class="sm-input sm-select"></select>
+            <label class="sm-subtitle" for="adjustmentQty">Изменение (+ / −)</label>
+            <input id="adjustmentQty" class="sm-input" type="number" step="0.001" inputmode="decimal" placeholder="Например, -2">
+            <input id="adjustmentNote" class="sm-input sm-section-gap" placeholder="Причина корректировки">
+            <button type="submit" class="sm-btn sm-btn--primary sm-submit">Сохранить корректировку</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="sm-card" id="requestsPanel" hidden>
+        <div class="sm-heading-row">
+          <h2>Заявки площадки</h2>
+          <button type="button" class="sm-mini-action" id="toggleRequestCreateBtn">Новая</button>
+        </div>
+        <form id="requestCreateForm" class="sm-subpanel" hidden>
+          <h3>Новая заявка</h3>
+          <div class="sm-inline sm-inline--request">
+            <select id="requestMaterialSelect" class="sm-input sm-select"></select>
+            <input id="requestQty" class="sm-input" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="Кол-во">
+            <button type="button" class="sm-btn" id="addRequestItemBtn">Добавить</button>
+          </div>
+          <div class="sm-list sm-section-gap" id="requestCart"></div>
+          <label class="sm-subtitle">Срочность</label>
+          <div class="sm-segment">
+            <button type="button" class="sm-tab is-active" data-urgency="plan">Планово</button>
+            <button type="button" class="sm-tab" data-urgency="urgent">Срочно</button>
+          </div>
+          <label class="sm-subtitle" for="requestComment">Комментарий</label>
+          <input id="requestComment" class="sm-input" placeholder="Что важно учесть">
+          <button type="submit" class="sm-btn sm-btn--primary sm-submit">Отправить заявку</button>
+        </form>
+        <button type="button" class="sm-btn sm-btn--ghost sm-full sm-section-gap" id="refreshRequestsBtn">Обновить заявки</button>
+        <div class="sm-list" id="requestsList"></div>
+      </section>
+    </main>
+
+    <div class="sm-toast" id="toast" hidden></div>
+  </div>
+
+  <script src="/sklad-master.js?v=12"></script>
+</body>
+</html>

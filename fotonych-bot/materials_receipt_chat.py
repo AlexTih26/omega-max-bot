@@ -15,6 +15,7 @@ from maxapi import Bot
 from maxapi.enums.chat_type import ChatType
 from maxapi.types import MessageCreated
 from maxapi.types.attachments.buttons.callback_button import CallbackButton
+from maxapi.types.attachments.buttons.open_app_button import OpenAppButton
 from maxapi.types.updates.message_callback import MessageCallback
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
@@ -24,6 +25,7 @@ _STATE_PATH = (
     Path(__file__).resolve().parent.parent / "data" / "materials_receipt_state.json"
 )
 _bot: Bot | None = None
+_MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "id5406829253_bot")
 
 CB_MRC_MENU = "mrc_menu"
 CB_MRC_RECEIPT = "mrc_rcpt"
@@ -163,6 +165,33 @@ def is_materials_master(user_id: int | None) -> bool:
         return False
     masters = materials_master_ids()
     return bool(masters) and user_id in masters
+
+
+async def notify_materials_role_users(
+    text: str,
+    *,
+    role: str,
+    exclude_user_id: int | None = None,
+) -> bool:
+    """Отправить служебное уведомление участникам складской роли."""
+    if _bot is None:
+        logger.warning("Склад Мастер: бот не инициализирован для уведомления роли %s", role)
+        return False
+    ids = materials_supply_ids() if role == "supply" else materials_master_ids()
+    sent = False
+    for user_id in ids:
+        if exclude_user_id is not None and int(user_id) == int(exclude_user_id):
+            continue
+        try:
+            await _bot.send_message(user_id=user_id, text=text)
+            sent = True
+        except Exception:
+            logger.exception(
+                "Склад Мастер: не удалось уведомить role=%s user_id=%s",
+                role,
+                user_id,
+            )
+    return sent
 
 
 def is_private_dialog(message) -> bool:
@@ -569,6 +598,13 @@ def _materials_menu_keyboard() -> InlineKeyboardBuilder:
     from materials_reserve_chat import CB_MRC_RESERVE
 
     kb = InlineKeyboardBuilder()
+    kb.row(
+        OpenAppButton(
+            text="📱 Склад Мастер",
+            web_app=_MAX_BOT_USERNAME,
+            payload="sklad_master",
+        )
+    )
     kb.row(CallbackButton(text="📦 Приход на склад", payload=CB_MRC_RECEIPT))
     kb.row(CallbackButton(text="🔒 Резерв", payload=CB_MRC_RESERVE))
     kb.row(

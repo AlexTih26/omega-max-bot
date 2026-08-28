@@ -5,6 +5,7 @@ from maxapi.types.attachments.buttons.open_app_button import OpenAppButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
 from post_payload import encode_post_id
+from sklad_master_store import get_access
 from super_admin import is_super_admin
 
 MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "id5406829253_bot")
@@ -15,6 +16,7 @@ CB_MENU = "menu"
 TAKSIMO_FIND_PAYLOAD = "taksimo_find"
 OMEGA_CHAT_PAYLOAD = "chat"
 ADMIN_APP_PAYLOAD = "admin"
+SKLAD_MASTER_PAYLOAD = "sklad_master"
 
 TAKSIMO_FIND_HINT = (
     "🔍 Поиск плиты — кнопкой «Где плита» под отчётом.\n"
@@ -24,6 +26,14 @@ TAKSIMO_FIND_HINT = (
 
 def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
+    if user_id is not None and get_access(user_id).get("roles"):
+        kb.row(
+            OpenAppButton(
+                text="📱 Склад Мастер",
+                web_app=MAX_BOT_USERNAME,
+                payload=SKLAD_MASTER_PAYLOAD,
+            )
+        )
     kb.row(
         OpenAppButton(
             text="💬 OMEGA Chat",

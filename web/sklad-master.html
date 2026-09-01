@@ -7,7 +7,7 @@
   <title>Склад Мастер</title>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/sklad-master.css?v=12">
+  <link rel="stylesheet" href="/sklad-master.css?v=25">
 </head>
 <body>
   <div class="sm-app">
@@ -16,7 +16,11 @@
         <p class="sm-label">MAX mini-app</p>
         <h1 class="sm-title">Склад Мастер</h1>
       </div>
-      <span class="sm-user" id="currentUser" hidden></span>
+      <div class="sm-userbox" id="currentUserBox" hidden>
+        <span class="sm-user-name" id="currentUserName"></span>
+        <span class="sm-user-role" id="currentUserRole"></span>
+        <span class="sm-role-hint" id="currentUserHint" hidden></span>
+      </div>
     </header>
 
     <main class="sm-main">
@@ -38,11 +42,13 @@
           <button type="button" class="sm-tab" data-tab="issue">Расход</button>
           <button type="button" class="sm-tab" data-tab="stock">Склад</button>
           <button type="button" class="sm-tab" data-tab="requests">Заявки</button>
+          <button type="button" class="sm-tab" data-tab="payment">К оплате</button>
         </div>
       </nav>
 
       <section class="sm-card" id="receiptPanel">
-        <h2>Приход на площадку</h2>
+        <h2 id="receiptPanelTitle">Приход на площадку</h2>
+        <p class="sm-note">Основной склад — <b>Грузовой</b>. Перед сохранением убедитесь, что все позиции учтены в приходе.</p>
         <div class="sm-pick-row">
           <select id="supplierSelect" class="sm-input sm-select">
             <option value="">Выберите поставщика</option>
@@ -83,6 +89,7 @@
         <input id="receiptNote" class="sm-input" placeholder="Необязательно">
 
         <button type="button" class="sm-btn sm-btn--primary sm-submit" id="saveReceiptBtn">Сохранить весь приход</button>
+        <button type="button" class="sm-btn sm-btn--ghost sm-full sm-section-gap" id="cancelReceiptEditBtn" hidden>Отменить правку</button>
       </section>
 
       <section class="sm-card" id="issuePanel" hidden>
@@ -115,6 +122,13 @@
           <div class="sm-list" id="stockList"></div>
         </div>
         <div id="movementsBox" hidden>
+          <div class="sm-heading-row sm-history-head" id="movementsHeader">
+            <div>
+              <h3 class="sm-history-title" id="movementsTitle">История</h3>
+              <p class="sm-note" id="movementsSubtitle" hidden></p>
+            </div>
+            <button type="button" class="sm-mini-action" id="movementsBackBtn" hidden>Назад</button>
+          </div>
           <button type="button" class="sm-btn sm-btn--ghost sm-full" id="refreshMovementsBtn">Обновить историю</button>
           <div class="sm-list sm-section-gap" id="movementsList"></div>
         </div>
@@ -148,16 +162,43 @@
             <input id="adjustmentNote" class="sm-input sm-section-gap" placeholder="Причина корректировки">
             <button type="submit" class="sm-btn sm-btn--primary sm-submit">Сохранить корректировку</button>
           </form>
+          <div id="rolesAdminSettings">
+            <h3 class="sm-settings-title">Роли и доступ</h3>
+            <p class="sm-note">Назначьте или замените мастера, снабжение и администратора по MAX id.</p>
+            <form id="roleAssignForm" class="sm-subpanel">
+              <label class="sm-subtitle" for="roleMaxId">MAX id</label>
+              <input id="roleMaxId" class="sm-input" inputmode="numeric" placeholder="323553100">
+              <label class="sm-subtitle" for="roleSelect">Роль</label>
+              <select id="roleSelect" class="sm-input sm-select">
+                <option value="master">Мастер — приём на площадке</option>
+                <option value="supply">Снабжение — закупки у поставщиков</option>
+                <option value="manager">Руководитель — ведомости к оплате</option>
+                <option value="admin">Администратор — контроль и настройки</option>
+              </select>
+              <label class="sm-subtitle" for="roleSiteSelect">Площадка (необязательно)</label>
+              <select id="roleSiteSelect" class="sm-input sm-select">
+                <option value="">Все площадки</option>
+              </select>
+              <label class="sm-check"><input type="checkbox" id="roleActive" checked> Роль активна</label>
+              <button type="submit" class="sm-btn sm-btn--primary sm-submit">Сохранить роль</button>
+            </form>
+            <div class="sm-list sm-section-gap" id="rolesList"></div>
+          </div>
+          <div id="auditAdminSettings">
+            <h3 class="sm-settings-title">Журнал действий</h3>
+            <p class="sm-note">Кто принимал, редактировал и менял настройки</p>
+            <div class="sm-list" id="auditList"></div>
+          </div>
         </div>
       </section>
 
       <section class="sm-card" id="requestsPanel" hidden>
         <div class="sm-heading-row">
-          <h2>Заявки площадки</h2>
+          <h2 id="requestsPanelTitle">Заявки площадки</h2>
           <button type="button" class="sm-mini-action" id="toggleRequestCreateBtn">Новая</button>
         </div>
         <form id="requestCreateForm" class="sm-subpanel" hidden>
-          <h3>Новая заявка</h3>
+          <h3 id="requestCreateTitle">Новая заявка</h3>
           <div class="sm-inline sm-inline--request">
             <select id="requestMaterialSelect" class="sm-input sm-select"></select>
             <input id="requestQty" class="sm-input" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="Кол-во">
@@ -176,11 +217,17 @@
         <button type="button" class="sm-btn sm-btn--ghost sm-full sm-section-gap" id="refreshRequestsBtn">Обновить заявки</button>
         <div class="sm-list" id="requestsList"></div>
       </section>
+
+      <section class="sm-card" id="paymentPanel" hidden>
+        <h2>К оплате</h2>
+        <p class="sm-note" id="paymentPanelNote">Снабжение проставляет цены и отправляет ведомость руководителю в личку. В общий чат суммы не попадают.</p>
+        <div class="sm-list" id="paymentList"></div>
+      </section>
     </main>
 
     <div class="sm-toast" id="toast" hidden></div>
   </div>
 
-  <script src="/sklad-master.js?v=12"></script>
+  <script src="/sklad-master.js?v=25"></script>
 </body>
 </html>

@@ -12,11 +12,12 @@ import shutil
 import sqlite3
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sklad_master.db"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 10
 
 DEFAULT_SITES = ("Туран", "Грузовой", "Площадка 3", "Площадка 4")
 DEFAULT_SUPPLIERS = (
@@ -39,7 +40,7 @@ DEFAULT_MATERIALS = (
     ("3 метра Туран манипулятор 6 метров", "шт"), ("Дмитрий 3 метра", "шт"),
 )
 
-ROLES = {"master", "supply", "admin"}
+ROLES = {"master", "supply", "admin", "manager"}
 REQUEST_STATUSES = (
     "draft", "submitted", "accepted", "in_transit", "partially_received",
     "received", "closed", "rejected", "cancelled",
@@ -50,25 +51,29 @@ TRANSITIONS = {
                   "cancelled": {"master", "admin"}},
     "accepted": {"in_transit": {"supply", "admin"}, "rejected": {"supply", "admin"},
                  "cancelled": {"supply", "admin"}},
-    "in_transit": {"partially_received": {"master", "supply", "admin"},
-                   "received": {"master", "supply", "admin"},
+    "in_transit": {"partially_received": {"master", "admin"},
+                   "received": {"master", "admin"},
                    "cancelled": {"admin"}},
-    "partially_received": {"received": {"master", "supply", "admin"},
+    "partially_received": {"received": {"master", "admin"},
                            "cancelled": {"admin"}},
-    "received": {"closed": {"master", "supply", "admin"}},
+    "received": {"closed": {"master", "admin"}},
     "rejected": {}, "cancelled": {}, "closed": {},
 }
 ROLE_ACTIONS = {
     "master": {
         "view", "receipt", "issue", "transfer", "request_create", "request_receive",
     },
-    "supply": {"view", "request_manage", "delivery_create", "request_receive"},
+    "supply": {
+        "view", "request_manage", "delivery_create", "receipt_price", "receipt_send_manager",
+    },
+    "manager": {"view", "payment_view"},
     "admin": {
         "view", "receipt", "issue", "transfer", "inventory_adjustment",
         "request_create", "request_manage", "request_receive", "delivery_create",
-        "settings_manage", "roles_manage",
+        "settings_manage", "roles_manage", "receipt_price", "receipt_send_manager", "payment_view",
     },
 }
+PAYMENT_STATUSES = ("pending", "priced", "sent")
 
 
 def _db_path() -> Path:
@@ -110,6 +115,24 @@ def _add_column(conn: sqlite3.Connection, table: str, definition: str) -> None:
     name = definition.split()[0]
     if name not in _columns(conn, table):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+
+def _cleanup_merge_artifacts(conn: sqlite3.Connection) -> None:
+    receipt_cols = _columns(conn, "sm_receipts")
+    if "merge_parts_json" in receipt_cols:
+        conn.execute("UPDATE sm_receipts SET merge_parts_json='[]'")
+    if "merged_into_receipt_id" in receipt_cols:
+        conn.execute("UPDATE sm_receipts SET merged_into_receipt_id=NULL")
+    if "merged_at" in receipt_cols:
+        conn.execute("UPDATE sm_receipts SET merged_at=NULL")
+    if "merged_by_max_id" in receipt_cols:
+        conn.execute("UPDATE sm_receipts SET merged_by_max_id=NULL")
+    if "merged_by_name" in receipt_cols:
+        conn.execute("UPDATE sm_receipts SET merged_by_name=''")
+    conn.execute("DROP TABLE IF EXISTS sm_receipt_merges")
+    conn.execute(
+        "DELETE FROM sm_audit_log WHERE action IN ('receipt_merge', 'receipt_unmerge')"
+    )
 
 
 def init_sklad_master_db() -> None:
@@ -240,6 +263,49 @@ def init_sklad_master_db() -> None:
             );
             """
         )
+        _add_column(conn, "sm_receipts", "payment_status TEXT NOT NULL DEFAULT 'pending'")
+        _add_column(conn, "sm_receipts", "total_amount REAL NOT NULL DEFAULT 0")
+        _add_column(conn, "sm_receipts", "priced_at REAL")
+        _add_column(conn, "sm_receipts", "priced_by_max_id INTEGER")
+        _add_column(conn, "sm_receipts", "priced_by_name TEXT NOT NULL DEFAULT ''")
+        _add_column(conn, "sm_receipts", "sent_to_manager_at REAL")
+        _add_column(conn, "sm_receipts", "sent_by_max_id INTEGER")
+        _add_column(conn, "sm_receipts", "sent_by_name TEXT NOT NULL DEFAULT ''")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS sm_receipt_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                receipt_id INTEGER NOT NULL,
+                movement_id INTEGER,
+                material_id INTEGER NOT NULL,
+                quantity REAL NOT NULL DEFAULT 0,
+                quantity_unit TEXT NOT NULL DEFAULT 'шт',
+                billing_quantity REAL NOT NULL DEFAULT 0,
+                billing_unit TEXT NOT NULL DEFAULT 'шт',
+                unit_price REAL NOT NULL DEFAULT 0,
+                line_total REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY(receipt_id) REFERENCES sm_receipts(id) ON DELETE CASCADE,
+                FOREIGN KEY(material_id) REFERENCES sm_materials(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sm_receipt_lines_receipt
+                ON sm_receipt_lines(receipt_id);
+            """
+        )
+        conn.execute(
+            """INSERT INTO sm_receipt_lines(
+                   receipt_id, movement_id, material_id, quantity, quantity_unit,
+                   billing_quantity, billing_unit
+               )
+               SELECT o.receipt_id, o.id, o.material_id, o.quantity, m.unit,
+                      o.quantity, m.unit
+               FROM sm_stock_ops o
+               JOIN sm_materials m ON m.id=o.material_id
+               WHERE o.receipt_id IS NOT NULL AND o.op_type='receipt'
+                 AND NOT EXISTS (
+                     SELECT 1 FROM sm_receipt_lines rl
+                     WHERE rl.movement_id=o.id
+                 )"""
+        )
         _seed(conn, "sm_sites", ((x,) for x in DEFAULT_SITES))
         _seed(conn, "sm_suppliers", ((x,) for x in DEFAULT_SUPPLIERS))
         _seed(conn, "sm_materials", DEFAULT_MATERIALS)
@@ -256,6 +322,9 @@ def init_sklad_master_db() -> None:
         )
         conn.execute("UPDATE sm_requests SET status='submitted' WHERE status='new'")
         conn.execute("UPDATE sm_requests SET status='received' WHERE status='delivered'")
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version < SCHEMA_VERSION:
+            _cleanup_merge_artifacts(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
 
@@ -681,6 +750,21 @@ def record_receipt_batch(
                 receipt_id=receipt_id,
             )
             material = _material(materials[material_id])
+            conn.execute(
+                """INSERT INTO sm_receipt_lines(
+                       receipt_id, movement_id, material_id, quantity, quantity_unit,
+                       billing_quantity, billing_unit
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    receipt_id,
+                    movement_id,
+                    material_id,
+                    quantity,
+                    material["unit"],
+                    quantity,
+                    material["unit"],
+                ),
+            )
             saved_items.append(
                 {
                     "movement_id": movement_id,
@@ -699,6 +783,8 @@ def record_receipt_batch(
             "actor_name": actor_name.strip(),
             "note": note.strip(),
             "created_at": now,
+            "payment_status": "pending",
+            "total_amount": 0,
         }
         _audit(conn, actor_max_id, actor_name, "receipt_batch", "receipt", receipt_id, result)
         _cache(conn, idempotency_key, "receipt_batch", result)
@@ -859,6 +945,413 @@ def record_inventory_adjustment(*, site_id: int, material_id: int, quantity_delt
         return result
 
 
+def _default_site_id(sites: list[dict]) -> int:
+    for site in sites:
+        if str(site.get("name") or "").strip().lower() == "грузовой":
+            return int(site["id"])
+    return int(sites[0]["id"]) if sites else 0
+
+
+def _get_receipt_lines(conn: sqlite3.Connection, receipt_id: int) -> list[dict]:
+    rows = conn.execute(
+        """SELECT rl.*, m.name material_name
+           FROM sm_receipt_lines rl
+           JOIN sm_materials m ON m.id=rl.material_id
+           WHERE rl.receipt_id=?
+           ORDER BY rl.id""",
+        (int(receipt_id),),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _decorate_receipt(result: dict, lines: list[dict]) -> dict:
+    decorated = dict(result)
+    decorated["items"] = lines or decorated.get("items") or []
+    decorated["payment_status"] = str(decorated.get("payment_status") or "pending")
+    decorated["total_amount"] = round(float(decorated.get("total_amount") or 0), 2)
+    return decorated
+
+
+def find_similar_receipt_today(
+    *,
+    site_id: int,
+    supplier_id: int,
+    exclude_receipt_id: int | None = None,
+) -> dict | None:
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT r.id, r.created_at, r.site_id, r.supplier_id, s.name site_name,
+                      sup.name supplier_name, r.actor_name, r.payment_status
+               FROM sm_receipts r
+               JOIN sm_sites s ON s.id=r.site_id
+               JOIN sm_suppliers sup ON sup.id=r.supplier_id
+               WHERE r.site_id=? AND r.supplier_id=?
+                 AND COALESCE(r.payment_status, 'pending') != 'sent'
+               ORDER BY r.created_at DESC, r.id DESC""",
+            (int(site_id), int(supplier_id)),
+        ).fetchall()
+    today = datetime.now().date()
+    for row in rows:
+        receipt_id = int(row["id"])
+        if exclude_receipt_id and receipt_id == int(exclude_receipt_id):
+            continue
+        if datetime.fromtimestamp(float(row["created_at"])).date() == today:
+            return dict(row)
+    return None
+
+
+def _get_receipt_conn(conn: sqlite3.Connection, receipt_id: int) -> dict:
+    row = conn.execute(
+        """SELECT r.*, s.name site_name, sup.name supplier_name
+           FROM sm_receipts r
+           JOIN sm_sites s ON s.id=r.site_id
+           JOIN sm_suppliers sup ON sup.id=r.supplier_id
+           WHERE r.id=?""",
+        (int(receipt_id),),
+    ).fetchone()
+    if not row:
+        raise ValueError("Приход не найден")
+    lines = _get_receipt_lines(conn, receipt_id)
+    if not lines:
+        movements = conn.execute(
+            """SELECT o.id movement_id, o.material_id, o.quantity, m.name material_name,
+                      m.unit material_unit
+               FROM sm_stock_ops o
+               JOIN sm_materials m ON m.id=o.material_id
+               WHERE o.receipt_id=? AND o.op_type='receipt'
+               ORDER BY o.id""",
+            (int(receipt_id),),
+        ).fetchall()
+        lines = [dict(item) for item in movements]
+    return _decorate_receipt(dict(row), lines)
+
+
+def get_receipt(receipt_id: int) -> dict:
+    with _connect() as conn:
+        return _get_receipt_conn(conn, int(receipt_id))
+
+
+def edit_receipt(
+    *,
+    receipt_id: int,
+    supplier_id: int,
+    items: list[dict],
+    note: str = "",
+    actor_max_id: int | None,
+    actor_name: str,
+) -> dict:
+    if not isinstance(items, list) or not items:
+        raise ValueError("Добавьте хотя бы одну позицию прихода")
+    combined: dict[int, float] = {}
+    for item in items:
+        material_id = int(item["material_id"])
+        combined[material_id] = round(combined.get(material_id, 0) + _qty(item.get("quantity")), 3)
+    if not combined or any(qty <= 0 for qty in combined.values()):
+        raise ValueError("Количество каждой позиции должно быть больше нуля")
+
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        before = _get_receipt_conn(conn, receipt_id)
+        site_id = int(before["site_id"])
+        supplier = _require(conn, "sm_suppliers", supplier_id, "Поставщик")
+        for material_id in combined:
+            _require(conn, "sm_materials", material_id, "Материал")
+
+        old_items = {
+            int(item["material_id"]): item for item in before.get("items") or []
+        }
+        all_materials = set(old_items) | set(combined)
+        for material_id in all_materials:
+            old_qty = float(old_items.get(material_id, {}).get("quantity") or 0)
+            new_qty = float(combined.get(material_id) or 0)
+            delta = round(new_qty - old_qty, 3)
+            if delta >= 0:
+                continue
+            balance = _balance(conn, site_id, material_id)
+            if balance + delta < -1e-9:
+                material = _require(conn, "sm_materials", material_id, "Материал")
+                raise ValueError(
+                    f"Недостаточно остатка для уменьшения: {_material(material)['name']}"
+                )
+
+        conn.execute(
+            "UPDATE sm_receipts SET supplier_id=?, note=? WHERE id=?",
+            (supplier_id, note.strip(), int(receipt_id)),
+        )
+
+        for material_id, item in old_items.items():
+            movement_id = int(item["movement_id"])
+            new_qty = float(combined.get(material_id) or 0)
+            if new_qty <= 0:
+                conn.execute("DELETE FROM sm_stock_ops WHERE id=?", (movement_id,))
+                conn.execute("DELETE FROM sm_receipt_lines WHERE movement_id=?", (movement_id,))
+                continue
+            conn.execute(
+                """UPDATE sm_stock_ops
+                   SET quantity=?, quantity_delta=?, supplier_id=?, note=?, actor_max_id=?, actor_name=?
+                   WHERE id=?""",
+                (
+                    new_qty,
+                    new_qty,
+                    supplier_id,
+                    note.strip(),
+                    actor_max_id,
+                    actor_name.strip(),
+                    movement_id,
+                ),
+            )
+
+        for material_id, new_qty in combined.items():
+            if material_id in old_items:
+                continue
+            movement_id = _movement(
+                conn,
+                site_id=site_id,
+                material_id=material_id,
+                supplier_id=supplier_id,
+                op_type="receipt",
+                quantity=new_qty,
+                delta=new_qty,
+                actor_max_id=actor_max_id,
+                actor_name=actor_name,
+                note=note,
+                receipt_id=int(receipt_id),
+            )
+            material = _require(conn, "sm_materials", material_id, "Материал")
+            conn.execute(
+                """INSERT INTO sm_receipt_lines(
+                       receipt_id, movement_id, material_id, quantity, quantity_unit,
+                       billing_quantity, billing_unit
+                   ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    receipt_id,
+                    movement_id,
+                    material_id,
+                    new_qty,
+                    _material(material)["unit"],
+                    new_qty,
+                    _material(material)["unit"],
+                ),
+            )
+
+        conn.execute("DELETE FROM sm_receipt_lines WHERE receipt_id=? AND movement_id IS NOT NULL "
+                     "AND movement_id NOT IN (SELECT id FROM sm_stock_ops WHERE receipt_id=?)",
+                     (int(receipt_id), int(receipt_id)))
+        for row in conn.execute(
+            """SELECT o.id movement_id, o.material_id, o.quantity, m.unit material_unit
+               FROM sm_stock_ops o
+               JOIN sm_materials m ON m.id=o.material_id
+               WHERE o.receipt_id=? AND o.op_type='receipt'""",
+            (int(receipt_id),),
+        ).fetchall():
+            existing = conn.execute(
+                "SELECT id FROM sm_receipt_lines WHERE receipt_id=? AND movement_id=?",
+                (int(receipt_id), int(row["movement_id"])),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE sm_receipt_lines
+                       SET quantity=?, billing_quantity=?, quantity_unit=?, billing_unit=?
+                       WHERE id=?""",
+                    (
+                        float(row["quantity"]),
+                        float(row["quantity"]),
+                        row["material_unit"],
+                        row["material_unit"],
+                        int(existing["id"]),
+                    ),
+                )
+        conn.execute(
+            """UPDATE sm_receipts
+               SET payment_status='pending', total_amount=0,
+                   priced_at=NULL, priced_by_max_id=NULL, priced_by_name='',
+                   sent_to_manager_at=NULL, sent_by_max_id=NULL, sent_by_name=''
+               WHERE id=?""",
+            (int(receipt_id),),
+        )
+
+        after = _get_receipt_conn(conn, receipt_id)
+        after["supplier"] = _supplier(supplier)
+        _audit(
+            conn,
+            actor_max_id,
+            actor_name,
+            "receipt_edit",
+            "receipt",
+            receipt_id,
+            {"before": before, "after": after},
+        )
+        conn.commit()
+        return after
+
+
+def list_payment_receipts(
+    *,
+    site_id: int | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    clauses, params = [], []
+    if site_id is not None:
+        clauses.append("r.site_id=?")
+        params.append(int(site_id))
+    if status:
+        clauses.append("r.payment_status=?")
+        params.append(str(status))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""SELECT r.id, r.site_id, s.name site_name, r.supplier_id, sup.name supplier_name,
+                       r.actor_name, r.note, r.created_at, r.payment_status, r.total_amount,
+                       r.priced_by_name, r.sent_to_manager_at
+                FROM sm_receipts r
+                JOIN sm_sites s ON s.id=r.site_id
+                JOIN sm_suppliers sup ON sup.id=r.supplier_id
+                {where}
+                ORDER BY r.created_at DESC, r.id DESC
+                LIMIT ?""",
+            (*params, max(1, min(int(limit), 100))),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["items"] = _get_receipt_lines(conn, int(row["id"]))
+            item["total_amount"] = round(float(item.get("total_amount") or 0), 2)
+            result.append(item)
+    return result
+
+
+def price_receipt(
+    *,
+    receipt_id: int,
+    lines: list[dict],
+    actor_max_id: int | None,
+    actor_name: str,
+) -> dict:
+    if not lines:
+        raise ValueError("Укажите цены по позициям")
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _get_receipt_conn(conn, receipt_id)
+        total = 0.0
+        for payload in lines:
+            line_id = payload.get("id")
+            movement_id = payload.get("movement_id")
+            unit_price = round(float(payload.get("unit_price") or 0), 2)
+            if unit_price < 0:
+                raise ValueError("Цена не может быть отрицательной")
+            billing_quantity = _qty(payload.get("billing_quantity", payload.get("quantity")))
+            billing_unit = str(payload.get("billing_unit") or payload.get("quantity_unit") or "шт").strip()
+            line_total = round(billing_quantity * unit_price, 2)
+            if line_id is not None:
+                row = conn.execute(
+                    "SELECT id FROM sm_receipt_lines WHERE id=? AND receipt_id=?",
+                    (int(line_id), int(receipt_id)),
+                ).fetchone()
+            elif movement_id is not None:
+                row = conn.execute(
+                    "SELECT id FROM sm_receipt_lines WHERE movement_id=? AND receipt_id=?",
+                    (int(movement_id), int(receipt_id)),
+                ).fetchone()
+            else:
+                raise ValueError("Укажите id или movement_id позиции")
+            if not row:
+                raise ValueError("Позиция прихода не найдена")
+            conn.execute(
+                """UPDATE sm_receipt_lines
+                   SET billing_quantity=?, billing_unit=?, unit_price=?, line_total=?
+                   WHERE id=?""",
+                (billing_quantity, billing_unit, unit_price, line_total, int(row["id"])),
+            )
+            total += line_total
+        now = time.time()
+        conn.execute(
+            """UPDATE sm_receipts
+               SET payment_status='priced', total_amount=?, priced_at=?, priced_by_max_id=?,
+                   priced_by_name=?, sent_to_manager_at=NULL, sent_by_max_id=NULL, sent_by_name=''
+               WHERE id=?""",
+            (round(total, 2), now, actor_max_id, actor_name.strip(), int(receipt_id)),
+        )
+        result = _get_receipt_conn(conn, receipt_id)
+        _audit(
+            conn,
+            actor_max_id,
+            actor_name,
+            "receipt_price",
+            "receipt",
+            receipt_id,
+            {"total_amount": round(total, 2), "lines": len(lines)},
+        )
+        conn.commit()
+        return result
+
+
+def send_receipt_to_manager(
+    *,
+    receipt_id: int,
+    actor_max_id: int | None,
+    actor_name: str,
+) -> dict:
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        receipt = _get_receipt_conn(conn, receipt_id)
+        if receipt.get("payment_status") != "priced":
+            raise ValueError("Сначала сохраните цены по всем позициям")
+        if float(receipt.get("total_amount") or 0) <= 0:
+            raise ValueError("Итоговая сумма должна быть больше нуля")
+        now = time.time()
+        conn.execute(
+            """UPDATE sm_receipts
+               SET payment_status='sent', sent_to_manager_at=?, sent_by_max_id=?, sent_by_name=?
+               WHERE id=?""",
+            (now, actor_max_id, actor_name.strip(), int(receipt_id)),
+        )
+        result = _get_receipt_conn(conn, receipt_id)
+        _audit(
+            conn,
+            actor_max_id,
+            actor_name,
+            "receipt_send_manager",
+            "receipt",
+            receipt_id,
+            {"total_amount": result.get("total_amount")},
+        )
+        conn.commit()
+        return result
+
+
+def list_audit_log(
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    entity_type: str | None = None,
+) -> dict:
+    limit, offset = max(1, min(int(limit), 200)), max(0, int(offset))
+    clauses, params = [], []
+    if entity_type:
+        clauses.append("entity_type=?")
+        params.append(entity_type)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with _connect() as conn:
+        total = conn.execute(f"SELECT COUNT(*) n FROM sm_audit_log{where}", params).fetchone()["n"]
+        rows = conn.execute(
+            f"""SELECT id, actor_max_id, actor_name, action, entity_type, entity_id,
+                       details_json, created_at
+                FROM sm_audit_log{where}
+                ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
+        ).fetchall()
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except json.JSONDecodeError:
+            item["details"] = {}
+        items.append(item)
+    return {"items": items, "total": int(total), "limit": limit, "offset": offset}
+
+
 def reverse_movement(*, movement_id: int, actor_max_id: int | None, actor_name: str,
                      note: str = "", allow_negative: bool = False,
                      idempotency_key: str | None = None) -> dict:
@@ -901,9 +1394,87 @@ def reverse_movement(*, movement_id: int, actor_max_id: int | None, actor_name: 
         return result
 
 
+_MOVEMENT_JOINS = """
+FROM sm_stock_ops o
+JOIN sm_sites s ON s.id=o.site_id
+JOIN sm_materials m ON m.id=o.material_id
+LEFT JOIN sm_suppliers sup ON sup.id=o.supplier_id
+LEFT JOIN sm_requests r ON r.id=o.request_id
+LEFT JOIN sm_delivery_items di ON di.id=o.delivery_item_id
+LEFT JOIN sm_deliveries d ON d.id=di.delivery_id
+LEFT JOIN sm_receipts rc ON rc.id=o.receipt_id
+"""
+
+_MOVEMENT_SELECT = f"""
+SELECT o.*, s.name site_name, m.name material_name, m.unit material_unit,
+       sup.name supplier_name,
+       r.requested_by_name, r.requested_by_max_id,
+       d.created_by_name supply_by_name, d.id delivery_ref_id,
+       rc.actor_name receipt_actor_name
+{_MOVEMENT_JOINS}
+"""
+
+
+def _batch_items_for_movement(conn: sqlite3.Connection, row: sqlite3.Row) -> list[dict]:
+    receipt_id = row["receipt_id"]
+    if receipt_id:
+        siblings = conn.execute(
+            """SELECT o.id movement_id, o.material_id, o.quantity, m.name material_name,
+                      m.unit material_unit
+               FROM sm_stock_ops o JOIN sm_materials m ON m.id=o.material_id
+               WHERE o.receipt_id=? ORDER BY o.id""",
+            (int(receipt_id),),
+        ).fetchall()
+        return [dict(item) for item in siblings]
+    delivery_item_id = row["delivery_item_id"]
+    if delivery_item_id:
+        delivery = conn.execute(
+            "SELECT delivery_id FROM sm_delivery_items WHERE id=?", (int(delivery_item_id),)
+        ).fetchone()
+        if delivery:
+            items = conn.execute(
+                """SELECT di.id delivery_item_id, ri.material_id, m.name material_name,
+                          m.unit material_unit, di.quantity
+                   FROM sm_delivery_items di
+                   JOIN sm_request_items ri ON ri.id=di.request_item_id
+                   JOIN sm_materials m ON m.id=ri.material_id
+                   WHERE di.delivery_id=? ORDER BY di.id""",
+                (int(delivery["delivery_id"]),),
+            ).fetchall()
+            return [dict(item) for item in items]
+    return []
+
+
+def _serialize_movement(conn: sqlite3.Connection, row: sqlite3.Row, *, detailed: bool = False) -> dict:
+    item = dict(row)
+    item["received_by_name"] = (
+        item.get("actor_name")
+        or item.get("receipt_actor_name")
+        or ""
+    ).strip()
+    item["ordered_by_name"] = (item.get("supply_by_name") or item.get("requested_by_name") or "").strip()
+    if detailed:
+        item["batch_items"] = _batch_items_for_movement(conn, row)
+    else:
+        item.pop("batch_items", None)
+    for key in ("receipt_actor_name", "supply_by_name", "requested_by_max_id", "delivery_ref_id"):
+        item.pop(key, None)
+    return item
+
+
+def get_movement(movement_id: int, *, detailed: bool = True) -> dict:
+    with _connect() as conn:
+        row = conn.execute(
+            f"{_MOVEMENT_SELECT} WHERE o.id=?", (int(movement_id),)
+        ).fetchone()
+        if not row:
+            raise ValueError("Движение не найдено")
+        return _serialize_movement(conn, row, detailed=detailed)
+
+
 def list_movements(*, site_id: int | None = None, material_id: int | None = None,
                    op_type: str | None = None, request_id: int | None = None,
-                   limit: int = 50, offset: int = 0) -> dict:
+                   limit: int = 50, offset: int = 0, detailed: bool = False) -> dict:
     limit, offset = max(1, min(int(limit), 200)), max(0, int(offset))
     clauses, params = [], []
     for column, value in (("o.site_id", site_id), ("o.material_id", material_id),
@@ -915,14 +1486,13 @@ def list_movements(*, site_id: int | None = None, material_id: int | None = None
     with _connect() as conn:
         total = conn.execute(f"SELECT COUNT(*) n FROM sm_stock_ops o{where}", params).fetchone()["n"]
         rows = conn.execute(
-            f"""SELECT o.*,s.name site_name,m.name material_name,m.unit material_unit
-                FROM sm_stock_ops o JOIN sm_sites s ON s.id=o.site_id
-                JOIN sm_materials m ON m.id=o.material_id {where}
+            f"""{_MOVEMENT_SELECT} {where}
                 ORDER BY o.created_at DESC,o.id DESC LIMIT ? OFFSET ?""",
             (*params, limit, offset),
         ).fetchall()
-    return {"items": [dict(r) for r in rows], "total": int(total),
-            "limit": limit, "offset": offset}
+        include_batch = detailed or material_id is not None
+        items = [_serialize_movement(conn, row, detailed=include_batch) for row in rows]
+    return {"items": items, "total": int(total), "limit": limit, "offset": offset}
 
 
 def create_request(*, site_id: int, material_id: int | None = None, quantity: Any = None,
@@ -1220,6 +1790,7 @@ def get_access(max_id: int) -> dict:
     env_roles = set()
     for role, variable in (("master", "MATERIALS_MASTER_MAX_IDS"),
                            ("supply", "MATERIALS_SUPPLY_MAX_IDS"),
+                           ("manager", "MATERIALS_MANAGER_MAX_IDS"),
                            ("admin", "DRIVERS_ADMIN_MAX_IDS")):
         if int(max_id) in _env_ids(variable):
             env_roles.add(role)
@@ -1236,7 +1807,10 @@ def get_access(max_id: int) -> dict:
     )
     all_sites = bool(env_roles) or has_global_db_role or "admin" in roles
     actions = sorted(set().union(*(ROLE_ACTIONS[r] for r in roles)) if roles else set())
-    return {"roles": roles, "role": "admin" if "admin" in roles else roles[0] if roles else None,
+    return {"roles": roles,
+            "role": ("admin" if "admin" in roles else
+                     "manager" if "manager" in roles else
+                     roles[0] if roles else None),
             "allowed_actions": actions, "capabilities": {x: True for x in actions},
             "site_ids": sorted(restricted), "all_sites": all_sites}
 
@@ -1267,6 +1841,35 @@ def set_role(*, max_id: int, role: str, site_ids: list[int] | None = None,
     return get_access(max_id)
 
 
+def list_roles(*, include_inactive: bool = False) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT id, max_id, role, active, created_at, updated_at
+               FROM sm_roles ORDER BY active DESC, role, max_id"""
+        ).fetchall()
+        result: list[dict] = []
+        for row in rows:
+            if not include_inactive and not int(row["active"]):
+                continue
+            site_ids = [
+                int(item["site_id"])
+                for item in conn.execute(
+                    "SELECT site_id FROM sm_role_sites WHERE role_id=? ORDER BY site_id",
+                    (int(row["id"]),),
+                ).fetchall()
+            ]
+            result.append({
+                "id": int(row["id"]),
+                "max_id": int(row["max_id"]),
+                "role": str(row["role"]),
+                "active": bool(row["active"]),
+                "site_ids": site_ids,
+                "created_at": float(row["created_at"] or 0),
+                "updated_at": float(row["updated_at"] or 0),
+            })
+    return result
+
+
 def site_stock(site_id: int) -> list[dict]:
     with _connect() as conn:
         _require(conn, "sm_sites", site_id, "Площадка")
@@ -1294,7 +1897,8 @@ def site_stock(site_id: int) -> list[dict]:
 
 def dashboard(*, site_id: int | None = None) -> dict:
     sites, materials, suppliers = list_sites(), list_materials(), list_suppliers()
-    selected = site_id or (sites[0]["id"] if sites else 0)
+    default_site_id = _default_site_id(sites)
+    selected = site_id or default_site_id
     stock = site_stock(selected) if selected else []
     summaries = []
     for site in sites:
@@ -1304,7 +1908,8 @@ def dashboard(*, site_id: int | None = None) -> dict:
                           "critical_count": sum(x["status"] == "critical" for x in items),
                           "warning_count": sum(x["status"] == "warning" for x in items)})
     return {"sites": sites, "materials": materials, "suppliers": suppliers,
-            "selected_site_id": selected, "stock": stock, "site_summaries": summaries,
+            "selected_site_id": selected, "default_site_id": default_site_id,
+            "default_site_name": "Грузовой", "stock": stock, "site_summaries": summaries,
             "requests": list_requests(site_id=selected or None, limit=20),
             "summary": {"site_count": len(sites), "material_count": len(materials),
                         "critical_count": sum(x["status"] == "critical" for x in stock),

@@ -21,7 +21,11 @@
     requestCart: [],
     showSupplierCreate: false,
     showMaterialCreate: false,
-    showRequestCreate: false
+    showRequestCreate: false,
+    roleDefaultsApplied: false,
+    historyMaterialId: "",
+    historyMaterialName: "",
+    editingReceiptId: ""
   };
 
   function $(id) { return document.getElementById(id); }
@@ -170,14 +174,76 @@
     return api(path).then(function (body) {
       data = body || {};
       if (!state.siteId && data.selected_site_id) state.siteId = String(data.selected_site_id);
+      if (!state.siteId && data.default_site_id) state.siteId = String(data.default_site_id);
+      applyRoleDefaults();
       render();
     });
   }
 
+  function roleLabel(role) {
+    return {
+      admin: "Администратор",
+      master: "Мастер",
+      manager: "Руководитель",
+      supply: "Снабжение"
+    }[role] || role || "";
+  }
+
+  function primaryRole() {
+    var access = (data && data.access) || {};
+    return access.role || ((data && data.roles) || [])[0] || "";
+  }
+
   function renderUser() {
     if (!data.user) return;
-    $("currentUser").textContent = data.user.name || "Пользователь";
-    $("currentUser").hidden = false;
+    var access = data.access || {};
+    var roles = data.roles || access.roles || [];
+    var roleText = roles.map(roleLabel).filter(Boolean).join(" · ") ||
+      roleLabel(access.role) || "Без роли";
+    var hint = data.role_hint || "";
+    $("currentUserName").textContent = data.user.name || "Пользователь";
+    $("currentUserRole").textContent = roleText;
+    if (hint) {
+      $("currentUserHint").textContent = hint;
+      $("currentUserHint").hidden = false;
+    } else {
+      $("currentUserHint").hidden = true;
+    }
+    $("currentUserBox").hidden = false;
+  }
+
+  function applyRoleDefaults() {
+    if (state.roleDefaultsApplied) return;
+    var role = primaryRole();
+    if (role === "supply") state.tab = "payment";
+    else if (role === "manager") state.tab = "payment";
+    else if (role === "master" && allowed("receipt")) state.tab = "receipt";
+    else if (role === "admin") state.tab = "stock";
+    state.roleDefaultsApplied = true;
+  }
+
+  function renderRoleHeadings() {
+    var role = primaryRole();
+    var receiptPanel = $("receiptPanel");
+    if (receiptPanel && !receiptPanel.hidden) {
+      receiptPanel.querySelector("h2").textContent = "Приход на площадку";
+    }
+    var requestsTitle = $("requestsPanelTitle");
+    var createTitle = $("requestCreateTitle");
+    var createBtn = $("toggleRequestCreateBtn");
+    if (role === "master") {
+      requestsTitle.textContent = "Заявки на снабжение";
+      createTitle.textContent = "Запросить материалы";
+      createBtn.textContent = state.showRequestCreate ? "Скрыть" : "Запросить";
+    } else if (role === "supply") {
+      requestsTitle.textContent = "Закупки и поставки";
+      createTitle.textContent = "Новая заявка";
+      createBtn.textContent = state.showRequestCreate ? "Скрыть" : "Новая";
+    } else {
+      requestsTitle.textContent = "Заявки и контроль";
+      createTitle.textContent = "Новая заявка";
+      createBtn.textContent = state.showRequestCreate ? "Скрыть" : "Новая";
+    }
   }
 
   function renderSites() {
@@ -206,12 +272,27 @@
     document.querySelector('[data-stock-tab="transfer"]').hidden = !allowed("transfer");
     document.querySelector('[data-stock-tab="settings"]').hidden =
       !(allowed("settings_manage") || allowed("inventory_adjustment"));
+    document.querySelector('[data-tab="requests"]').hidden = !allowed("request_create") &&
+      !allowed("request_manage") && !allowed("view");
+    document.querySelector('[data-tab="payment"]').hidden =
+      !(allowed("receipt_price") || allowed("payment_view"));
     $("toggleRequestCreateBtn").hidden = !allowed("request_create");
-    $("showSupplierCreateBtn").hidden = !(allowed("receipt") || allowed("settings_manage"));
-    $("showMaterialCreateBtn").hidden = !(allowed("receipt") || allowed("settings_manage"));
+    $("showSupplierCreateBtn").hidden = !allowed("settings_manage");
+    $("showMaterialCreateBtn").hidden = !allowed("settings_manage");
     $("materialAdminSettings").hidden = !allowed("settings_manage");
     $("minimumSettings").hidden = !allowed("settings_manage");
+    $("rolesAdminSettings").hidden = !allowed("roles_manage");
+    $("auditAdminSettings").hidden = !(allowed("roles_manage") || allowed("settings_manage"));
     $("adjustmentForm").hidden = !allowed("inventory_adjustment");
+    $("cancelReceiptEditBtn").hidden = !state.editingReceiptId;
+    $("saveReceiptBtn").textContent = state.editingReceiptId
+      ? "Сохранить изменения прихода"
+      : "Сохранить весь приход";
+    if ($("receiptPanelTitle")) {
+      $("receiptPanelTitle").textContent = state.editingReceiptId
+        ? ("Правка прихода №" + state.editingReceiptId)
+        : "Приход на площадку";
+    }
     if ((state.tab === "receipt" && !allowed("receipt")) ||
         (state.tab === "issue" && !allowed("issue"))) state.tab = "stock";
     if (state.stockTab === "transfer" && !allowed("transfer")) state.stockTab = "materials";
@@ -223,9 +304,80 @@
     Array.prototype.forEach.call(document.querySelectorAll("#tabButtons [data-tab]"), function (tab) {
       tab.classList.toggle("is-active", tab.dataset.tab === state.tab);
     });
-    ["receipt", "issue", "stock", "requests"].forEach(function (name) {
+    ["receipt", "issue", "stock", "requests", "payment"].forEach(function (name) {
       $(name + "Panel").hidden = state.tab !== name;
     });
+  }
+
+  function moneyLabel(value) {
+    var amount = Number(value || 0);
+    if (!isFinite(amount)) return "0 ₽";
+    return amount.toLocaleString("ru-RU", { maximumFractionDigits: 2 }) + " ₽";
+  }
+
+  function paymentStatusLabel(status) {
+    return {
+      pending: "Ждёт цены",
+      priced: "Цены сохранены",
+      sent: "Отправлено руководителю"
+    }[status] || status || "—";
+  }
+
+  function renderPayment() {
+    if (!(allowed("receipt_price") || allowed("payment_view"))) return;
+    var canEdit = allowed("receipt_price");
+    $("paymentPanelNote").textContent = canEdit
+      ? "Проставьте цены по каждому приходу и нажмите «Отправить руководителю». Суммы уйдут только в личку."
+      : "Ведомости к оплате. Суммы видны только руководителю в личных сообщениях MAX.";
+    var receipts = data.payment_receipts || [];
+    $("paymentList").innerHTML = receipts.map(function (receipt) {
+      var itemsHtml = (receipt.items || []).map(function (item) {
+        if (canEdit && receipt.payment_status !== "sent") {
+          return '<div class="sm-pay-item"><div class="sm-pay-item__info"><b>' +
+            esc(item.material_name) + '</b><small>' + esc(formatQty(item.quantity)) + " " +
+            esc(item.quantity_unit || "") + '</small></div><div class="sm-pay-fields">' +
+            '<label class="sm-pay-field"><span>К оплате</span>' +
+            '<input class="sm-input" type="number" min="0" step="0.001" placeholder="0" value="' +
+            esc(formatQty(item.billing_quantity || item.quantity)) + '" data-pay-qty="' + esc(item.id) + '"></label>' +
+            '<label class="sm-pay-field"><span>Ед.</span>' +
+            '<input class="sm-input" placeholder="шт" value="' +
+            esc(item.billing_unit || item.quantity_unit || "") + '" data-pay-unit="' + esc(item.id) + '"></label>' +
+            '<label class="sm-pay-field"><span>Цена, ₽</span>' +
+            '<input class="sm-input" type="number" min="0" step="0.01" placeholder="0" value="' +
+            esc(item.unit_price || "") + '" data-pay-price="' + esc(item.id) + '"></label></div></div>';
+        }
+        return '<div class="sm-cart-row"><span><b>' + esc(item.material_name) + "</b> · " +
+          esc(formatQty(item.billing_quantity || item.quantity)) + " " +
+          esc(item.billing_unit || item.quantity_unit || "") +
+          (item.unit_price ? " × " + moneyLabel(item.unit_price) + " = " + moneyLabel(item.line_total) : "") +
+          "</span></div>";
+      }).join("");
+      var actions = "";
+      if (canEdit && receipt.payment_status !== "sent") {
+        var buttons = [
+          '<button type="button" class="sm-mini-action" data-save-pricing="' + esc(receipt.id) +
+          '">Сохранить цены</button>'
+        ];
+        if (receipt.payment_status === "priced") {
+          buttons.push(
+            '<button type="button" class="sm-mini-action" data-send-manager="' + esc(receipt.id) +
+            '">Отправить руководителю</button>'
+          );
+        }
+        actions = '<div class="sm-action-list sm-action-list--stack">' + buttons.join("") + "</div>";
+      }
+      return '<article class="sm-history-card sm-payment-card"><div class="sm-heading-row sm-heading-row--card"><div class="sm-heading-main"><b>Приход №' +
+        esc(receipt.id) + '</b><span>' + esc(receipt.supplier_name || "") + " · " +
+        esc(receipt.site_name || "") + '</span></div><span class="sm-status">' +
+        esc(paymentStatusLabel(receipt.payment_status)) + '</span></div><p class="sm-note sm-note--tight">Принял: ' +
+        esc(receipt.actor_name || "—") + " · " + esc(dateLabel(receipt.created_at)) +
+        '</p><div class="sm-section-gap"><p class="sm-note sm-note--tight"><b>Итого к оплате</b></p>' +
+        '<div class="sm-pay-list">' + itemsHtml + "</div></div>" +
+        (receipt.total_amount
+          ? '<p class="sm-note"><b>Итого: ' + moneyLabel(receipt.total_amount) + "</b></p>"
+          : "") +
+        actions + "</article>";
+    }).join("") || '<p class="sm-empty">Приходов для оплаты пока нет.</p>';
   }
 
   function renderSelectors() {
@@ -326,20 +478,100 @@
     });
   }
 
+  function movementSourceLabel(item) {
+    if (item.supplier_name) return "От: " + item.supplier_name;
+    if (String(item.op_type || "").indexOf("transfer") === 0) return "Перемещение между площадками";
+    if (item.op_type === "issue") return "Расход со склада";
+    if (item.op_type === "adjustment" || item.op_type === "inventory_adjustment") return "Корректировка";
+    return "";
+  }
+
+  function batchItemsText(items, materialId) {
+    if (!items || !items.length) return "";
+    return items.map(function (batch) {
+      var qty = batch.quantity != null
+        ? formatQty(batch.quantity) + (batch.material_unit ? " " + batch.material_unit : "")
+        : "";
+      var suffix = String(batch.material_id) === String(materialId) ? " (эта позиция)" : "";
+      return (batch.material_name || "Материал") + (qty ? " — " + qty : "") + suffix;
+    }).join("; ");
+  }
+
+  function renderMovementsHeader() {
+    var inMaterialHistory = Boolean(state.historyMaterialId);
+    $("movementsTitle").textContent = inMaterialHistory
+      ? (state.historyMaterialName || "Материал")
+      : "История";
+    $("movementsSubtitle").textContent = inMaterialHistory
+      ? "Полная история поступлений и движений"
+      : "";
+    $("movementsSubtitle").hidden = !inMaterialHistory;
+    $("movementsBackBtn").hidden = !inMaterialHistory;
+  }
+
+  function renderMovementDetailCard(item) {
+    var delta = Number(item.quantity_delta || 0);
+    var batchText = batchItemsText(item.batch_items, item.material_id);
+    var meta = [
+      ["От кого", item.supplier_name || "—"],
+      ["Когда", dateLabel(item.created_at) || "—"],
+      ["Площадка", item.site_name || "—"],
+      ["Принял", item.received_by_name || item.actor_name || "—"],
+      ["Заказал", item.ordered_by_name || "—"]
+    ];
+    if (item.request_id) {
+      meta.push(["Заявка", "#" + item.request_id]);
+    }
+    if (item.receipt_id) {
+      meta.push(["Приход", "№" + item.receipt_id]);
+    }
+    return '<article class="sm-history-card"><div class="sm-heading-row"><div><b>' +
+      esc(item.material_name || "Материал") + '</b><span>' +
+      esc(movementLabels[item.op_type] || "Операция") + " · " +
+      esc(dateLabel(item.created_at)) + '</span></div><b class="' +
+      (delta >= 0 ? "sm-positive" : "sm-negative") + '">' + (delta > 0 ? "+" : "") +
+      esc(formatQty(delta)) + " " + esc(item.material_unit || "") + '</b></div><dl class="sm-history-meta">' +
+      meta.map(function (row) {
+        return "<div><dt>" + esc(row[0]) + "</dt><dd>" + esc(row[1]) + "</dd></div>";
+      }).join("") + "</dl>" +
+      (batchText
+        ? '<p class="sm-history-batch"><span>Вместе пришло</span> ' + esc(batchText) + "</p>"
+        : "") +
+      (item.note ? '<p class="sm-note">' + esc(item.note) + "</p>" : "") +
+      '<div class="sm-action-list">' +
+      (item.receipt_id && item.op_type === "receipt" && !item.delivery_item_id && allowed("receipt")
+        ? '<button type="button" class="sm-mini-action" data-edit-receipt="' + esc(item.receipt_id) +
+          '">Изменить приход</button>'
+        : "") +
+      "</div>" +
+      "</article>";
+  }
+
   function renderMovements() {
+    renderMovementsHeader();
+    if (state.historyMaterialId) {
+      $("movementsList").innerHTML = movements.map(function (item) {
+        return renderMovementDetailCard(item);
+      }).join("") || '<p class="sm-empty">По этому материалу движений пока нет.</p>';
+      return;
+    }
     $("movementsList").innerHTML = movements.map(function (item) {
       var delta = Number(item.quantity_delta || 0);
-      return '<article class="sm-row"><div><b>' + esc(item.material_name || "Материал") +
-        '</b><span>' + esc(movementLabels[item.op_type] || "Операция со складом") +
+      var source = movementSourceLabel(item);
+      return '<button type="button" class="sm-row sm-row-btn" data-history-material="' +
+        esc(item.material_id) + '" data-history-material-name="' + esc(item.material_name || "") + '">' +
+        '<div><b>' + esc(item.material_name || "Материал") + '</b><span>' +
+        esc(movementLabels[item.op_type] || "Операция со складом") +
+        (source ? " · " + esc(source) : "") +
         (item.note ? " · " + esc(item.note) : "") + '</span></div><div class="sm-align-right"><b class="' +
         (delta >= 0 ? "sm-positive" : "sm-negative") + '">' + (delta > 0 ? "+" : "") +
-        esc(formatQty(delta)) + '</b><span>' + esc(dateLabel(item.created_at)) + "</span></div></article>";
+        esc(formatQty(delta)) + '</b><span>' + esc(dateLabel(item.created_at)) + "</span></div></button>";
     }).join("") || '<p class="sm-empty">Движений пока нет.</p>';
   }
 
   function renderRequestCart() {
     $("requestCreateForm").hidden = !state.showRequestCreate;
-    $("toggleRequestCreateBtn").textContent = state.showRequestCreate ? "Скрыть" : "Новая";
+    renderRoleHeadings();
     $("requestCart").innerHTML = state.requestCart.map(function (item, index) {
       var material = materialById(item.material_id) || {};
       return '<div class="sm-cart-row"><span><b>' + esc(material.name || "Материал") + "</b> · " +
@@ -442,9 +674,67 @@
     }).join("") || '<p class="sm-empty">Заявок по этой площадке пока нет.</p>';
   }
 
+  var auditActionLabels = {
+    receipt: "Приход",
+    receipt_batch: "Приход партией",
+    receipt_edit: "Правка прихода",
+    receipt_price: "Цены прихода",
+    receipt_send_manager: "Отправка руководителю",
+    issue: "Расход",
+    transfer: "Перемещение",
+    inventory_adjustment: "Корректировка",
+    reversal: "Сторно",
+    request_create: "Заявка",
+    request_transition: "Статус заявки",
+    delivery_create: "Поставка",
+    delivery_receive: "Приёмка поставки",
+    role_update: "Роль",
+    site_material_minimum: "Минимум",
+    material_update: "Материал"
+  };
+
+  function renderAuditLog() {
+    var box = $("auditAdminSettings");
+    if (!box || box.hidden) return;
+    var items = data.audit_log || [];
+    $("auditList").innerHTML = items.map(function (item) {
+      var action = auditActionLabels[item.action] || item.action || "Действие";
+      var target = [item.entity_type, item.entity_id].filter(Boolean).join(" #");
+      return '<article class="sm-audit-card"><div class="sm-heading-row"><div><b>' +
+        esc(action) + '</b><span>' + esc(item.actor_name || "Пользователь") +
+        (item.actor_max_id ? " · id " + esc(item.actor_max_id) : "") +
+        '</span></div><span class="sm-status">' + esc(dateLabel(item.created_at)) +
+        '</span></div><p class="sm-note">' + esc(target || "—") + "</p></article>";
+    }).join("") || '<p class="sm-empty">Журнал пока пуст.</p>';
+  }
+
+  function renderRolesAdmin() {
+    var box = $("rolesAdminSettings");
+    if (!box || !allowed("roles_manage")) return;
+    var sites = data.sites || [];
+    $("roleSiteSelect").innerHTML = '<option value="">Все площадки</option>' +
+      sites.map(function (site) {
+        return '<option value="' + esc(site.id) + '">' + esc(site.name) + "</option>";
+      }).join("");
+    var roles = data.admin_roles || [];
+    $("rolesList").innerHTML = roles.map(function (item) {
+      var siteNames = (item.site_ids || []).map(function (siteId) {
+        return (siteById(siteId) || {}).name || ("#" + siteId);
+      }).join(", ");
+      return '<article class="sm-role-card' + (item.active ? "" : " is-disabled") + '">' +
+        '<div class="sm-heading-row"><div><b>' + esc(roleLabel(item.role)) + '</b><span>MAX id ' +
+        esc(item.max_id) + '</span></div><span class="sm-status">' +
+        (item.active ? "Активна" : "Отключена") + '</span></div>' +
+        (siteNames ? '<p class="sm-note">Площадки: ' + esc(siteNames) + "</p>" : "") +
+        '<button type="button" class="sm-mini-action" data-edit-role="' + esc(item.max_id) +
+        '" data-edit-role-name="' + esc(item.role) + '">Изменить</button></article>';
+    }).join("") || '<p class="sm-empty">Роли из базы пока не назначены. Роли из .env тоже действуют.</p>';
+  }
+
   function render() {
     renderUser();
     renderRoleAware();
+    renderRoleHeadings();
     renderSites();
     renderSummary();
     renderTabs();
@@ -453,6 +743,9 @@
     renderReceiptCart();
     renderStock();
     renderRequests();
+    renderPayment();
+    renderRolesAdmin();
+    renderAuditLog();
   }
 
   function reload(message) {
@@ -481,25 +774,115 @@
     renderReceiptCart();
   }
 
-  function saveReceipt() {
-    if (!state.siteId) return toast("Выберите площадку");
-    if (!state.supplierId) return toast("Выберите поставщика");
-    if (!state.receiptCart.length) return toast("Добавьте хотя бы одну позицию");
-    var button = $("saveReceiptBtn");
-    setBusy(button, true);
-    post("/receipts", {
-      site_id: Number(state.siteId), supplier_id: Number(state.supplierId),
-      items: state.receiptCart.map(function (item) {
+  function confirmReceiptSave() {
+    var site = siteById(state.siteId) || {};
+    var siteName = site.name || (data && data.default_site_name) || "Грузовой";
+    return window.confirm(
+      "Все позиции учли в приходе?\n\nЕсли да — сохранить на склад «" + siteName + "»."
+    );
+  }
+
+  function resetReceiptForm() {
+    state.editingReceiptId = "";
+    state.receiptCart = [];
+    state.receiptMaterialId = "";
+    $("receiptNote").value = "";
+  }
+
+  function beginReceiptEdit(receiptId) {
+    return api("/receipts/" + encodeURIComponent(receiptId)).then(function (body) {
+      var receipt = body.receipt || {};
+      state.editingReceiptId = String(receipt.id || receiptId);
+      state.tab = "receipt";
+      state.siteId = String(receipt.site_id || state.siteId);
+      state.supplierId = String(receipt.supplier_id || "");
+      state.receiptCart = (receipt.items || []).map(function (item) {
         return {
           material_id: Number(item.material_id),
           quantity: Number(item.quantity)
         };
-      }),
-      note: $("receiptNote").value.trim()
-    }).then(function () {
-      $("receiptNote").value = "";
-      state.receiptCart = [];
-      return reload("Приход сохранён");
+      });
+      $("receiptNote").value = receipt.note || "";
+      render();
+      toast("Редактирование прихода №" + state.editingReceiptId);
+    });
+  }
+
+  function saveReceipt() {
+    if (!state.siteId) return toast("Выберите площадку");
+    if (!state.supplierId) return toast("Выберите поставщика");
+    if (!state.receiptCart.length) return toast("Добавьте хотя бы одну позицию");
+    if (!confirmReceiptSave()) return;
+    var button = $("saveReceiptBtn");
+    setBusy(button, true);
+
+    function submitReceipt(targetReceiptId, existingReceipt) {
+      var payload = {
+        site_id: Number(state.siteId),
+        supplier_id: Number(state.supplierId),
+        items: state.receiptCart.map(function (item) {
+          return {
+            material_id: Number(item.material_id),
+            quantity: Number(item.quantity)
+          };
+        }),
+        note: $("receiptNote").value.trim()
+      };
+      if (targetReceiptId && existingReceipt) {
+        var combined = {};
+        (existingReceipt.items || []).forEach(function (item) {
+          combined[item.material_id] = Number(item.quantity);
+        });
+        payload.items.forEach(function (item) {
+          combined[item.material_id] = Math.round(
+            ((combined[item.material_id] || 0) + item.quantity) * 1000
+          ) / 1000;
+        });
+        payload.items = Object.keys(combined).map(function (materialId) {
+          return { material_id: Number(materialId), quantity: combined[materialId] };
+        });
+        var existingNote = (existingReceipt.note || "").trim();
+        if (existingNote && payload.note) payload.note = existingNote + " / " + payload.note;
+        else if (existingNote) payload.note = existingNote;
+      }
+      var request = targetReceiptId
+        ? post("/receipts/" + encodeURIComponent(targetReceiptId), payload, "PATCH")
+        : (state.editingReceiptId
+          ? post("/receipts/" + encodeURIComponent(state.editingReceiptId), payload, "PATCH")
+          : post("/receipts", payload));
+      var message = targetReceiptId
+        ? ("Позиции добавлены к приходу №" + targetReceiptId)
+        : (state.editingReceiptId ? "Приход изменён" : "Приход сохранён");
+      return request.then(function () {
+        resetReceiptForm();
+        return reload(message);
+      });
+    }
+
+    var chain = Promise.resolve();
+    if (!state.editingReceiptId) {
+      chain = api(
+        "/receipts/similar?site_id=" + encodeURIComponent(state.siteId) +
+        "&supplier_id=" + encodeURIComponent(state.supplierId)
+      ).then(function (body) {
+        var similar = body.similar_receipt;
+        if (!similar) return null;
+        if (!window.confirm(
+          "Есть похожий приход сегодня №" + similar.id + " (" +
+          (similar.supplier_name || "поставщик") + "). Добавить позиции к нему?"
+        )) {
+          return null;
+        }
+        return api("/receipts/" + encodeURIComponent(similar.id)).then(function (detail) {
+          return { id: similar.id, receipt: detail.receipt || {} };
+        });
+      });
+    }
+    chain.then(function (appendTarget) {
+      if (appendTarget) {
+        return submitReceipt(appendTarget.id, appendTarget.receipt);
+      }
+      return submitReceipt(null, null);
     }).catch(fail).then(function () { setBusy(button, false); });
   }
 
@@ -586,10 +969,26 @@
 
   function loadMovements() {
     if (!state.siteId) return Promise.resolve();
-    return api("/movements?site_id=" + encodeURIComponent(state.siteId)).then(function (body) {
+    var path = "/movements?site_id=" + encodeURIComponent(state.siteId) + "&limit=100";
+    if (state.historyMaterialId) {
+      path += "&material_id=" + encodeURIComponent(state.historyMaterialId) + "&detailed=1";
+    }
+    return api(path).then(function (body) {
       movements = body.items || [];
       renderMovements();
     }).catch(fail);
+  }
+
+  function openMaterialHistory(materialId, materialName) {
+    state.historyMaterialId = String(materialId);
+    state.historyMaterialName = materialName || "";
+    loadMovements().catch(fail);
+  }
+
+  function closeMaterialHistory() {
+    state.historyMaterialId = "";
+    state.historyMaterialName = "";
+    loadMovements().catch(fail);
   }
 
   function loadRequestDetail(id, mode) {
@@ -720,6 +1119,60 @@
     }).catch(fail).then(function () { setBusy(button, false); });
   }
 
+  function savePaymentPricing(receiptId, button) {
+    var card = button.closest(".sm-history-card");
+    if (!card) return;
+    var items = Array.prototype.map.call(card.querySelectorAll("[data-pay-price]"), function (input) {
+      var lineId = input.dataset.payPrice;
+      var qtyInput = card.querySelector('[data-pay-qty="' + lineId + '"]');
+      var unitInput = card.querySelector('[data-pay-unit="' + lineId + '"]');
+      return {
+        id: Number(lineId),
+        billing_quantity: positive(qtyInput && qtyInput.value),
+        billing_unit: unitInput ? unitInput.value.trim() : "",
+        unit_price: positive(input.value)
+      };
+    }).filter(function (item) { return item.unit_price; });
+    if (!items.length) return toast("Укажите цены хотя бы по одной позиции");
+    setBusy(button, true);
+    post("/receipts/" + encodeURIComponent(receiptId) + "/pricing", { items: items }, "PATCH")
+      .then(function () { return reload("Цены сохранены"); })
+      .catch(fail)
+      .then(function () { setBusy(button, false); });
+  }
+
+  function sendPaymentToManager(receiptId, button) {
+    if (!window.confirm("Отправить ведомость с суммами руководителю в личку MAX?")) return;
+    setBusy(button, true);
+    post("/receipts/" + encodeURIComponent(receiptId) + "/send-manager", {})
+      .then(function () { return reload("Ведомость отправлена руководителю"); })
+      .catch(fail)
+      .then(function () { setBusy(button, false); });
+  }
+
+  function saveRoleAssign(form) {
+    var maxId = positive($("roleMaxId").value);
+    if (!maxId) return toast("Укажите MAX id");
+    var siteValue = $("roleSiteSelect").value;
+    var payload = {
+      max_id: maxId,
+      role: $("roleSelect").value,
+      active: $("roleActive").checked
+    };
+    if (siteValue) payload.site_ids = [Number(siteValue)];
+    setBusy(form.querySelector("button[type=submit]"), true);
+    post("/admin/roles", payload).then(function () {
+      $("roleMaxId").value = "";
+      return loadBootstrap();
+    }).then(function () {
+      toast("Роль сохранена");
+    }).catch(function (error) {
+      fail(error, "Не удалось сохранить роль");
+    }).finally(function () {
+      setBusy(form.querySelector("button[type=submit]"), false);
+    });
+  }
+
   function bindEvents() {
     document.addEventListener("click", function (event) {
       var target = event.target.closest("button");
@@ -729,6 +1182,8 @@
         renderTabs();
       } else if (target.dataset.siteId) {
         state.siteId = target.dataset.siteId;
+        state.historyMaterialId = "";
+        state.historyMaterialName = "";
         movements = [];
         requestDetails = {};
         loadBootstrap().catch(fail);
@@ -755,6 +1210,22 @@
       } else if (target.dataset.removeReceipt != null) {
         state.receiptCart.splice(Number(target.dataset.removeReceipt), 1);
         renderReceiptCart();
+      } else if (target.dataset.editRole) {
+        $("roleMaxId").value = target.dataset.editRole;
+        $("roleSelect").value = target.dataset.editRoleName || "master";
+        if ($("rolesAdminSettings")) {
+          $("rolesAdminSettings").scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      } else if (target.dataset.savePricing) {
+        savePaymentPricing(target.dataset.savePricing, target);
+      } else if (target.dataset.sendManager) {
+        sendPaymentToManager(target.dataset.sendManager, target);
+      } else if (target.dataset.editReceipt) {
+        beginReceiptEdit(target.dataset.editReceipt).catch(fail);
+      } else if (target.dataset.historyMaterial) {
+        openMaterialHistory(target.dataset.historyMaterial, target.dataset.historyMaterialName || "");
+      } else if (target.id === "movementsBackBtn" || target.closest("#movementsBackBtn")) {
+        closeMaterialHistory();
       } else if (target.dataset.requestAction) {
         var action = target.dataset.requestAction;
         if (action === "create_delivery" || action === "receive_delivery") {
@@ -770,6 +1241,7 @@
       if (form.id === "requestCreateForm") saveRequest(form);
       else if (form.id === "transferForm") saveTransfer(form);
       else if (form.id === "adjustmentForm") saveAdjustment(form);
+      else if (form.id === "roleAssignForm") saveRoleAssign(form);
       else if (form.dataset.adminMaterial) saveAdminMaterial(form);
       else if (form.dataset.minimumMaterial) saveMinimum(form);
       else if (form.dataset.deliveryForm) createDelivery(form);
@@ -780,12 +1252,18 @@
     $("issueMaterialSelect").addEventListener("change", function () { state.issueMaterialId = this.value; });
     $("requestMaterialSelect").addEventListener("change", function () { state.requestMaterialId = this.value; });
     $("saveReceiptBtn").addEventListener("click", saveReceipt);
+    $("cancelReceiptEditBtn").addEventListener("click", function () {
+      resetReceiptForm();
+      render();
+      toast("Правка отменена");
+    });
     $("addReceiptItemBtn").addEventListener("click", addReceiptItem);
     $("saveIssueBtn").addEventListener("click", saveIssue);
     $("supplierCreateBtn").addEventListener("click", createSupplier);
     $("materialCreateBtn").addEventListener("click", createMaterial);
     $("addRequestItemBtn").addEventListener("click", addRequestItem);
     $("refreshMovementsBtn").addEventListener("click", loadMovements);
+    $("movementsBackBtn").addEventListener("click", closeMaterialHistory);
     $("refreshRequestsBtn").addEventListener("click", function () { loadBootstrap().catch(fail); });
     $("toggleRequestCreateBtn").addEventListener("click", function () {
       state.showRequestCreate = !state.showRequestCreate;

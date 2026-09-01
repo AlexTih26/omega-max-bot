@@ -48,7 +48,6 @@ button {
     linear-gradient(180deg, #111722 0%, #192130 100%);
 }
 
-.sm-topbar,
 .sm-heading-row {
   display: flex;
   align-items: flex-start;
@@ -56,7 +55,121 @@ button {
   gap: 10px;
 }
 
+.sm-heading-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sm-heading-main b,
+.sm-heading-main span {
+  display: block;
+}
+
+.sm-heading-main span {
+  margin-top: 4px;
+  color: var(--sm-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.sm-heading-row--card {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sm-heading-row--card .sm-status {
+  flex: 0 0 auto;
+}
+
+.sm-note--tight {
+  margin-bottom: 8px;
+}
+
+.sm-payment-card + .sm-payment-card {
+  margin-top: 0;
+}
+
+.sm-pay-list {
+  display: grid;
+  gap: 10px;
+}
+
+.sm-pay-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sm-pay-item__info b {
+  display: block;
+  font-size: 14px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.sm-pay-item__info small {
+  display: block;
+  margin-top: 4px;
+  color: var(--sm-muted);
+  font-size: 12px;
+}
+
+.sm-pay-fields {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.sm-pay-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.sm-pay-field span {
+  color: var(--sm-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.sm-pay-field .sm-input {
+  min-height: 42px;
+  padding: 9px 11px;
+}
+
+.sm-pay-field--action {
+  align-self: end;
+}
+
+.sm-action-list--stack {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sm-action-list--stack .sm-mini-action {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.sm-mini-btn--wide {
+  width: 100%;
+  min-width: 0;
+}
+
 .sm-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   margin-bottom: 14px;
 }
 
@@ -72,15 +185,65 @@ button {
   line-height: 1.15;
 }
 
-.sm-user,
-.sm-status {
+.sm-userbox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
   max-width: 46%;
+}
+
+.sm-user-name,
+.sm-user-role,
+.sm-status {
   padding: 7px 10px;
   border-radius: 999px;
   background: rgba(211, 171, 98, 0.15);
   color: #f4d99f;
   font-size: 12px;
   text-align: center;
+}
+
+.sm-user-role {
+  background: rgba(94, 225, 162, 0.14);
+  color: #9ef0c8;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.sm-role-hint {
+  max-width: 220px;
+  color: var(--sm-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.sm-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0;
+  color: var(--sm-muted);
+  font-size: 13px;
+}
+
+.sm-role-card {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sm-audit-card {
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.sm-note b {
+  color: #f4d99f;
 }
 
 .sm-main {
@@ -222,8 +385,12 @@ button {
 .sm-tab-grid,
 .sm-stock-tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.sm-stock-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .sm-tab {
@@ -324,6 +491,19 @@ button {
   background: rgba(255, 255, 255, 0.09);
 }
 
+.sm-btn.sm-btn--primary {
+  background: linear-gradient(180deg, #e8c989 0%, #d3ab62 55%, #c49a4f 100%);
+  color: #1a1c22;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 6px 20px rgba(211, 171, 98, 0.42);
+}
+
+.sm-btn.sm-btn--primary:active {
+  transform: scale(0.98);
+  box-shadow: 0 3px 12px rgba(211, 171, 98, 0.32);
+}
+
 .sm-btn:disabled,
 .sm-mini-action:disabled {
   cursor: wait;
@@ -411,6 +591,78 @@ button {
   padding: 11px;
   border-radius: 13px;
   background: rgba(255, 255, 255, 0.045);
+}
+
+.sm-row-btn {
+  display: flex;
+  width: 100%;
+  margin: 0;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  grid-template-columns: none;
+}
+
+.sm-row-btn:active {
+  transform: scale(0.99);
+  background: rgba(211, 171, 98, 0.08);
+}
+
+.sm-history-head {
+  margin-bottom: 8px;
+}
+
+.sm-history-title {
+  margin: 0;
+  font-size: 18px;
+}
+
+.sm-history-card {
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.sm-history-meta {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.sm-history-meta div {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.sm-history-meta dt {
+  margin: 0;
+  color: var(--sm-muted);
+  font-size: 12px;
+}
+
+.sm-history-meta dd {
+  margin: 0;
+  font-size: 14px;
+}
+
+.sm-history-batch {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: var(--sm-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sm-history-batch span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--sm-muted);
+  font-size: 12px;
 }
 
 .sm-row b,
@@ -593,15 +845,80 @@ button {
   transform: translateY(0);
 }
 
+.sm-pay-fields--add {
+  margin-top: 4px;
+}
+
+.sm-pay-field--wide {
+  grid-column: 1 / -1;
+}
+
+.sm-pay-field--action .sm-btn,
+.sm-pay-field--action .sm-mini-btn {
+  width: 100%;
+  min-height: 42px;
+}
+
+@media (min-width: 480px) {
+  .sm-tab-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sm-stock-tabs {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .sm-pay-fields {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .sm-pay-fields--catalog {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 52px;
+  }
+
+  .sm-pay-fields--add {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) auto;
+  }
+
+  .sm-pay-field--wide {
+    grid-column: auto;
+  }
+
+  .sm-action-list--stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (min-width: 640px) {
   .sm-app {
     padding-inline: 22px;
+  }
+
+  .sm-topbar {
+    align-items: center;
+  }
+
+  .sm-userbox {
+    max-width: 320px;
+  }
+
+  .sm-tab-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .sm-chip-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     overflow: visible;
+  }
+
+  .sm-pay-item {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.8fr);
+    align-items: start;
+  }
+
+  .sm-heading-row--card {
+    flex-wrap: nowrap;
   }
 
   .sm-inline--wide {
@@ -619,5 +936,32 @@ button {
 
   .sm-material-admin {
     grid-template-columns: minmax(0, 1fr) 90px auto auto;
+  }
+}
+
+@media (max-width: 479px) {
+  .sm-topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sm-userbox {
+    align-items: flex-start;
+    max-width: none;
+  }
+
+  .sm-role-hint {
+    max-width: none;
+    text-align: left;
+  }
+}
+
+@media (min-width: 900px) {
+  .sm-main {
+    max-width: 960px;
+  }
+
+  .sm-action-list--stack {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }

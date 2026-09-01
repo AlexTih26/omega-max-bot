@@ -160,6 +160,10 @@ def materials_supply_ids() -> set[int]:
     return _parse_id_set(os.getenv("MATERIALS_SUPPLY_MAX_IDS", ""))
 
 
+def materials_manager_ids() -> set[int]:
+    return _parse_id_set(os.getenv("MATERIALS_MANAGER_MAX_IDS", ""))
+
+
 def is_materials_master(user_id: int | None) -> bool:
     if user_id is None:
         return False
@@ -177,7 +181,11 @@ async def notify_materials_role_users(
     if _bot is None:
         logger.warning("Склад Мастер: бот не инициализирован для уведомления роли %s", role)
         return False
-    ids = materials_supply_ids() if role == "supply" else materials_master_ids()
+    ids = {
+        "supply": materials_supply_ids(),
+        "master": materials_master_ids(),
+        "manager": materials_manager_ids(),
+    }.get(role, set())
     sent = False
     for user_id in ids:
         if exclude_user_id is not None and int(user_id) == int(exclude_user_id):

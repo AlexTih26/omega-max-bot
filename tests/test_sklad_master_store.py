@@ -2,6 +2,8 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import os
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fotonych-bot"))
@@ -253,6 +255,129 @@ class SkladMasterStoreTests(unittest.TestCase):
         self.assertIn(
             unused_material,
             {item["id"] for item in store.list_materials(include_inactive=True)},
+        )
+
+    def test_role_access_matches_business_roles(self):
+        with unittest.mock.patch.dict(os.environ, {
+            "MATERIALS_MASTER_MAX_IDS": "101",
+            "MATERIALS_SUPPLY_MAX_IDS": "202",
+            "DRIVERS_ADMIN_MAX_IDS": "303",
+        }, clear=False):
+            master = store.get_access(101)
+            supply = store.get_access(202)
+            admin = store.get_access(303)
+        self.assertIn("request_receive", master["allowed_actions"])
+        self.assertNotIn("request_receive", supply["allowed_actions"])
+        self.assertIn("request_manage", supply["allowed_actions"])
+        self.assertIn("receipt_price", supply["allowed_actions"])
+        self.assertIn("roles_manage", admin["allowed_actions"])
+
+    def test_manager_role_and_payment_flow(self):
+        with unittest.mock.patch.dict(os.environ, {"MATERIALS_MANAGER_MAX_IDS": "777"}, clear=False):
+            manager = store.get_access(777)
+        self.assertIn("payment_view", manager["allowed_actions"])
+        self.assertNotIn("receipt_price", manager["allowed_actions"])
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 10}],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        line = store.get_receipt(receipt["id"])["items"][0]
+        priced = store.price_receipt(
+            receipt_id=receipt["id"],
+            lines=[{
+                "id": line["id"],
+                "unit_price": 100,
+                "billing_quantity": 10,
+                "billing_unit": "шт",
+            }],
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        self.assertEqual(priced["payment_status"], "priced")
+        sent = store.send_receipt_to_manager(
+            receipt_id=receipt["id"],
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        self.assertEqual(sent["payment_status"], "sent")
+        self.assertEqual(float(sent["total_amount"]), 1000.0)
+
+    def test_list_roles_returns_site_restrictions(self):
+        store.set_role(max_id=501, role="master", site_ids=[self.site1], actor_max_id=99, actor_name="Admin")
+        roles = store.list_roles()
+        item = next(x for x in roles if x["max_id"] == 501)
+        self.assertEqual(item["role"], "master")
+        self.assertEqual(item["site_ids"], [self.site1])
+
+    def test_list_movements_includes_supplier_and_batch(self):
+        second_material = store.list_materials()[1]["id"]
+        store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[
+                {"material_id": self.material, "quantity": 4},
+                {"material_id": second_material, "quantity": 2},
+            ],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        result = store.list_movements(site_id=self.site1, material_id=self.material)
+        item = result["items"][0]
+        supplier = store.list_suppliers()[0]["name"]
+        self.assertEqual(item["supplier_name"], supplier)
+        self.assertEqual(item["received_by_name"], "Master")
+        self.assertEqual(len(item["batch_items"]), 2)
+
+    def test_default_site_is_gruzovoy(self):
+        sites = store.list_sites()
+        dashboard = store.dashboard()
+        gruzovoy = next(site for site in sites if site["name"] == "Грузовой")
+        self.assertEqual(dashboard["default_site_id"], gruzovoy["id"])
+        self.assertEqual(dashboard["selected_site_id"], gruzovoy["id"])
+
+    def test_edit_receipt_updates_items_and_logs_audit(self):
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 10}],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        edited = store.edit_receipt(
+            receipt_id=receipt["id"],
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 7}],
+            note="исправление",
+            actor_max_id=11,
+            actor_name="Admin",
+        )
+        self.assertEqual(edited["items"][0]["quantity"], 7)
+        balance = next(x for x in store.site_stock(self.site1) if x["id"] == self.material)
+        self.assertEqual(balance["balance"], 7)
+        audit = store.list_audit_log(limit=5)
+        self.assertTrue(any(item["action"] == "receipt_edit" for item in audit["items"]))
+
+    def test_find_similar_receipt_today(self):
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 1}],
+            actor_max_id=1,
+            actor_name="Master",
+        )
+        similar = store.find_similar_receipt_today(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+        )
+        self.assertEqual(similar["id"], receipt["id"])
+        self.assertIsNone(
+            store.find_similar_receipt_today(
+                site_id=self.site2,
+                supplier_id=self.supplier,
+            )
         )
 
 

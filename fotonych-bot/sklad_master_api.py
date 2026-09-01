@@ -13,11 +13,14 @@ from materials_chat import notify_event
 from materials_receipt_chat import notify_materials_role_users
 from max_webapp import display_name_from_user, user_id_from_user, validate_init_data
 from sklad_master_store import (
-    create_delivery, create_material, create_request, create_supplier, dashboard,
-    get_access, get_delivery, get_request, init_sklad_master_db, list_materials,
-    list_movements, list_requests,
-    receive_delivery, record_inventory_adjustment, record_issue,
-    record_receipt_batch, record_transfer, set_role, set_site_material_minimum, transition_request,
+    create_delivery, create_material, create_request, create_supplier, dashboard, edit_receipt,
+    get_access, get_delivery, get_movement, get_receipt, get_request, init_sklad_master_db,
+    list_payment_receipts, list_audit_log, list_materials,
+    list_movements, list_requests, list_roles, list_sites, list_suppliers,
+    find_similar_receipt_today,
+    price_receipt, receive_delivery, record_inventory_adjustment, record_issue,
+    record_receipt_batch, record_transfer, send_receipt_to_manager, set_role,
+    set_site_material_minimum, transition_request,
     update_material, update_site,
 )
 
@@ -96,6 +99,99 @@ async def _notify(
             logger.exception("Склад Мастер: уведомление роли %s не отправлено", role)
 
 
+async def _notify_manager_private(
+    lines: list[str],
+    *,
+    exclude_user_id: int | None = None,
+) -> None:
+    text = "\n".join(x for x in lines if x).strip()
+    if not text:
+        return
+    try:
+        await notify_materials_role_users(
+            text,
+            role="manager",
+            exclude_user_id=exclude_user_id,
+        )
+    except Exception:
+        logger.exception("Склад Мастер: уведомление руководителю не отправлено")
+
+
+def _money(value: Any) -> str:
+    amount = round(float(value or 0), 2)
+    if abs(amount - round(amount)) < 0.01:
+        return f"{int(round(amount)):,}".replace(",", " ") + " ₽"
+    return f"{amount:,.2f}".replace(",", " ") + " ₽"
+
+
+def _receipt_item_lines(receipt: dict) -> list[str]:
+    lines = []
+    for item in receipt.get("items") or []:
+        qty = _quantity_label(item.get("quantity"))
+        unit = item.get("quantity_unit") or item.get("material_unit") or ""
+        bill_qty = item.get("billing_quantity")
+        bill_unit = item.get("billing_unit") or unit
+        extra = ""
+        if bill_qty not in (None, ""):
+            try:
+                same_qty = abs(float(bill_qty) - float(item.get("quantity") or 0)) < 1e-9
+            except (TypeError, ValueError):
+                same_qty = True
+            if not same_qty or bill_unit != unit:
+                extra = f" (к оплате: {_quantity_label(bill_qty)} {bill_unit})"
+        lines.append(
+            f"• {item.get('material_name') or 'Материал'}: {qty} {unit}{extra}".rstrip()
+        )
+    return lines
+
+
+def _receipt_public_lines(receipt: dict, *, header: str | None = None) -> list[str]:
+    from datetime import datetime
+    stamp = receipt.get("created_at")
+    date_label = ""
+    if stamp:
+        date_label = datetime.fromtimestamp(float(stamp)).strftime("%d.%m.%Y")
+    lines = [
+        header or "📦 Склад Мастер · приход",
+        f"Приход №{receipt.get('id')} · {date_label}".strip(),
+        f"Площадка: {receipt.get('site_name') or receipt.get('site', {}).get('name') or '—'}",
+        f"Поставщик: {receipt.get('supplier_name') or receipt.get('supplier', {}).get('name') or '—'}",
+        f"Принял: {receipt.get('actor_name') or '—'}",
+        "Позиции:",
+    ]
+    lines.extend(_receipt_item_lines(receipt))
+    if receipt.get("note"):
+        lines.append(f"Примечание: {receipt['note']}")
+    return lines
+
+
+def _receipt_payment_lines(receipt: dict, *, actor_name: str = "") -> list[str]:
+    from datetime import datetime
+    stamp = receipt.get("created_at")
+    date_label = datetime.fromtimestamp(float(stamp)).strftime("%d.%m.%Y") if stamp else ""
+    lines = [
+        "💰 Склад Мастер · к оплате",
+        f"Приход №{receipt.get('id')} · {date_label}".strip(),
+        f"Площадка: {receipt.get('site_name') or '—'}",
+        f"Поставщик: {receipt.get('supplier_name') or '—'}",
+        f"Принял: {receipt.get('actor_name') or '—'}",
+    ]
+    if actor_name:
+        lines.append(f"Оформил: {actor_name}")
+    lines.append("Итого к оплате:")
+    for index, item in enumerate(receipt.get("items") or [], 1):
+        bill_qty = _quantity_label(item.get("billing_quantity", item.get("quantity")))
+        bill_unit = item.get("billing_unit") or item.get("quantity_unit") or ""
+        unit_price = round(float(item.get("unit_price") or 0), 2)
+        line_total = round(float(item.get("line_total") or 0), 2)
+        lines.append(
+            f"{index}. {item.get('material_name') or 'Материал'} — "
+            f"{bill_qty} {bill_unit} × {_money(unit_price).replace(' ₽', '')} = {_money(line_total)}"
+        )
+    lines.append(f"Итого: {_money(receipt.get('total_amount'))}")
+    return lines
+
+
 async def _notify_stock_alerts(alerts: list[dict], *, actor_id: int | None = None) -> None:
     for alert in alerts or []:
         status = str(alert.get("status") or "")
@@ -128,6 +224,13 @@ STATUS_LABELS = {
     "in_transit": "В пути", "partially_received": "Принята частично",
     "received": "Получена", "closed": "Закрыта", "rejected": "Отклонена",
     "cancelled": "Отменена",
+}
+
+ROLE_HINTS = {
+    "master": "Приём материалов на площадках, расход и заявки на снабжение",
+    "supply": "Закупки у поставщиков, заявки, цены и отправка руководителю",
+    "manager": "Ведомости к оплате в личных сообщениях",
+    "admin": "Контроль процесса, настройки и замена ролей",
 }
 
 
@@ -172,7 +275,7 @@ def _request_actions(item: dict, access: dict) -> list[str]:
     if status in {"in_transit", "partially_received"} and capabilities.get("request_receive"):
         actions.append("receive_delivery")
     if status == "received" and (
-        capabilities.get("request_manage") or capabilities.get("request_receive")
+        capabilities.get("request_receive") or capabilities.get("roles_manage")
     ):
         actions.append("close")
     return list(dict.fromkeys(actions))
@@ -206,15 +309,21 @@ async def handle_bootstrap(request: web.Request) -> web.Response:
         data["site_summaries"] = [x for x in data["site_summaries"] if x["site_id"] in allowed]
     data.update(user={"id": uid, "name": name}, access=access, roles=access["roles"],
                 capabilities=access["capabilities"],
-                allowed_actions=access["allowed_actions"])
+                allowed_actions=access["allowed_actions"],
+                role_hint=ROLE_HINTS.get(access.get("role") or "", ""))
     if access["capabilities"].get("settings_manage"):
         data["admin_materials"] = list_materials(include_inactive=True)
+    if access["capabilities"].get("roles_manage"):
+        data["admin_roles"] = list_roles(include_inactive=True)
+        data["audit_log"] = list_audit_log(limit=30)["items"]
+    if access["capabilities"].get("receipt_price") or access["capabilities"].get("payment_view"):
+        data["payment_receipts"] = list_payment_receipts(site_id=site_id)
     data["requests"] = [_decorate_request(item, access) for item in data.get("requests", [])]
     return _json(data)
 
 
 async def handle_materials(request: web.Request) -> web.Response:
-    auth = _auth(request, "settings_manage", "receipt")
+    auth = _auth(request, "settings_manage")
     if isinstance(auth, web.Response):
         return auth
     try:
@@ -227,7 +336,7 @@ async def handle_materials(request: web.Request) -> web.Response:
 
 
 async def handle_suppliers(request: web.Request) -> web.Response:
-    auth = _auth(request, "settings_manage", "receipt")
+    auth = _auth(request, "settings_manage")
     if isinstance(auth, web.Response):
         return auth
     try:
@@ -299,26 +408,153 @@ async def handle_receipt(request: web.Request) -> web.Response:
 
     replay = result.pop("_idempotent_replay", False)
     if not replay:
-        lines = [
-            "📦 Склад Мастер · приход",
-            f"Площадка: {result['site']['name']}",
-            f"Поставщик: {result['supplier']['name']}",
-            "Позиции:",
-        ]
-        lines.extend(
-            f"• {item['material']['name']}: {item['quantity']} {item['material']['unit']}"
-            for item in result["items"]
-        )
-        lines.extend([
-            f"Принял: {name} (id {uid})",
-            f"Примечание: {result['note']}" if result.get("note") else "",
-        ])
+        receipt = get_receipt(int(result["id"]))
         await _notify(
-            lines,
+            _receipt_public_lines(receipt),
+            admin=False,
             role="supply",
             exclude_user_id=uid,
         )
-    return _json({"receipt": result}, 201)
+    return _json({"receipt": get_receipt(int(result["id"]))}, 201)
+
+
+async def handle_receipt_detail(request: web.Request) -> web.Response:
+    auth = _auth(request, "receipt", "receipt_price", "payment_view")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, _uid, _name, access = auth
+    try:
+        item = get_receipt(int(request.match_info["receipt_id"]))
+    except (TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 404 if "не найден" in str(exc) else 400)
+    if not _site_allowed(access, item["site_id"]):
+        return _json({"error": "Нет доступа к площадке"}, 403)
+    return _json({"receipt": item})
+
+
+async def handle_receipt_edit(request: web.Request) -> web.Response:
+    auth = _auth(request, "receipt")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, name, access = auth
+    try:
+        body = await _body(request)
+        current = get_receipt(int(request.match_info["receipt_id"]))
+        if not _site_allowed(access, current["site_id"]):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        items = body.get("items")
+        if not isinstance(items, list):
+            raise ValueError("Укажите позиции прихода")
+        result = edit_receipt(
+            receipt_id=int(request.match_info["receipt_id"]),
+            supplier_id=int(body["supplier_id"]),
+            items=items,
+            note=str(body.get("note") or ""),
+            actor_max_id=uid,
+            actor_name=name,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    await _notify(
+        _receipt_public_lines(result)[:1] + [
+            "✏️ Склад Мастер · приход изменён",
+            *(_receipt_public_lines(result)[1:]),
+            f"Изменил: {name} (id {uid})",
+        ],
+        admin=False,
+        role="supply",
+        exclude_user_id=uid,
+    )
+    return _json({"receipt": result})
+
+
+async def handle_receipt_price(request: web.Request) -> web.Response:
+    auth = _auth(request, "receipt_price")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, name, access = auth
+    try:
+        body = await _body(request)
+        current = get_receipt(int(request.match_info["receipt_id"]))
+        if not _site_allowed(access, current["site_id"]):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        result = price_receipt(
+            receipt_id=int(request.match_info["receipt_id"]),
+            lines=body.get("items") or [],
+            actor_max_id=uid,
+            actor_name=name,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    return _json({"receipt": result})
+
+
+async def handle_receipt_send_manager(request: web.Request) -> web.Response:
+    auth = _auth(request, "receipt_send_manager")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, name, access = auth
+    try:
+        current = get_receipt(int(request.match_info["receipt_id"]))
+        if not _site_allowed(access, current["site_id"]):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        result = send_receipt_to_manager(
+            receipt_id=int(request.match_info["receipt_id"]),
+            actor_max_id=uid,
+            actor_name=name,
+        )
+    except (TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    await _notify_manager_private(
+        _receipt_payment_lines(result, actor_name=name),
+        exclude_user_id=uid,
+    )
+    await _notify(
+        [
+            f"✅ Склад Мастер · ведомость по приходу №{result.get('id')} отправлена руководителю",
+            f"Поставщик: {result.get('supplier_name') or '—'}",
+            f"Оформил: {name}",
+        ],
+        admin=False,
+        exclude_user_id=uid,
+    )
+    return _json({"receipt": result})
+
+
+async def handle_receipt_similar(request: web.Request) -> web.Response:
+    auth = _auth(request, "receipt")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, _uid, _name, access = auth
+    try:
+        site_id = int(request.query["site_id"])
+        supplier_id = int(request.query["supplier_id"])
+        if not _site_allowed(access, site_id):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        exclude = int(request.query["exclude_receipt_id"]) if request.query.get("exclude_receipt_id") else None
+        similar = find_similar_receipt_today(
+            site_id=site_id,
+            supplier_id=supplier_id,
+            exclude_receipt_id=exclude,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    return _json({"similar_receipt": similar})
+
+
+async def handle_audit_log(request: web.Request) -> web.Response:
+    auth = _auth(request, "roles_manage", "settings_manage")
+    if isinstance(auth, web.Response):
+        return auth
+    try:
+        result = list_audit_log(
+            limit=int(request.query.get("limit", 100)),
+            offset=int(request.query.get("offset", 0)),
+            entity_type=request.query.get("entity_type") or None,
+        )
+    except (TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    return _json(result)
 
 
 async def handle_issue(request: web.Request) -> web.Response:
@@ -564,6 +800,20 @@ async def handle_delivery_receive(request: web.Request) -> web.Response:
     return _json({"delivery": item})
 
 
+async def handle_movement_detail(request: web.Request) -> web.Response:
+    auth = _auth(request, "view")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, _uid, _name, access = auth
+    try:
+        item = get_movement(int(request.match_info["movement_id"]), detailed=True)
+    except (TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 404 if "не найдено" in str(exc) else 400)
+    if not _site_allowed(access, item["site_id"]):
+        return _json({"error": "Нет доступа к площадке"}, 403)
+    return _json({"movement": item})
+
+
 async def handle_movements(request: web.Request) -> web.Response:
     auth = _auth(request, "view")
     if isinstance(auth, web.Response):
@@ -578,7 +828,8 @@ async def handle_movements(request: web.Request) -> web.Response:
                                 op_type=request.query.get("op_type"),
                                 request_id=value("request_id"),
                                 limit=int(request.query.get("limit", 50)),
-                                offset=int(request.query.get("offset", 0)))
+                                offset=int(request.query.get("offset", 0)),
+                                detailed=request.query.get("detailed") in {"1", "true", "yes"})
         if not access["all_sites"]:
             result["items"] = [x for x in result["items"] if x["site_id"] in access["site_ids"]]
             result["total"] = len(result["items"])
@@ -636,6 +887,13 @@ async def handle_admin_site_material(request: web.Request) -> web.Response:
     return _json({"setting": result})
 
 
+async def handle_admin_roles_list(request: web.Request) -> web.Response:
+    auth = _auth(request, "roles_manage")
+    if isinstance(auth, web.Response):
+        return auth
+    return _json({"roles": list_roles(include_inactive=True)})
+
+
 async def handle_admin_role(request: web.Request) -> web.Response:
     auth = _auth(request, "roles_manage")
     if isinstance(auth, web.Response):
@@ -659,12 +917,19 @@ def register_sklad_master_routes(app: web.Application) -> None:
     app.router.add_post(f"{prefix}/materials", handle_materials)
     app.router.add_post(f"{prefix}/suppliers", handle_suppliers)
     app.router.add_post(f"{prefix}/receipts", handle_receipt)
+    app.router.add_get(f"{prefix}/receipts/{{receipt_id}}", handle_receipt_detail)
+    app.router.add_patch(f"{prefix}/receipts/{{receipt_id}}", handle_receipt_edit)
+    app.router.add_patch(f"{prefix}/receipts/{{receipt_id}}/pricing", handle_receipt_price)
+    app.router.add_post(f"{prefix}/receipts/{{receipt_id}}/send-manager", handle_receipt_send_manager)
+    app.router.add_get(f"{prefix}/receipts/similar", handle_receipt_similar)
+    app.router.add_get(f"{prefix}/admin/audit", handle_audit_log)
     app.router.add_post(f"{prefix}/issues", handle_issue)
     app.router.add_post(f"{prefix}/issue", handle_issue)
     app.router.add_post(f"{prefix}/transfers", handle_transfer)
     app.router.add_post(f"{prefix}/transfer", handle_transfer)
     app.router.add_post(f"{prefix}/inventory-adjustments", handle_adjustment)
     app.router.add_post(f"{prefix}/inventory-adjustment", handle_adjustment)
+    app.router.add_get(f"{prefix}/movements/{{movement_id}}", handle_movement_detail)
     app.router.add_get(f"{prefix}/movements", handle_movements)
     app.router.add_get(f"{prefix}/requests", handle_requests)
     app.router.add_post(f"{prefix}/requests", handle_request_create)
@@ -679,6 +944,7 @@ def register_sklad_master_routes(app: web.Application) -> None:
         f"{prefix}/admin/sites/{{site_id}}/materials/{{material_id}}",
         handle_admin_site_material,
     )
+    app.router.add_get(f"{prefix}/admin/roles", handle_admin_roles_list)
     app.router.add_post(f"{prefix}/admin/roles", handle_admin_role)
 
 

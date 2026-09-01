@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sklad_master.db"
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
 
 DEFAULT_SITES = ("Туран", "Грузовой", "Площадка 3", "Площадка 4")
 DEFAULT_SUPPLIERS = (
@@ -130,18 +130,72 @@ def _enrich_request_eta(conn: sqlite3.Connection, result: dict) -> dict:
             at = None
     result["expected_delivery_days"] = days
     result["expected_delivery_at"] = at
-    if days and at:
+    result.pop("eta_display_line", None)
+    result.pop("eta_early_days", None)
+    result.pop("eta_date_label", None)
+    result.pop("eta_label", None)
+    result.pop("eta_days_remaining", None)
+    result.pop("eta_today", None)
+    result.pop("eta_overdue", None)
+    result.pop("eta_days_overdue", None)
+
+    status = str(result.get("status") or "")
+    items = result.get("items") or []
+    total_remaining = sum(max(0.0, float(item.get("remaining") or 0)) for item in items)
+    any_received = any(float(item.get("received") or 0) > 0 for item in items)
+    received_at = result.get("received_at")
+    if received_at is not None:
+        try:
+            received_at = float(received_at)
+        except (TypeError, ValueError):
+            received_at = None
+
+    if status in {"received", "closed"} or (any_received and total_remaining <= 0):
+        display_at = received_at
+        if not display_at and status in {"received", "closed"}:
+            try:
+                display_at = float(result.get("updated_at") or 0) or None
+            except (TypeError, ValueError):
+                display_at = None
+        if display_at:
+            label = f"Принято на базе {datetime.fromtimestamp(display_at).strftime('%d.%m.%Y')}"
+        else:
+            label = "Принято на базе"
+        if at and display_at and display_at < at - 3600:
+            early_days = max(1, int((at - display_at + 86399) // 86400))
+            result["eta_early_days"] = early_days
+            label += f" · на {early_days} дн. раньше"
+        result["eta_display_line"] = label
+    elif status == "partially_received" and total_remaining > 0 and at:
+        date_label = datetime.fromtimestamp(at).strftime("%d.%m.%Y")
+        remaining_sec = at - time.time()
+        if remaining_sec > 86400:
+            days_left = max(1, int((remaining_sec + 86399) // 86400))
+            result["eta_display_line"] = f"Ожидаем остаток ~{date_label} · через {days_left} дн."
+        elif remaining_sec > 0:
+            result["eta_display_line"] = f"Ожидаем остаток ~{date_label} · сегодня"
+        else:
+            overdue = max(1, int((-remaining_sec + 86399) // 86400))
+            result["eta_display_line"] = f"Остаток просрочен · {overdue} дн."
+            result["eta_overdue"] = True
+    elif at and status in {"in_transit", "partially_received", "accepted"}:
         result["eta_date_label"] = datetime.fromtimestamp(at).strftime("%d.%m.%Y")
-        result["eta_label"] = f"через {days} дн."
         remaining_sec = at - time.time()
         if remaining_sec > 86400:
             result["eta_days_remaining"] = max(1, int((remaining_sec + 86399) // 86400))
+            result["eta_label"] = f"через {result['eta_days_remaining']} дн."
         elif remaining_sec > 0:
             result["eta_today"] = True
             result["eta_days_remaining"] = 0
+            result["eta_label"] = "сегодня"
         else:
             result["eta_overdue"] = True
             result["eta_days_overdue"] = max(1, int((-remaining_sec + 86399) // 86400))
+            result["eta_label"] = f"просрочено {result['eta_days_overdue']} дн."
+        result["eta_display_line"] = f"Ожидаем ~{result['eta_date_label']}"
+        if result.get("eta_label"):
+            result["eta_display_line"] += f" · {result['eta_label']}"
+
     row = conn.execute(
         """SELECT d.supplier_id, s.name supplier_name, d.created_by_max_id, d.created_by_name
            FROM sm_deliveries d
@@ -274,6 +328,7 @@ def init_sklad_master_db() -> None:
         _add_column(conn, "sm_requests", "eta_reminder_sent_at REAL")
         _add_column(conn, "sm_requests", "ordered_by_max_id INTEGER")
         _add_column(conn, "sm_requests", "ordered_by_name TEXT NOT NULL DEFAULT ''")
+        _add_column(conn, "sm_requests", "received_at REAL")
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_sm_stock_ops_site_material
@@ -360,6 +415,10 @@ def init_sklad_master_db() -> None:
         _add_column(conn, "sm_receipts", "sent_to_manager_at REAL")
         _add_column(conn, "sm_receipts", "sent_by_max_id INTEGER")
         _add_column(conn, "sm_receipts", "sent_by_name TEXT NOT NULL DEFAULT ''")
+        _add_column(conn, "sm_receipts", "cancelled_at REAL")
+        _add_column(conn, "sm_receipts", "cancelled_by_max_id INTEGER")
+        _add_column(conn, "sm_receipts", "cancelled_by_name TEXT NOT NULL DEFAULT ''")
+        _add_column(conn, "sm_receipts", "cancel_reason TEXT NOT NULL DEFAULT ''")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS sm_receipt_lines (
@@ -411,6 +470,10 @@ def init_sklad_master_db() -> None:
         )
         conn.execute("UPDATE sm_requests SET status='submitted' WHERE status='new'")
         conn.execute("UPDATE sm_requests SET status='received' WHERE status='delivered'")
+        conn.execute(
+            "UPDATE sm_requests SET received_at=updated_at "
+            "WHERE status IN ('received','closed') AND received_at IS NULL"
+        )
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version < 10:
             _cleanup_merge_artifacts(conn)
@@ -1058,7 +1121,17 @@ def _decorate_receipt(result: dict, lines: list[dict]) -> dict:
     decorated["items"] = lines or decorated.get("items") or []
     decorated["payment_status"] = str(decorated.get("payment_status") or "pending")
     decorated["total_amount"] = round(float(decorated.get("total_amount") or 0), 2)
+    decorated["is_cancelled"] = bool(decorated.get("cancelled_at"))
     return decorated
+
+
+def _receipt_is_cancelled(receipt: dict) -> bool:
+    return bool(receipt.get("cancelled_at")) or receipt.get("payment_status") == "cancelled"
+
+
+def _ensure_receipt_editable(receipt: dict) -> None:
+    if _receipt_is_cancelled(receipt):
+        raise ValueError("Приход отменён и больше не редактируется")
 
 
 def find_similar_receipt_today(
@@ -1075,6 +1148,7 @@ def find_similar_receipt_today(
                JOIN sm_sites s ON s.id=r.site_id
                JOIN sm_suppliers sup ON sup.id=r.supplier_id
                WHERE r.site_id=? AND r.supplier_id=?
+                 AND r.cancelled_at IS NULL
                  AND COALESCE(r.payment_status, 'pending') != 'sent'
                ORDER BY r.created_at DESC, r.id DESC""",
             (int(site_id), int(supplier_id)),
@@ -1141,6 +1215,7 @@ def edit_receipt(
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         before = _get_receipt_conn(conn, receipt_id)
+        _ensure_receipt_editable(before)
         site_id = int(before["site_id"])
         supplier = _require(conn, "sm_suppliers", supplier_id, "Поставщик")
         for material_id in combined:
@@ -1274,6 +1349,108 @@ def edit_receipt(
         return after
 
 
+def cancel_receipt(
+    *,
+    receipt_id: int,
+    reason: str,
+    actor_max_id: int | None,
+    actor_name: str,
+    idempotency_key: str | None = None,
+) -> dict:
+    note = str(reason or "").strip()
+    if not note:
+        raise ValueError("Укажите причину отмены")
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cached = _cached(conn, idempotency_key, "receipt_cancel")
+        if cached:
+            return cached
+        before = _get_receipt_conn(conn, int(receipt_id))
+        _ensure_receipt_editable(before)
+        site_id = int(before["site_id"])
+        movements = conn.execute(
+            """SELECT id, material_id, quantity, quantity_delta
+               FROM sm_stock_ops
+               WHERE receipt_id=? AND op_type='receipt'
+               ORDER BY id""",
+            (int(receipt_id),),
+        ).fetchall()
+        if not movements:
+            raise ValueError("У прихода нет движений для отмены")
+        reversed_items: list[dict] = []
+        cancel_note = f"Отмена прихода №{receipt_id}: {note}"
+        for movement in movements:
+            movement_id = int(movement["id"])
+            if conn.execute(
+                "SELECT 1 FROM sm_stock_ops WHERE related_op_id=? AND op_type='reversal'",
+                (movement_id,),
+            ).fetchone():
+                continue
+            material_id = int(movement["material_id"])
+            qty = float(movement["quantity"])
+            delta = -float(movement["quantity_delta"])
+            balance = _balance(conn, site_id, material_id)
+            if balance + delta < -1e-9:
+                material = _require(conn, "sm_materials", material_id, "Материал")
+                raise ValueError(
+                    f"Нельзя отменить: {material['name']} уже списан со склада "
+                    f"(осталось {_audit_qty_label(balance)}, в приходе {_audit_qty_label(qty)})"
+                )
+            reversal_id = _movement(
+                conn,
+                site_id=site_id,
+                material_id=material_id,
+                supplier_id=before.get("supplier_id"),
+                op_type="reversal",
+                quantity=abs(delta),
+                delta=delta,
+                actor_max_id=actor_max_id,
+                actor_name=actor_name,
+                note=cancel_note,
+                related_op_id=movement_id,
+                receipt_id=int(receipt_id),
+            )
+            material_row = _require(conn, "sm_materials", material_id, "Материал")
+            reversed_items.append(
+                {
+                    "movement_id": movement_id,
+                    "reversal_id": reversal_id,
+                    "material_id": material_id,
+                    "material_name": material_row["name"],
+                    "material_unit": material_row["unit"],
+                    "quantity": qty,
+                }
+            )
+        now = time.time()
+        conn.execute(
+            """UPDATE sm_receipts
+               SET cancelled_at=?, cancelled_by_max_id=?, cancelled_by_name=?,
+                   cancel_reason=?, payment_status='cancelled'
+               WHERE id=?""",
+            (now, actor_max_id, actor_name.strip(), note, int(receipt_id)),
+        )
+        result = _get_receipt_conn(conn, int(receipt_id))
+        result["reversed_items"] = reversed_items
+        _audit(
+            conn,
+            actor_max_id,
+            actor_name,
+            "receipt_cancel",
+            "receipt",
+            receipt_id,
+            {
+                "before": before,
+                "reason": note,
+                "items": reversed_items,
+                "site_name": before.get("site_name"),
+                "supplier_name": before.get("supplier_name"),
+            },
+        )
+        _cache(conn, idempotency_key, "receipt_cancel", result)
+        conn.commit()
+        return result
+
+
 def list_payment_receipts(
     *,
     site_id: int | None = None,
@@ -1287,12 +1464,13 @@ def list_payment_receipts(
     if status:
         clauses.append("r.payment_status=?")
         params.append(str(status))
+    clauses.append("r.cancelled_at IS NULL")
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with _connect() as conn:
         rows = conn.execute(
             f"""SELECT r.id, r.site_id, s.name site_name, r.supplier_id, sup.name supplier_name,
                        r.actor_name, r.note, r.created_at, r.payment_status, r.total_amount,
-                       r.priced_by_name, r.sent_to_manager_at
+                       r.priced_by_name, r.sent_to_manager_at, r.cancelled_at
                 FROM sm_receipts r
                 JOIN sm_sites s ON s.id=r.site_id
                 JOIN sm_suppliers sup ON sup.id=r.supplier_id
@@ -1304,6 +1482,7 @@ def list_payment_receipts(
         result = []
         for row in rows:
             item = dict(row)
+            item["is_cancelled"] = bool(item.get("cancelled_at"))
             item["items"] = _get_receipt_lines(conn, int(row["id"]))
             item["total_amount"] = round(float(item.get("total_amount") or 0), 2)
             result.append(item)
@@ -1321,7 +1500,8 @@ def price_receipt(
         raise ValueError("Укажите цены по позициям")
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        _get_receipt_conn(conn, receipt_id)
+        current = _get_receipt_conn(conn, receipt_id)
+        _ensure_receipt_editable(current)
         total = 0.0
         for payload in lines:
             line_id = payload.get("id")
@@ -1384,6 +1564,7 @@ def send_receipt_to_manager(
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         receipt = _get_receipt_conn(conn, receipt_id)
+        _ensure_receipt_editable(receipt)
         if receipt.get("payment_status") != "priced":
             raise ValueError("Сначала сохраните цены по всем позициям")
         if float(receipt.get("total_amount") or 0) <= 0:
@@ -1438,7 +1619,284 @@ def list_audit_log(
         except json.JSONDecodeError:
             item["details"] = {}
         items.append(item)
+        item["description"] = describe_audit_entry(item)
     return {"items": items, "total": int(total), "limit": limit, "offset": offset}
+
+
+AUDIT_ACTION_LABELS = {
+    "receipt": "Приход",
+    "receipt_batch": "Приход партией",
+    "receipt_edit": "Правка прихода",
+    "receipt_cancel": "Отмена прихода",
+    "receipt_price": "Цены прихода",
+    "receipt_send_manager": "Отправка руководителю",
+    "issue": "Расход",
+    "transfer": "Перемещение",
+    "inventory_adjustment": "Корректировка",
+    "reversal": "Сторно",
+    "request_create": "Заявка",
+    "request_transition": "Статус заявки",
+    "request_eta_update": "Срок поставки",
+    "delivery_create": "Заказ у поставщика",
+    "delivery_receive": "Поставка на базу",
+    "role_update": "Роль",
+    "site_material_minimum": "Минимум",
+    "material_update": "Материал",
+    "supplier_price_update": "Цена поставщика",
+}
+
+AUDIT_ENTITY_LABELS = {
+    "receipt": "Приход",
+    "request": "Заявка",
+    "delivery": "Заказ",
+    "movement": "Движение",
+    "transfer": "Перемещение",
+    "material": "Материал",
+    "role": "Роль",
+    "supplier": "Поставщик",
+    "site": "Площадка",
+}
+
+AUDIT_STATUS_LABELS = {
+    "submitted": "отправлена",
+    "accepted": "принята",
+    "in_transit": "в пути",
+    "partially_received": "частично на базе",
+    "received": "полностью на базе",
+    "closed": "закрыта",
+    "rejected": "отклонена",
+    "cancelled": "отменена",
+}
+
+ROLE_LABELS = {
+    "master": "Мастер",
+    "supply": "Снабжение",
+    "manager": "Руководитель",
+    "admin": "Администратор",
+}
+
+
+def _audit_qty_label(value: Any) -> str:
+    number = round(float(value or 0), 3)
+    text = str(int(number)) if number.is_integer() else f"{number:.3f}".rstrip("0").rstrip(".")
+    return text
+
+
+def _audit_entity_label(entity_type: str | None, entity_id: str | None) -> str:
+    title = AUDIT_ENTITY_LABELS.get(str(entity_type or ""), str(entity_type or "Объект"))
+    if entity_id:
+        return f"{title} №{entity_id}"
+    return title
+
+
+def _audit_material_lines(items: Iterable[dict]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = (
+            item.get("material_name")
+            or ((item.get("material") or {}).get("name") if isinstance(item.get("material"), dict) else None)
+            or "Материал"
+        )
+        qty = item.get("quantity") or item.get("ordered") or item.get("billing_quantity") or 0
+        unit = (
+            item.get("material_unit") or item.get("quantity_unit") or item.get("unit")
+            or ((item.get("material") or {}).get("unit") if isinstance(item.get("material"), dict) else None)
+            or ""
+        )
+        lines.append(f"• {name}: {_audit_qty_label(qty)} {unit}".rstrip())
+    return lines
+
+
+def _audit_receipt_diff(before: dict, after: dict) -> list[str]:
+    before_items = {
+        int(item.get("material_id") or 0): item
+        for item in (before.get("items") or [])
+        if isinstance(item, dict) and item.get("material_id") is not None
+    }
+    after_items = {
+        int(item.get("material_id") or 0): item
+        for item in (after.get("items") or [])
+        if isinstance(item, dict) and item.get("material_id") is not None
+    }
+    lines: list[str] = []
+    for material_id, after_item in after_items.items():
+        name = after_item.get("material_name") or "Материал"
+        qty_after = after_item.get("quantity") or after_item.get("billing_quantity") or 0
+        unit = after_item.get("material_unit") or after_item.get("quantity_unit") or ""
+        if material_id in before_items:
+            qty_before = before_items[material_id].get("quantity") or 0
+            if abs(float(qty_before) - float(qty_after)) > 1e-9:
+                lines.append(
+                    f"• {name}: {_audit_qty_label(qty_before)} → {_audit_qty_label(qty_after)} {unit}".rstrip()
+                )
+        else:
+            lines.append(f"• + {name}: {_audit_qty_label(qty_after)} {unit}".rstrip())
+    for material_id, before_item in before_items.items():
+        if material_id not in after_items:
+            name = before_item.get("material_name") or "Материал"
+            qty = before_item.get("quantity") or 0
+            unit = before_item.get("material_unit") or before_item.get("quantity_unit") or ""
+            lines.append(f"• − {name}: {_audit_qty_label(qty)} {unit}".rstrip())
+    return lines
+
+
+def describe_audit_entry(item: dict) -> dict:
+    action = str(item.get("action") or "")
+    details = item.get("details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    lines: list[str] = []
+
+    if action == "receipt_edit":
+        before, after = details.get("before") or {}, details.get("after") or {}
+        site = after.get("site_name") or before.get("site_name")
+        supplier = after.get("supplier_name") or before.get("supplier_name")
+        if site:
+            lines.append(f"Площадка: {site}")
+        if supplier:
+            lines.append(f"Поставщик: {supplier}")
+        lines.extend(_audit_receipt_diff(before, after))
+    elif action == "receipt_cancel":
+        if details.get("site_name"):
+            lines.append(f"Площадка: {details['site_name']}")
+        if details.get("supplier_name"):
+            lines.append(f"Поставщик: {details['supplier_name']}")
+        if details.get("reason"):
+            lines.append(f"Причина: {details['reason']}")
+        lines.extend(_audit_material_lines(details.get("items") or []))
+    elif action in {"receipt", "receipt_batch"}:
+        site = details.get("site_name") or ((details.get("site") or {}).get("name") if isinstance(details.get("site"), dict) else None)
+        supplier = details.get("supplier_name") or ((details.get("supplier") or {}).get("name") if isinstance(details.get("supplier"), dict) else None)
+        if site:
+            lines.append(f"Площадка: {site}")
+        if supplier:
+            lines.append(f"Поставщик: {supplier}")
+        lines.extend(_audit_material_lines(details.get("items") or []))
+    elif action == "receipt_price":
+        if details.get("total_amount") is not None:
+            lines.append(f"Итого: {round(float(details['total_amount']), 2):.2f} ₽")
+        if details.get("lines") is not None:
+            lines.append(f"Позиций с ценой: {details['lines']}")
+    elif action == "receipt_send_manager":
+        if details.get("total_amount") is not None:
+            lines.append(f"Отправлено на оплату: {round(float(details['total_amount']), 2):.2f} ₽")
+    elif action == "request_create":
+        if details.get("site_name"):
+            lines.append(f"Площадка: {details['site_name']}")
+        if details.get("comment"):
+            lines.append(f"Комментарий: {details['comment']}")
+        lines.extend(_audit_material_lines(details.get("items") or []))
+    elif action == "request_transition":
+        old = AUDIT_STATUS_LABELS.get(str(details.get("from") or ""), details.get("from") or "—")
+        new = AUDIT_STATUS_LABELS.get(str(details.get("to") or ""), details.get("to") or "—")
+        lines.append(f"Было: {old} → стало: {new}")
+        if details.get("supply_comment"):
+            lines.append(f"Комментарий: {details['supply_comment']}")
+    elif action == "request_eta_update":
+        if details.get("from_days") is not None:
+            lines.append(f"Было: {details['from_days']} дн.")
+        if details.get("to_days") is not None:
+            lines.append(f"Стало: {details['to_days']} дн.")
+    elif action == "delivery_create":
+        if details.get("supplier_name"):
+            lines.append(f"Поставщик: {details['supplier_name']}")
+        if details.get("note"):
+            lines.append(f"Примечание: {details['note']}")
+        lines.extend(_audit_material_lines(details.get("items") or []))
+    elif action == "delivery_receive":
+        if details.get("note"):
+            lines.append(f"Комментарий: {details['note']}")
+        if details.get("early_delivery"):
+            lines.append("Досрочная поставка")
+        received = details.get("items") or []
+        if received:
+            lines.append("Принято на базу:")
+            lines.extend(_audit_material_lines(received))
+    elif action == "material_update":
+        before, after = details.get("before") or {}, details.get("after") or {}
+        for field, label in (("name", "Название"), ("unit", "Единица"), ("min_level", "Минимум")):
+            if before.get(field) != after.get(field):
+                lines.append(f"{label}: {before.get(field)!s} → {after.get(field)!s}")
+        if before.get("active") != after.get("active"):
+            lines.append("Статус: " + ("включён" if after.get("active") else "отключён"))
+    elif action == "site_material_minimum":
+        if details.get("site", {}).get("name"):
+            lines.append(f"Площадка: {details['site']['name']}")
+        material = details.get("material") or {}
+        if material.get("name"):
+            lines.append(f"Материал: {material['name']}")
+        if details.get("min_level") is not None:
+            lines.append(f"Минимум: {_audit_qty_label(details['min_level'])}")
+    elif action == "role_update":
+        if details.get("max_id") is not None:
+            lines.append(f"MAX id: {details['max_id']}")
+        if details.get("role"):
+            lines.append(f"Роль: {ROLE_LABELS.get(details['role'], details['role'])}")
+        site_ids = details.get("site_ids") or []
+        if site_ids:
+            lines.append(f"Площадки: {', '.join(str(x) for x in site_ids)}")
+        else:
+            lines.append("Площадки: все")
+        lines.append("Статус: " + ("активна" if details.get("active", True) else "отключена"))
+    elif action == "issue":
+        if details.get("material_name"):
+            lines.append(f"Материал: {details['material_name']}")
+        if details.get("quantity") is not None:
+            unit = details.get("material_unit") or details.get("unit") or ""
+            lines.append(f"Количество: {_audit_qty_label(details['quantity'])} {unit}".rstrip())
+        if details.get("note"):
+            lines.append(f"Примечание: {details['note']}")
+    elif action == "transfer":
+        if details.get("from_site_name") or details.get("to_site_name"):
+            lines.append(
+                f"Маршрут: {details.get('from_site_name') or '?'} → {details.get('to_site_name') or '?'}"
+            )
+        if details.get("material_name"):
+            lines.append(f"Материал: {details['material_name']}")
+        if details.get("quantity") is not None:
+            unit = details.get("material_unit") or ""
+            lines.append(f"Количество: {_audit_qty_label(details['quantity'])} {unit}".rstrip())
+    elif action == "inventory_adjustment":
+        if details.get("material_name"):
+            lines.append(f"Материал: {details['material_name']}")
+        if details.get("quantity_delta") is not None:
+            lines.append(f"Изменение: {_audit_qty_label(details['quantity_delta'])}")
+        if details.get("note"):
+            lines.append(f"Причина: {details['note']}")
+    elif action == "supplier_price_update":
+        if details.get("supplier_name"):
+            lines.append(f"Поставщик: {details['supplier_name']}")
+        for field in ("price", "unit_price", "amount", "value"):
+            if details.get(field) is not None:
+                lines.append(f"Значение: {details[field]}")
+                break
+
+    return {
+        "action_label": AUDIT_ACTION_LABELS.get(action, action.replace("_", " ")),
+        "entity_label": _audit_entity_label(item.get("entity_type"), item.get("entity_id")),
+        "lines": lines,
+    }
+
+
+def get_audit_entry(entry_id: int) -> dict:
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT id, actor_max_id, actor_name, action, entity_type, entity_id,
+                      details_json, created_at
+               FROM sm_audit_log WHERE id=?""",
+            (int(entry_id),),
+        ).fetchone()
+        if not row:
+            raise ValueError("Запись журнала не найдена")
+        item = dict(row)
+        try:
+            item["details"] = json.loads(item.pop("details_json") or "{}")
+        except json.JSONDecodeError:
+            item["details"] = {}
+        item["description"] = describe_audit_entry(item)
+        return item
 
 
 def reverse_movement(*, movement_id: int, actor_max_id: int | None, actor_name: str,
@@ -1969,8 +2427,21 @@ def get_delivery(delivery_id: int) -> dict:
         return result
 
 
+def _is_early_delivery(request_doc: dict, *, now: float | None = None) -> bool:
+    at = request_doc.get("expected_delivery_at")
+    if at is None:
+        return False
+    try:
+        eta_at = float(at)
+    except (TypeError, ValueError):
+        return False
+    now = now or time.time()
+    return now + 86400 < eta_at
+
+
 def receive_delivery(*, delivery_id: int, items: list[dict] | None,
                      actor_max_id: int | None, actor_name: str, note: str = "",
+                     confirm_early: bool = False,
                      idempotency_key: str | None = None) -> dict:
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -1996,6 +2467,12 @@ def receive_delivery(*, delivery_id: int, items: list[dict] | None,
                 raise ValueError("Принятое количество превышает заказ")
             parsed.append((source, qty))
         request_doc = _get_request(conn, delivery["request_id"])
+        if _is_early_delivery(request_doc) and not confirm_early:
+            eta_label = request_doc.get("eta_date_label") or request_doc.get("eta_display_line") or "позже срока"
+            raise ValueError(
+                f"Поставка раньше срока (ожидали ~{eta_label}). "
+                "Подтвердите приём на базу или проверьте отправку."
+            )
         received_now: list[dict] = []
         for source, qty in parsed:
             _movement(
@@ -2029,13 +2506,28 @@ def receive_delivery(*, delivery_id: int, items: list[dict] | None,
         all_received = all(x["remaining"] <= 0 for x in request_after["items"])
         any_received = any(x["received"] > 0 for x in request_after["items"])
         request_status = "received" if all_received else "partially_received" if any_received else "in_transit"
-        conn.execute("UPDATE sm_requests SET status=?,updated_at=? WHERE id=?",
-                     (request_status, time.time(), delivery["request_id"]))
+        now = time.time()
+        if all_received:
+            conn.execute(
+                """UPDATE sm_requests SET status=?, updated_at=?, received_at=?,
+                   eta_reminder_sent_at=? WHERE id=?""",
+                (request_status, now, now, now, delivery["request_id"]),
+            )
+        else:
+            conn.execute(
+                "UPDATE sm_requests SET status=?, updated_at=? WHERE id=?",
+                (request_status, now, delivery["request_id"]),
+            )
         result = _get_delivery(conn, delivery_id)
         result["request"] = _get_request(conn, delivery["request_id"])
         result["received_now"] = received_now
+        audit_details: dict[str, Any] = {"items": received_now, "note": note.strip()}
+        if _is_early_delivery(request_doc, now=now):
+            audit_details["early_delivery"] = True
+            if request_doc.get("expected_delivery_at"):
+                audit_details["expected_delivery_at"] = request_doc["expected_delivery_at"]
         _audit(conn, actor_max_id, actor_name, "delivery_receive", "delivery", delivery_id,
-               {"items": incoming})
+               audit_details)
         _cache(conn, idempotency_key, "delivery_receive", result)
         conn.commit()
         return result

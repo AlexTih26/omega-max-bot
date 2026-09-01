@@ -291,11 +291,39 @@ button {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.sm-mini-action--danger {
+  color: #ffb4b4;
+  border-color: rgba(255, 120, 120, 0.35);
+}
+
 .sm-audit-card {
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.03);
+}
+
+.sm-audit-card--tap {
+  cursor: pointer;
+}
+
+.sm-audit-card.is-open {
+  border-color: rgba(211, 171, 98, 0.35);
+  background: rgba(211, 171, 98, 0.06);
+}
+
+.sm-audit-hint {
+  color: var(--sm-muted);
+}
+
+.sm-audit-detail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sm-audit-detail .sm-note {
+  margin: 0 0 6px;
 }
 
 .sm-note b {

@@ -33,7 +33,8 @@
     materialCardOpenRequest: null,
     historyReturnTo: "",
     historyReturnMaterialId: "",
-    historyReturnMaterialName: ""
+    historyReturnMaterialName: "",
+    auditOpenId: ""
   };
 
   function $(id) { return document.getElementById(id); }
@@ -330,7 +331,7 @@
     $("materialAdminSettings").hidden = !allowed("settings_manage");
     $("minimumSettings").hidden = !allowed("settings_manage");
     $("rolesAdminSettings").hidden = !allowed("roles_manage");
-    $("auditAdminSettings").hidden = !(allowed("roles_manage") || allowed("settings_manage"));
+    $("auditAdminSettings").hidden = !allowed("roles_manage");
     $("adjustmentForm").hidden = !allowed("inventory_adjustment");
     $("cancelReceiptEditBtn").hidden = !state.editingReceiptId;
     $("saveReceiptBtn").textContent = state.editingReceiptId
@@ -367,13 +368,15 @@
     return {
       pending: "Ждёт цены",
       priced: "Цены сохранены",
-      sent: "Отправлено руководителю"
+      sent: "Отправлено руководителю",
+      cancelled: "Отменён"
     }[status] || status || "—";
   }
 
   function renderPayment() {
     if (!(allowed("receipt_price") || allowed("payment_view"))) return;
     var canEdit = allowed("receipt_price");
+    var canAdmin = allowed("roles_manage");
     $("paymentPanelNote").textContent = canEdit
       ? "Проставьте цены по каждому приходу и нажмите «Отправить руководителю». Суммы уйдут только в личку."
       : "Ведомости к оплате. Суммы видны только руководителю в личных сообщениях MAX.";
@@ -401,7 +404,17 @@
           "</span></div>";
       }).join("");
       var actions = "";
-      if (canEdit && receipt.payment_status !== "sent") {
+      var adminButtons = [];
+      if (canAdmin && !receipt.is_cancelled && !receipt.cancelled_at) {
+        adminButtons.push(
+          '<button type="button" class="sm-mini-action" data-edit-receipt="' + esc(receipt.id) +
+          '">Редактировать приход</button>',
+          '<button type="button" class="sm-mini-action sm-mini-action--danger" data-cancel-receipt="' +
+          esc(receipt.id) + '" data-cancel-receipt-sent="' +
+          (receipt.payment_status === "sent" ? "1" : "0") + '">Отменить приход</button>'
+        );
+      }
+      if (canEdit && receipt.payment_status !== "sent" && !receipt.is_cancelled && !receipt.cancelled_at) {
         var buttons = [
           '<button type="button" class="sm-mini-action" data-save-pricing="' + esc(receipt.id) +
           '">Сохранить цены</button>'
@@ -412,7 +425,10 @@
             '">Отправить руководителю</button>'
           );
         }
-        actions = '<div class="sm-action-list sm-action-list--stack">' + buttons.join("") + "</div>";
+        actions = '<div class="sm-action-list sm-action-list--stack">' +
+          adminButtons.concat(buttons).join("") + "</div>";
+      } else if (adminButtons.length) {
+        actions = '<div class="sm-action-list sm-action-list--stack">' + adminButtons.join("") + "</div>";
       }
       return '<article class="sm-history-card sm-payment-card"><div class="sm-heading-row sm-heading-row--card"><div class="sm-heading-main"><b>Приход №' +
         esc(receipt.id) + '</b><span>' + esc(receipt.supplier_name || "") + " · " +
@@ -906,6 +922,9 @@
   }
 
   function requestEtaLineHtml(request) {
+    if (request.eta_display_line) {
+      return '<p class="sm-note sm-eta-line">' + esc(request.eta_display_line) + "</p>";
+    }
     if (!request.eta_date_label) return "";
     var text = "Ожидаем ~" + request.eta_date_label;
     if (request.eta_label) text += " · " + request.eta_label;
@@ -971,9 +990,9 @@
       return (item.material_name || "Материал") + " — " + formatQty(item.quantity || item.ordered) +
         " " + (item.material_unit || "");
     }).join("; ") || request.material_name || "—";
-    var etaText = request.eta_date_label
+    var etaText = request.eta_display_line || (request.eta_date_label
       ? ("~" + request.eta_date_label + (request.eta_label ? " · " + request.eta_label : ""))
-      : "не указан";
+      : "не указан");
     var edit = (request.allowed_actions || []).indexOf("update_eta") >= 0
       ? '<button type="button" class="sm-mini-action" data-request-eta-edit="' + esc(request.id) +
         '">Изменить срок</button>' : "";
@@ -1028,7 +1047,10 @@
       }).join("");
       var fallback = detailItems.length ? "" :
         '<p class="sm-note">Детализация недоступна — будет принят весь оставшийся объём.</p>';
-      return '<form class="sm-subpanel sm-inline-panel" data-receive-form="' + esc(delivery.id) + '">' +
+      return '<form class="sm-subpanel sm-inline-panel" data-receive-form="' + esc(delivery.id) +
+        '" data-receive-request-id="' + esc(request.id) + '" data-eta-at="' +
+        esc(request.expected_delivery_at || "") + '" data-eta-date-label="' +
+        esc(request.eta_date_label || "") + '">' +
         '<h3>Поставка · заказ №' + esc(delivery.id) + '</h3><p class="sm-note">На базе ' +
         esc(formatQty(delivery.received_quantity)) + " из " + esc(formatQty(delivery.quantity)) +
         "</p>" + fallback + rows +
@@ -1058,6 +1080,7 @@
     receipt: "Приход",
     receipt_batch: "Приход партией",
     receipt_edit: "Правка прихода",
+    receipt_cancel: "Отмена прихода",
     receipt_price: "Цены прихода",
     receipt_send_manager: "Отправка руководителю",
     issue: "Расход",
@@ -1071,22 +1094,71 @@
     delivery_receive: "Поставка на базу",
     role_update: "Роль",
     site_material_minimum: "Минимум",
-    material_update: "Материал"
+    material_update: "Материал",
+    supplier_price_update: "Цена поставщика"
   };
+
+  function auditEntityLabel(item) {
+    var desc = item.description || {};
+    if (desc.entity_label) return desc.entity_label;
+    var types = {
+      receipt: "Приход", request: "Заявка", delivery: "Заказ", movement: "Движение",
+      transfer: "Перемещение", material: "Материал", role: "Роль", supplier: "Поставщик"
+    };
+    var type = types[item.entity_type] || item.entity_type || "Объект";
+    return item.entity_id ? (type + " №" + item.entity_id) : type;
+  }
 
   function renderAuditLog() {
     var box = $("auditAdminSettings");
     if (!box || box.hidden) return;
     var items = data.audit_log || [];
     $("auditList").innerHTML = items.map(function (item) {
-      var action = auditActionLabels[item.action] || item.action || "Действие";
-      var target = [item.entity_type, item.entity_id].filter(Boolean).join(" #");
-      return '<article class="sm-audit-card"><div class="sm-heading-row"><div><b>' +
-        esc(action) + '</b><span>' + esc(item.actor_name || "Пользователь") +
+      var desc = item.description || {};
+      var action = desc.action_label || auditActionLabels[item.action] || item.action || "Действие";
+      var target = auditEntityLabel(item);
+      var isOpen = String(state.auditOpenId) === String(item.id);
+      var lines = desc.lines || [];
+      var detailHtml = isOpen
+        ? ('<div class="sm-audit-detail">' +
+          (lines.length
+            ? lines.map(function (line) {
+              return '<p class="sm-note">' + esc(line) + "</p>";
+            }).join("")
+            : '<p class="sm-note">Подробности для этой записи не сохранены.</p>') +
+          "</div>")
+        : "";
+      return '<article class="sm-audit-card sm-audit-card--tap' +
+        (isOpen ? " is-open" : "") + '" data-audit-id="' + esc(item.id) + '">' +
+        '<div class="sm-heading-row"><div><b>' + esc(action) + '</b><span>' +
+        esc(item.actor_name || "Пользователь") +
         (item.actor_max_id ? " · id " + esc(item.actor_max_id) : "") +
         '</span></div><span class="sm-status">' + esc(dateLabel(item.created_at)) +
-        '</span></div><p class="sm-note">' + esc(target || "—") + "</p></article>";
+        '</span></div><p class="sm-note">' + esc(target) +
+        (isOpen ? "" : ' · <span class="sm-audit-hint">подробнее</span>') +
+        "</p>" + detailHtml + "</article>";
     }).join("") || '<p class="sm-empty">Журнал пока пуст.</p>';
+  }
+
+  function toggleAuditEntry(id) {
+    state.auditOpenId = String(state.auditOpenId) === String(id) ? "" : String(id);
+    var existing = (data.audit_log || []).find(function (item) {
+      return String(item.id) === String(id);
+    });
+    if (state.auditOpenId && (!existing || !existing.description || !existing.details)) {
+      return api("/admin/audit/" + encodeURIComponent(id)).then(function (body) {
+        if (body.audit) {
+          var list = data.audit_log || [];
+          var index = list.findIndex(function (item) { return String(item.id) === String(id); });
+          if (index >= 0) list[index] = body.audit;
+          else list.unshift(body.audit);
+          data.audit_log = list;
+        }
+        renderAuditLog();
+      }).catch(fail);
+    }
+    renderAuditLog();
+    return Promise.resolve();
   }
 
   function renderRolesAdmin() {
@@ -1173,6 +1245,10 @@
   function beginReceiptEdit(receiptId) {
     return api("/receipts/" + encodeURIComponent(receiptId)).then(function (body) {
       var receipt = body.receipt || {};
+      if (receipt.is_cancelled || receipt.cancelled_at) {
+        toast("Приход уже отменён");
+        return;
+      }
       state.editingReceiptId = String(receipt.id || receiptId);
       state.tab = "receipt";
       state.siteId = String(receipt.site_id || state.siteId);
@@ -1187,6 +1263,24 @@
       render();
       toast("Редактирование прихода №" + state.editingReceiptId);
     });
+  }
+
+  function cancelReceipt(receiptId, button, wasSent) {
+    var reason = window.prompt("Причина отмены прихода:", "");
+    if (reason === null) return;
+    reason = reason.trim();
+    if (!reason) return toast("Укажите причину отмены");
+    var message = wasSent
+      ? ("Приход №" + receiptId + " уже отправлен руководителю.\n\n" +
+        "Отмена уменьшит остаток на складе и потребует уведомления руководителя.\n\nПродолжить?")
+      : ("Отменить приход №" + receiptId + "?\n\nОстаток на складе уменьшится на все позиции этого прихода.");
+    if (!window.confirm(message)) return;
+    setBusy(button, true);
+    post("/receipts/" + encodeURIComponent(receiptId) + "/cancel", { reason: reason })
+      .then(function () {
+        if (state.editingReceiptId === String(receiptId)) resetReceiptForm();
+        return reload("Приход отменён");
+      }).catch(fail).then(function () { setBusy(button, false); });
   }
 
   function saveReceipt() {
@@ -1455,17 +1549,36 @@
     }).catch(fail).then(function () { setBusy(button, false); });
   }
 
+  function confirmEarlyReceive(form) {
+    var etaAt = Number(form.dataset.etaAt || 0);
+    if (!etaAt || !isFinite(etaAt)) return true;
+    var now = Date.now() / 1000;
+    if (now + 86400 >= etaAt) return true;
+    var daysLeft = Math.max(1, Math.ceil((etaAt - now) / 86400));
+    var dateLabel = form.dataset.etaDateLabel || "";
+    var expectedText = dateLabel ? ("~" + dateLabel) : ("через " + daysLeft + " дн.");
+    return window.confirm(
+      "По заявке ожидали поставку " + expectedText + ".\n\n" +
+      "Товар приехал раньше. Принять на базу?\n\n" +
+      "Если не уверены — нажмите «Отмена» и проверьте отправку."
+    );
+  }
+
   function receiveDelivery(form) {
     var inputs = form.querySelectorAll("[data-receive-delivery-item]");
     var items = Array.prototype.map.call(inputs, function (input) {
       return { delivery_item_id: Number(input.dataset.receiveDeliveryItem), quantity: positive(input.value) };
     }).filter(function (item) { return item.quantity; });
     if (inputs.length && !items.length) return toast("Укажите положительное количество");
+    if (!confirmEarlyReceive(form)) return;
     var button = form.querySelector('[type="submit"]');
+    var confirmEarly = Number(form.dataset.etaAt || 0) > 0 &&
+      ((Date.now() / 1000) + 86400 < Number(form.dataset.etaAt));
     setBusy(button, true);
     post("/deliveries/" + encodeURIComponent(form.dataset.receiveForm) + "/receive", {
       items: inputs.length ? items : undefined,
-      note: form.elements.note.value.trim()
+      note: form.elements.note.value.trim(),
+      confirm_early: confirmEarly
     }).then(function () {
       requestDetails = {};
       return reload("Поставка оформлена");
@@ -1664,6 +1777,12 @@
         openMaterialCardFullHistory();
       } else if (target.dataset.editReceipt) {
         beginReceiptEdit(target.dataset.editReceipt).catch(fail);
+      } else if (target.dataset.cancelReceipt) {
+        cancelReceipt(
+          target.dataset.cancelReceipt,
+          target,
+          target.dataset.cancelReceiptSent === "1"
+        );
       } else if (target.dataset.historyMaterial) {
         state.historyReturnTo = "";
         state.historyReturnMaterialId = "";
@@ -1671,6 +1790,9 @@
         openMaterialHistory(target.dataset.historyMaterial, target.dataset.historyMaterialName || "");
       } else if (target.id === "movementsBackBtn" || target.closest("#movementsBackBtn")) {
         closeMaterialHistory();
+      } else if (target.dataset.auditId || target.closest("[data-audit-id]")) {
+        var auditCard = target.closest("[data-audit-id]");
+        if (auditCard) toggleAuditEntry(auditCard.dataset.auditId);
       } else if (target.dataset.requestHistory) {
         loadRequestDetail(target.dataset.requestHistory, "history");
       } else if (target.dataset.etaDays || target.dataset.etaCustom != null) {

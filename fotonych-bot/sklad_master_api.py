@@ -14,8 +14,9 @@ from materials_receipt_chat import notify_materials_role_users
 from max_webapp import display_name_from_user, user_id_from_user, validate_init_data
 from sklad_master_store import (
     create_delivery, create_material, create_request, create_supplier, dashboard, edit_receipt,
+    cancel_receipt,
     get_access, get_delivery, get_movement, get_receipt, get_request, get_request_timeline,
-    init_sklad_master_db,
+    get_audit_entry, init_sklad_master_db,
     list_payment_receipts, list_audit_log, list_materials,
     list_movements, list_requests, list_roles, list_sites, list_suppliers,
     find_similar_receipt_today,
@@ -328,7 +329,7 @@ async def handle_bootstrap(request: web.Request) -> web.Response:
         data["admin_materials"] = list_materials(include_inactive=True)
     if access["capabilities"].get("roles_manage"):
         data["admin_roles"] = list_roles(include_inactive=True)
-        data["audit_log"] = list_audit_log(limit=30)["items"]
+        data["audit_log"] = list_audit_log(limit=50)["items"]
     if access["capabilities"].get("receipt_price") or access["capabilities"].get("payment_view"):
         data["payment_receipts"] = list_payment_receipts(site_id=site_id)
     data["requests"] = [_decorate_request(item, access) for item in data.get("requests", [])]
@@ -455,6 +456,8 @@ async def handle_receipt_edit(request: web.Request) -> web.Response:
         current = get_receipt(int(request.match_info["receipt_id"]))
         if not _site_allowed(access, current["site_id"]):
             return _json({"error": "Нет доступа к площадке"}, 403)
+        if current.get("is_cancelled"):
+            return _json({"error": "Приход отменён"}, 400)
         items = body.get("items")
         if not isinstance(items, list):
             raise ValueError("Укажите позиции прихода")
@@ -478,6 +481,42 @@ async def handle_receipt_edit(request: web.Request) -> web.Response:
         role="supply",
         exclude_user_id=uid,
     )
+    return _json({"receipt": result})
+
+
+async def handle_receipt_cancel(request: web.Request) -> web.Response:
+    auth = _auth(request, "roles_manage")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, name, access = auth
+    try:
+        body = await _body(request)
+        receipt_id = int(request.match_info["receipt_id"])
+        current = get_receipt(receipt_id)
+        if not _site_allowed(access, current["site_id"]):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        result = cancel_receipt(
+            receipt_id=receipt_id,
+            reason=str(body.get("reason") or ""),
+            actor_max_id=uid,
+            actor_name=name,
+            idempotency_key=_idempotency(request, body),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    replay = result.pop("_idempotent_replay", False)
+    if not replay:
+        lines = [
+            "🚫 Склад Мастер · приход отменён",
+            f"Приход №{receipt_id}",
+            f"Площадка: {current.get('site_name') or '—'}",
+            f"Поставщик: {current.get('supplier_name') or '—'}",
+            f"Причина: {body.get('reason') or '—'}",
+            f"Отменил: {name} (id {uid})",
+        ]
+        await _notify(lines, event=True, role="supply", exclude_user_id=uid)
+        if current.get("payment_status") == "sent":
+            await _notify(lines, role="manager", exclude_user_id=uid)
     return _json({"receipt": result})
 
 
@@ -556,7 +595,7 @@ async def handle_receipt_similar(request: web.Request) -> web.Response:
 
 
 async def handle_audit_log(request: web.Request) -> web.Response:
-    auth = _auth(request, "roles_manage", "settings_manage")
+    auth = _auth(request, "roles_manage")
     if isinstance(auth, web.Response):
         return auth
     try:
@@ -568,6 +607,17 @@ async def handle_audit_log(request: web.Request) -> web.Response:
     except (TypeError, ValueError) as exc:
         return _json({"error": str(exc)}, 400)
     return _json(result)
+
+
+async def handle_audit_detail(request: web.Request) -> web.Response:
+    auth = _auth(request, "roles_manage")
+    if isinstance(auth, web.Response):
+        return auth
+    try:
+        item = get_audit_entry(int(request.match_info["audit_id"]))
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 404)
+    return _json({"audit": item})
 
 
 async def handle_issue(request: web.Request) -> web.Response:
@@ -839,6 +889,7 @@ async def handle_delivery_receive(request: web.Request) -> web.Response:
         item = receive_delivery(
             delivery_id=int(request.match_info["delivery_id"]), items=body.get("items"),
             actor_max_id=uid, actor_name=name, note=str(body.get("note") or ""),
+            confirm_early=bool(body.get("confirm_early")),
             idempotency_key=_idempotency(request, body),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -856,6 +907,10 @@ async def handle_delivery_receive(request: web.Request) -> web.Response:
             *_delivery_item_lines({"items": item.get("received_now") or []}),
             f"Исполнение заявки: {'полностью' if complete else 'частично'}",
         ]
+        if request_doc.get("eta_early_days"):
+            lines.append(f"Досрочно на {request_doc['eta_early_days']} дн.")
+        elif request_doc.get("eta_display_line") and complete:
+            lines.append(request_doc["eta_display_line"])
         if not complete:
             remaining = [
                 position
@@ -1005,10 +1060,12 @@ def register_sklad_master_routes(app: web.Application) -> None:
     app.router.add_post(f"{prefix}/receipts", handle_receipt)
     app.router.add_get(f"{prefix}/receipts/{{receipt_id}}", handle_receipt_detail)
     app.router.add_patch(f"{prefix}/receipts/{{receipt_id}}", handle_receipt_edit)
+    app.router.add_post(f"{prefix}/receipts/{{receipt_id}}/cancel", handle_receipt_cancel)
     app.router.add_patch(f"{prefix}/receipts/{{receipt_id}}/pricing", handle_receipt_price)
     app.router.add_post(f"{prefix}/receipts/{{receipt_id}}/send-manager", handle_receipt_send_manager)
     app.router.add_get(f"{prefix}/receipts/similar", handle_receipt_similar)
     app.router.add_get(f"{prefix}/admin/audit", handle_audit_log)
+    app.router.add_get(f"{prefix}/admin/audit/{{audit_id}}", handle_audit_detail)
     app.router.add_post(f"{prefix}/issues", handle_issue)
     app.router.add_post(f"{prefix}/issue", handle_issue)
     app.router.add_post(f"{prefix}/transfers", handle_transfer)

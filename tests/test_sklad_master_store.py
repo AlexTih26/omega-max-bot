@@ -197,6 +197,7 @@ class SkladMasterStoreTests(unittest.TestCase):
             ],
             actor_max_id=10,
             actor_name="Master",
+            confirm_early=True,
         )
         self.assertEqual(received["request"]["status"], "partially_received")
         self.assertEqual(
@@ -361,6 +362,52 @@ class SkladMasterStoreTests(unittest.TestCase):
         self.assertEqual(balance["balance"], 7)
         audit = store.list_audit_log(limit=5)
         self.assertTrue(any(item["action"] == "receipt_edit" for item in audit["items"]))
+
+    def test_cancel_receipt_reverses_stock_and_hides_from_payment(self):
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 10}],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        cancelled = store.cancel_receipt(
+            receipt_id=receipt["id"],
+            reason="Дубль прихода №1",
+            actor_max_id=99,
+            actor_name="Admin",
+        )
+        self.assertTrue(cancelled["is_cancelled"])
+        self.assertEqual(cancelled["payment_status"], "cancelled")
+        balance = next(x for x in store.site_stock(self.site1) if x["id"] == self.material)
+        self.assertEqual(balance["balance"], 0)
+        payment_ids = {item["id"] for item in store.list_payment_receipts(site_id=self.site1)}
+        self.assertNotIn(receipt["id"], payment_ids)
+        audit = store.list_audit_log(limit=5)
+        self.assertTrue(any(item["action"] == "receipt_cancel" for item in audit["items"]))
+
+    def test_cancel_receipt_blocked_when_stock_already_used(self):
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 10}],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.record_issue(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=4,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        with self.assertRaisesRegex(ValueError, "уже списан"):
+            store.cancel_receipt(
+                receipt_id=receipt["id"],
+                reason="Ошибка",
+                actor_max_id=99,
+                actor_name="Admin",
+            )
 
     def test_find_similar_receipt_today(self):
         receipt = store.record_receipt_batch(
@@ -561,6 +608,7 @@ class SkladMasterStoreTests(unittest.TestCase):
             items=[{"delivery_item_id": delivery["items"][0]["id"], "quantity": 5}],
             actor_max_id=10,
             actor_name="Master",
+            confirm_early=True,
         )
         timeline = store.get_request_timeline(request["id"])
         labels = [item["label"] for item in timeline]
@@ -568,6 +616,109 @@ class SkladMasterStoreTests(unittest.TestCase):
         self.assertIn("Статус: принята", labels)
         self.assertIn("Заказ у поставщика", labels)
         self.assertIn("Поставка на базу", labels)
+
+    def test_describe_audit_entry_formats_details(self):
+        described = store.describe_audit_entry({
+            "action": "request_transition",
+            "entity_type": "request",
+            "entity_id": "5",
+            "details": {"from": "submitted", "to": "accepted"},
+        })
+        self.assertEqual(described["action_label"], "Статус заявки")
+        self.assertEqual(described["entity_label"], "Заявка №5")
+        self.assertIn("принята", described["lines"][0])
+
+        receipt_desc = store.describe_audit_entry({
+            "action": "receipt_price",
+            "entity_type": "receipt",
+            "entity_id": "5",
+            "details": {"total_amount": 4500, "lines": 2},
+        })
+        self.assertIn("4500.00", receipt_desc["lines"][0])
+
+    def test_eta_hidden_when_request_received(self):
+        request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=5,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="accepted",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="in_transit",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+            expected_delivery_days=5,
+        )
+        item_id = store.get_request(request["id"])["items"][0]["id"]
+        delivery = store.create_delivery(
+            request_id=request["id"],
+            supplier_id=self.supplier,
+            items=[{"request_item_id": item_id, "quantity": 5}],
+            expected_delivery_days=5,
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        received = store.receive_delivery(
+            delivery_id=delivery["id"],
+            items=[{"delivery_item_id": delivery["items"][0]["id"], "quantity": 5}],
+            actor_max_id=10,
+            actor_name="Master",
+            confirm_early=True,
+        )
+        req = received["request"]
+        self.assertEqual(req["status"], "received")
+        self.assertIn("Принято на базе", req.get("eta_display_line") or "")
+        self.assertNotIn("через 5 дн.", req.get("eta_display_line") or "")
+
+    def test_receive_early_requires_confirmation(self):
+        request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=3,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="accepted",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="in_transit",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+            expected_delivery_days=5,
+        )
+        item_id = store.get_request(request["id"])["items"][0]["id"]
+        delivery = store.create_delivery(
+            request_id=request["id"],
+            supplier_id=self.supplier,
+            items=[{"request_item_id": item_id, "quantity": 3}],
+            expected_delivery_days=5,
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        with self.assertRaisesRegex(ValueError, "раньше срока"):
+            store.receive_delivery(
+                delivery_id=delivery["id"],
+                items=[{"delivery_item_id": delivery["items"][0]["id"], "quantity": 3}],
+                actor_max_id=10,
+                actor_name="Master",
+            )
 
 
 class LegacyMigrationTests(unittest.TestCase):

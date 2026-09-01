@@ -1,6 +1,7 @@
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import os
 import unittest.mock
@@ -184,6 +185,7 @@ class SkladMasterStoreTests(unittest.TestCase):
                 {"request_item_id": first_item["id"], "quantity": 6},
                 {"request_item_id": second_item["id"], "quantity": 2},
             ],
+            expected_delivery_days=3,
             actor_max_id=20,
             actor_name="Supply",
         )
@@ -267,7 +269,7 @@ class SkladMasterStoreTests(unittest.TestCase):
             supply = store.get_access(202)
             admin = store.get_access(303)
         self.assertIn("request_receive", master["allowed_actions"])
-        self.assertNotIn("request_receive", supply["allowed_actions"])
+        self.assertIn("request_receive", supply["allowed_actions"])
         self.assertIn("request_manage", supply["allowed_actions"])
         self.assertIn("receipt_price", supply["allowed_actions"])
         self.assertIn("roles_manage", admin["allowed_actions"])
@@ -379,6 +381,193 @@ class SkladMasterStoreTests(unittest.TestCase):
                 supplier_id=self.supplier,
             )
         )
+
+
+    def test_find_open_request_for_material(self):
+        open_request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=3,
+            actor_max_id=1,
+            actor_name="Master",
+        )
+        found = store.find_open_request_for_material(
+            site_id=self.site1,
+            material_id=self.material,
+        )
+        self.assertEqual(found["id"], open_request["id"])
+        store.transition_request(
+            request_id=open_request["id"],
+            new_status="cancelled",
+            actor_role="master",
+            actor_max_id=1,
+            actor_name="Master",
+        )
+        self.assertIsNone(store.find_open_request_for_material(
+            site_id=self.site1,
+            material_id=self.material,
+        ))
+
+    def test_create_request_requires_confirm_for_duplicate(self):
+        store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=2,
+            actor_max_id=1,
+            actor_name="Master",
+        )
+        with self.assertRaisesRegex(ValueError, "уже есть заявка"):
+            store.create_request(
+                site_id=self.site1,
+                material_id=self.material,
+                quantity=1,
+                actor_max_id=1,
+                actor_name="Master",
+            )
+        duplicate = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=1,
+            actor_max_id=1,
+            actor_name="Master",
+            confirm_duplicate=True,
+        )
+        self.assertEqual(len(duplicate["items"]), 1)
+
+    def test_create_delivery_requires_eta(self):
+        request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=5,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="accepted",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        item_id = store.get_request(request["id"])["items"][0]["id"]
+        with self.assertRaisesRegex(ValueError, "срок поставки"):
+            store.create_delivery(
+                request_id=request["id"],
+                supplier_id=self.supplier,
+                items=[{"request_item_id": item_id, "quantity": 5}],
+                actor_max_id=20,
+                actor_name="Supply",
+            )
+
+    def test_mark_in_transit_and_update_eta(self):
+        request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=4,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="accepted",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        moved = store.transition_request(
+            request_id=request["id"],
+            new_status="in_transit",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+            expected_delivery_days=5,
+        )
+        self.assertEqual(moved["status"], "in_transit")
+        self.assertEqual(moved["expected_delivery_days"], 5)
+        self.assertTrue(moved.get("eta_date_label"))
+        self.assertEqual(moved["ordered_by_name"], "Supply")
+
+        updated = store.update_request_eta(
+            request_id=request["id"],
+            expected_delivery_days=7,
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        self.assertEqual(updated["expected_delivery_days"], 7)
+        self.assertIsNone(updated.get("eta_reminder_sent_at"))
+
+    def test_eta_reminders_due_within_24_hours(self):
+        request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=2,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="accepted",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="in_transit",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+            expected_delivery_days=7,
+        )
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE sm_requests SET expected_delivery_at=? WHERE id=?",
+                (time.time() + 12 * 3600, request["id"]),
+            )
+            conn.commit()
+        due = store.list_eta_reminders_due()
+        self.assertEqual(len(due), 1)
+        self.assertEqual(due[0]["id"], request["id"])
+        store.mark_eta_reminder_sent(request["id"])
+        self.assertEqual(store.list_eta_reminders_due(), [])
+
+    def test_request_timeline_from_audit(self):
+        request = store.create_request(
+            site_id=self.site1,
+            material_id=self.material,
+            quantity=5,
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        store.transition_request(
+            request_id=request["id"],
+            new_status="accepted",
+            actor_role="supply",
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        item_id = store.get_request(request["id"])["items"][0]["id"]
+        delivery = store.create_delivery(
+            request_id=request["id"],
+            supplier_id=self.supplier,
+            items=[{"request_item_id": item_id, "quantity": 5}],
+            expected_delivery_days=3,
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        store.receive_delivery(
+            delivery_id=delivery["id"],
+            items=[{"delivery_item_id": delivery["items"][0]["id"], "quantity": 5}],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        timeline = store.get_request_timeline(request["id"])
+        labels = [item["label"] for item in timeline]
+        self.assertIn("Заявка создана", labels)
+        self.assertIn("Статус: принята", labels)
+        self.assertIn("Заказ у поставщика", labels)
+        self.assertIn("Поставка на базу", labels)
 
 
 class LegacyMigrationTests(unittest.TestCase):

@@ -193,6 +193,62 @@ button {
   max-width: 46%;
 }
 
+.sm-status--tap {
+  border: none;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sm-status--tap:active {
+  opacity: 0.85;
+}
+
+.sm-eta-line {
+  margin: 6px 0 0;
+}
+
+.sm-eta-panel dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.sm-eta-panel dt {
+  color: var(--sm-muted);
+}
+
+.sm-eta-panel dd {
+  margin: 0;
+}
+
+.sm-eta-custom[hidden] {
+  display: none !important;
+}
+
+.sm-timeline-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sm-timeline-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sm-timeline-list li:last-child {
+  border-bottom: none;
+}
+
+.sm-timeline-when {
+  display: block;
+  color: var(--sm-muted);
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+
 .sm-user-name,
 .sm-user-role,
 .sm-status {
@@ -964,4 +1020,70 @@ button {
   .sm-action-list--stack {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+}
+
+.sm-material-card {
+  display: grid;
+  gap: 12px;
+}
+
+.sm-material-card__stats {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sm-material-card__stats dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+}
+
+.sm-material-card__stats dt {
+  color: var(--sm-muted);
+  font-size: 12px;
+}
+
+.sm-material-card__stats dd {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sm-material-card__status {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sm-material-card__status.is-critical {
+  background: rgba(255, 92, 92, 0.16);
+  color: #ff8a8a;
+}
+
+.sm-material-card__status.is-warning {
+  background: rgba(255, 196, 86, 0.16);
+  color: #ffd27a;
+}
+
+.sm-material-card__status.is-ok {
+  background: rgba(120, 255, 170, 0.12);
+  color: #9dffc8;
+}
+
+.sm-material-card__open-request {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 196, 86, 0.08);
+  border: 1px solid rgba(255, 196, 86, 0.18);
+}
+
+.sm-stock-row-btn {
+  width: 100%;
+  text-align: left;
 }

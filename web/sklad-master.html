@@ -7,7 +7,7 @@
   <title>Склад Мастер</title>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/sklad-master.css?v=25">
+  <link rel="stylesheet" href="/sklad-master.css?v=30">
 </head>
 <body>
   <div class="sm-app">
@@ -114,12 +114,47 @@
           <button type="button" class="sm-tab" data-stock-tab="settings">Настройки</button>
         </div>
         <div id="stockMaterialsBox">
-          <div class="sm-filter-row">
-            <button type="button" class="sm-filter is-active" data-stock-filter="all">Все</button>
-            <button type="button" class="sm-filter" data-stock-filter="critical">Критично</button>
-            <button type="button" class="sm-filter" data-stock-filter="warning">Внимание</button>
+          <div id="stockListBox">
+            <div class="sm-filter-row">
+              <button type="button" class="sm-filter is-active" data-stock-filter="all">Все</button>
+              <button type="button" class="sm-filter" data-stock-filter="critical">Критично</button>
+              <button type="button" class="sm-filter" data-stock-filter="warning">Внимание</button>
+            </div>
+            <div class="sm-list" id="stockList"></div>
           </div>
-          <div class="sm-list" id="stockList"></div>
+          <div id="materialCardBox" class="sm-material-card" hidden>
+            <div class="sm-heading-row sm-history-head">
+              <div>
+                <h3 class="sm-history-title" id="materialCardTitle">Материал</h3>
+                <p class="sm-note" id="materialCardSite" hidden></p>
+              </div>
+              <button type="button" class="sm-mini-action" id="materialCardBackBtn">Назад</button>
+            </div>
+            <div id="materialCardSummary"></div>
+            <div class="sm-section-gap" id="materialCardHistoryBox">
+              <p class="sm-note sm-note--tight"><b>Последние движения</b></p>
+              <div class="sm-list" id="materialCardHistory"></div>
+              <button type="button" class="sm-btn sm-btn--ghost sm-full" id="materialCardFullHistoryBtn">Вся история</button>
+            </div>
+            <div class="sm-section-gap" id="materialCardRequestBox" hidden>
+              <h3 class="sm-settings-title">Заявка в снабжение</h3>
+              <form id="materialCardRequestForm" class="sm-subpanel">
+                <label class="sm-subtitle" for="materialCardQty">Количество</label>
+                <input id="materialCardQty" class="sm-input sm-input--big" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="0">
+                <p class="sm-note sm-note--tight" id="materialCardQtyHint"></p>
+                <label class="sm-subtitle">Срочность</label>
+                <div class="sm-segment" id="materialCardUrgency">
+                  <button type="button" class="sm-tab is-active" data-material-urgency="plan">Планово</button>
+                  <button type="button" class="sm-tab" data-material-urgency="urgent">Срочно</button>
+                </div>
+                <label class="sm-subtitle" for="materialCardComment">Комментарий</label>
+                <input id="materialCardComment" class="sm-input" placeholder="Необязательно">
+                <button type="submit" class="sm-btn sm-btn--primary sm-submit" id="materialCardSubmitBtn">Отправить заявку в снабжение</button>
+                <button type="button" class="sm-btn sm-btn--ghost sm-full" id="materialCardCancelRequestBtn">Отмена</button>
+              </form>
+            </div>
+            <button type="button" class="sm-btn sm-btn--primary sm-full sm-section-gap" id="materialCardRequestBtn" hidden>Сделать заявку</button>
+          </div>
         </div>
         <div id="movementsBox" hidden>
           <div class="sm-heading-row sm-history-head" id="movementsHeader">
@@ -228,6 +263,6 @@
     <div class="sm-toast" id="toast" hidden></div>
   </div>
 
-  <script src="/sklad-master.js?v=25"></script>
+  <script src="/sklad-master.js?v=30"></script>
 </body>
 </html>

@@ -14,13 +14,15 @@ from materials_receipt_chat import notify_materials_role_users
 from max_webapp import display_name_from_user, user_id_from_user, validate_init_data
 from sklad_master_store import (
     create_delivery, create_material, create_request, create_supplier, dashboard, edit_receipt,
-    get_access, get_delivery, get_movement, get_receipt, get_request, init_sklad_master_db,
+    get_access, get_delivery, get_movement, get_receipt, get_request, get_request_timeline,
+    init_sklad_master_db,
     list_payment_receipts, list_audit_log, list_materials,
     list_movements, list_requests, list_roles, list_sites, list_suppliers,
     find_similar_receipt_today,
+    find_open_request_for_material,
     price_receipt, receive_delivery, record_inventory_adjustment, record_issue,
     record_receipt_batch, record_transfer, send_receipt_to_manager, set_role,
-    set_site_material_minimum, transition_request,
+    set_site_material_minimum, transition_request, update_request_eta,
     update_material, update_site,
 )
 
@@ -221,8 +223,8 @@ def _role_for_transition(access: dict, requested: str | None = None) -> str:
 
 STATUS_LABELS = {
     "draft": "Черновик", "submitted": "Новая", "accepted": "Принята",
-    "in_transit": "В пути", "partially_received": "Принята частично",
-    "received": "Получена", "closed": "Закрыта", "rejected": "Отклонена",
+    "in_transit": "В пути", "partially_received": "Частично на базе",
+    "received": "На базе", "closed": "Закрыта", "rejected": "Отклонена",
     "cancelled": "Отменена",
 }
 
@@ -274,11 +276,22 @@ def _request_actions(item: dict, access: dict) -> list[str]:
         actions.append("mark_in_transit")
     if status in {"in_transit", "partially_received"} and capabilities.get("request_receive"):
         actions.append("receive_delivery")
+    if status in {"in_transit", "partially_received"} and capabilities.get("request_manage"):
+        actions.append("update_eta")
     if status == "received" and (
         capabilities.get("request_receive") or capabilities.get("roles_manage")
     ):
         actions.append("close")
     return list(dict.fromkeys(actions))
+
+
+def _eta_lines(item: dict) -> list[str]:
+    lines = []
+    if item.get("eta_date_label"):
+        lines.append(f"Ожидаем ~{item['eta_date_label']}")
+    if item.get("eta_label"):
+        lines.append(item["eta_label"])
+    return lines
 
 
 def _decorate_request(item: dict, access: dict) -> dict:
@@ -607,6 +620,7 @@ async def handle_request_create(request: web.Request) -> web.Response:
             actor_max_id=uid, actor_name=name, comment=str(body.get("comment") or ""),
             status=str(body.get("status") or "submitted"),
             idempotency_key=_idempotency(request, body),
+            confirm_duplicate=bool(body.get("confirm_duplicate")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         return _json({"error": str(exc)}, 400)
@@ -628,6 +642,27 @@ async def handle_request_create(request: web.Request) -> web.Response:
             exclude_user_id=uid,
         )
     return _json({"request": item}, 201)
+
+
+async def handle_material_open_request(request: web.Request) -> web.Response:
+    auth = _auth(request, "request_create", "view")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, _uid, _name, access = auth
+    try:
+        site_id = int(request.query["site_id"])
+        material_id = int(request.match_info["material_id"])
+        if not _site_allowed(access, site_id):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        open_request = find_open_request_for_material(site_id=site_id, material_id=material_id)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    if open_request:
+        open_request["status_label"] = STATUS_LABELS.get(
+            str(open_request.get("status") or ""),
+            str(open_request.get("status") or ""),
+        )
+    return _json({"open_request": open_request})
 
 
 async def handle_requests(request: web.Request) -> web.Response:
@@ -658,6 +693,7 @@ async def handle_request_detail(request: web.Request) -> web.Response:
         item = get_request(int(request.match_info["request_id"]))
         if not _site_allowed(access, item["site_id"]):
             return _json({"error": "Нет доступа к площадке"}, 403)
+        item["timeline"] = get_request_timeline(item["id"])
         return _json({"request": _decorate_request(item, access)})
     except ValueError as exc:
         return _json({"error": str(exc)}, 404)
@@ -678,6 +714,7 @@ async def handle_transition(request: web.Request) -> web.Response:
             request_id=request_id, new_status=str(body["status"]),
             actor_role=_role_for_transition(access, body.get("role")),
             actor_max_id=uid, actor_name=name, comment=str(body.get("comment") or ""),
+            expected_delivery_days=body.get("expected_delivery_days"),
             idempotency_key=_idempotency(request, body),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -688,13 +725,19 @@ async def handle_transition(request: web.Request) -> web.Response:
             "accepted", "in_transit", "rejected", "cancelled",
         } else "supply"
         status_label = STATUS_LABELS.get(item["status"], item["status"])
-        action_label = "Принял заявку" if item["status"] == "accepted" else "Изменил статус"
+        if item["status"] == "accepted":
+            action_label = "Принял заявку"
+        elif item["status"] == "in_transit":
+            action_label = "Заказал у поставщика"
+        else:
+            action_label = "Изменил статус"
         lines = [
             "🔵 Склад Мастер · статус заявки",
             f"Заявка #{item['id']}: {status_label}",
             f"Площадка: {item['site_name']}",
             "Позиции заявки:",
             *_request_item_lines(item),
+            *_eta_lines(item),
             f"{action_label}: {name} (id {uid})",
             f"Комментарий: {item['supply_comment']}" if item.get("supply_comment") else "",
         ]
@@ -721,19 +764,22 @@ async def handle_delivery_create(request: web.Request) -> web.Response:
             request_id=request_id, items=body.get("items") or [],
             supplier_id=int(body["supplier_id"]) if body.get("supplier_id") else None,
             actor_max_id=uid, actor_name=name, note=str(body.get("note") or ""),
+            expected_delivery_days=body.get("expected_delivery_days"),
             idempotency_key=_idempotency(request, body),
         )
     except (KeyError, TypeError, ValueError) as exc:
         return _json({"error": str(exc)}, 400)
     replay = item.pop("_idempotent_replay", False)
     if not replay:
+        refreshed = get_request(request_id)
         lines = [
-            "🚚 Склад Мастер · создана поставка",
+            "🚚 Склад Мастер · заказ у поставщика",
             f"Заявка #{request_id}",
             f"Площадка: {current['site_name']}",
             f"Поставщик: {item.get('supplier_name') or 'не указан'}",
             "Отправлено:",
             *_delivery_item_lines(item),
+            *_eta_lines(refreshed),
             f"Оформил: {name} (id {uid})",
             f"Комментарий: {item['note']}" if item.get("note") else "",
         ]
@@ -743,6 +789,41 @@ async def handle_delivery_create(request: web.Request) -> web.Response:
             exclude_user_id=uid,
         )
     return _json({"delivery": item}, 201)
+
+
+async def handle_request_eta(request: web.Request) -> web.Response:
+    auth = _auth(request, "request_manage")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, name, access = auth
+    try:
+        body = await _body(request)
+        request_id = int(request.match_info["request_id"])
+        current = get_request(request_id)
+        if not _site_allowed(access, current["site_id"]):
+            return _json({"error": "Нет доступа к площадке"}, 403)
+        item = update_request_eta(
+            request_id=request_id,
+            expected_delivery_days=int(body["expected_delivery_days"]),
+            actor_role=_role_for_transition(access, body.get("role")),
+            actor_max_id=uid,
+            actor_name=name,
+            idempotency_key=_idempotency(request, body),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _json({"error": str(exc)}, 400)
+    replay = item.pop("_idempotent_replay", False)
+    if not replay:
+        lines = [
+            "📅 Склад Мастер · срок поставки изменён",
+            f"Заявка #{item['id']} · {item.get('site_name') or ''}",
+            "Позиции заявки:",
+            *_request_item_lines(item),
+            *_eta_lines(item),
+            f"Изменил: {name} (id {uid})",
+        ]
+        await _notify(lines, role="master", exclude_user_id=uid)
+    return _json({"request": _decorate_request(item, access)})
 
 
 async def handle_delivery_receive(request: web.Request) -> web.Response:
@@ -767,11 +848,11 @@ async def handle_delivery_receive(request: web.Request) -> web.Response:
         request_doc = item["request"]
         complete = request_doc["status"] in {"received", "closed"}
         lines = [
-            "✅ Склад Мастер · поставка принята",
-            f"Заявка #{request_doc['id']} · поставка #{item['id']}",
+            "✅ Склад Мастер · поставка на базу",
+            f"Заявка #{request_doc['id']} · заказ #{item['id']}",
             f"Площадка: {request_doc['site_name']}",
             f"Поставщик: {item.get('supplier_name') or 'не указан'}",
-            "Принято сейчас:",
+            "Принято:",
             *_delivery_item_lines({"items": item.get("received_now") or []}),
             f"Исполнение заявки: {'полностью' if complete else 'частично'}",
         ]
@@ -789,12 +870,13 @@ async def handle_delivery_receive(request: web.Request) -> web.Response:
                 for position in remaining
             )
         lines.extend([
-            f"Принял: {name} (id {uid})",
+            f"Оформил: {name} (id {uid})",
             f"Комментарий: {body.get('note')}" if body.get("note") else "",
         ])
+        notify_role = "supply" if "master" in access.get("roles", []) else "master"
         await _notify(
             lines,
-            role="supply",
+            role=notify_role,
             exclude_user_id=uid,
         )
     return _json({"delivery": item})
@@ -915,6 +997,10 @@ def register_sklad_master_routes(app: web.Application) -> None:
     prefix = "/api/sklad-master"
     app.router.add_get(f"{prefix}/bootstrap", handle_bootstrap)
     app.router.add_post(f"{prefix}/materials", handle_materials)
+    app.router.add_get(
+        f"{prefix}/materials/{{material_id}}/open-request",
+        handle_material_open_request,
+    )
     app.router.add_post(f"{prefix}/suppliers", handle_suppliers)
     app.router.add_post(f"{prefix}/receipts", handle_receipt)
     app.router.add_get(f"{prefix}/receipts/{{receipt_id}}", handle_receipt_detail)
@@ -935,6 +1021,7 @@ def register_sklad_master_routes(app: web.Application) -> None:
     app.router.add_post(f"{prefix}/requests", handle_request_create)
     app.router.add_get(f"{prefix}/requests/{{request_id}}", handle_request_detail)
     app.router.add_patch(f"{prefix}/requests/{{request_id}}", handle_transition)
+    app.router.add_patch(f"{prefix}/requests/{{request_id}}/eta", handle_request_eta)
     app.router.add_post(f"{prefix}/requests/{{request_id}}/transition", handle_transition)
     app.router.add_post(f"{prefix}/requests/{{request_id}}/deliveries", handle_delivery_create)
     app.router.add_post(f"{prefix}/deliveries/{{delivery_id}}/receive", handle_delivery_receive)

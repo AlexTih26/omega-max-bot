@@ -12,12 +12,12 @@ import shutil
 import sqlite3
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sklad_master.db"
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 DEFAULT_SITES = ("Туран", "Грузовой", "Площадка 3", "Площадка 4")
 DEFAULT_SUPPLIERS = (
@@ -64,7 +64,8 @@ ROLE_ACTIONS = {
         "view", "receipt", "issue", "transfer", "request_create", "request_receive",
     },
     "supply": {
-        "view", "request_manage", "delivery_create", "receipt_price", "receipt_send_manager",
+        "view", "request_manage", "request_receive", "delivery_create",
+        "receipt_price", "receipt_send_manager",
     },
     "manager": {"view", "payment_view"},
     "admin": {
@@ -74,6 +75,88 @@ ROLE_ACTIONS = {
     },
 }
 PAYMENT_STATUSES = ("pending", "priced", "sent")
+ETA_DAYS_MIN, ETA_DAYS_MAX = 1, 90
+
+
+def _validate_eta_days(days: Any) -> int:
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        raise ValueError("Укажите срок поставки в днях") from None
+    if value < ETA_DAYS_MIN or value > ETA_DAYS_MAX:
+        raise ValueError(f"Срок поставки: от {ETA_DAYS_MIN} до {ETA_DAYS_MAX} дней")
+    return value
+
+
+def _eta_timestamp(days: int, *, from_ts: float | None = None) -> float:
+    base = datetime.fromtimestamp(from_ts or time.time())
+    target = (base + timedelta(days=int(days))).replace(
+        hour=23, minute=59, second=59, microsecond=0,
+    )
+    return target.timestamp()
+
+
+def _apply_request_eta(
+    conn: sqlite3.Connection,
+    request_id: int,
+    days: Any,
+    *,
+    actor_max_id: int | None,
+    actor_name: str,
+    now: float,
+) -> None:
+    parsed_days = _validate_eta_days(days)
+    eta_at = _eta_timestamp(parsed_days, from_ts=now)
+    conn.execute(
+        """UPDATE sm_requests SET expected_delivery_days=?, expected_delivery_at=?,
+           eta_set_at=?, eta_reminder_sent_at=NULL, ordered_by_max_id=?, ordered_by_name=?,
+           updated_at=? WHERE id=?""",
+        (parsed_days, eta_at, now, actor_max_id, actor_name.strip(), now, request_id),
+    )
+
+
+def _enrich_request_eta(conn: sqlite3.Connection, result: dict) -> dict:
+    days = result.get("expected_delivery_days")
+    at = result.get("expected_delivery_at")
+    if days is not None:
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            days = None
+    if at is not None:
+        try:
+            at = float(at)
+        except (TypeError, ValueError):
+            at = None
+    result["expected_delivery_days"] = days
+    result["expected_delivery_at"] = at
+    if days and at:
+        result["eta_date_label"] = datetime.fromtimestamp(at).strftime("%d.%m.%Y")
+        result["eta_label"] = f"через {days} дн."
+        remaining_sec = at - time.time()
+        if remaining_sec > 86400:
+            result["eta_days_remaining"] = max(1, int((remaining_sec + 86399) // 86400))
+        elif remaining_sec > 0:
+            result["eta_today"] = True
+            result["eta_days_remaining"] = 0
+        else:
+            result["eta_overdue"] = True
+            result["eta_days_overdue"] = max(1, int((-remaining_sec + 86399) // 86400))
+    row = conn.execute(
+        """SELECT d.supplier_id, s.name supplier_name, d.created_by_max_id, d.created_by_name
+           FROM sm_deliveries d
+           LEFT JOIN sm_suppliers s ON s.id=d.supplier_id
+           WHERE d.request_id=? ORDER BY d.created_at DESC, d.id DESC LIMIT 1""",
+        (int(result["id"]),),
+    ).fetchone()
+    if row:
+        if row["supplier_name"]:
+            result["supplier_name"] = row["supplier_name"]
+            result["supplier_id"] = row["supplier_id"]
+        if not result.get("ordered_by_name") and row["created_by_name"]:
+            result["ordered_by_name"] = row["created_by_name"]
+            result["ordered_by_max_id"] = row["created_by_max_id"]
+    return result
 
 
 def _db_path() -> Path:
@@ -185,6 +268,12 @@ def init_sklad_master_db() -> None:
         _add_column(conn, "sm_stock_ops", "receipt_id INTEGER")
         _add_column(conn, "sm_requests", "accepted_at REAL")
         _add_column(conn, "sm_requests", "closed_at REAL")
+        _add_column(conn, "sm_requests", "expected_delivery_days INTEGER")
+        _add_column(conn, "sm_requests", "expected_delivery_at REAL")
+        _add_column(conn, "sm_requests", "eta_set_at REAL")
+        _add_column(conn, "sm_requests", "eta_reminder_sent_at REAL")
+        _add_column(conn, "sm_requests", "ordered_by_max_id INTEGER")
+        _add_column(conn, "sm_requests", "ordered_by_name TEXT NOT NULL DEFAULT ''")
         conn.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_sm_stock_ops_site_material
@@ -323,7 +412,7 @@ def init_sklad_master_db() -> None:
         conn.execute("UPDATE sm_requests SET status='submitted' WHERE status='new'")
         conn.execute("UPDATE sm_requests SET status='received' WHERE status='delivered'")
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        if version < SCHEMA_VERSION:
+        if version < 10:
             _cleanup_merge_artifacts(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
@@ -1498,7 +1587,8 @@ def list_movements(*, site_id: int | None = None, material_id: int | None = None
 def create_request(*, site_id: int, material_id: int | None = None, quantity: Any = None,
                    items: list[dict] | None = None, urgency: str = "plan",
                    actor_max_id: int | None, actor_name: str, comment: str = "",
-                   status: str = "submitted", idempotency_key: str | None = None) -> dict:
+                   status: str = "submitted", idempotency_key: str | None = None,
+                   confirm_duplicate: bool = False) -> dict:
     normalized = items or [{"material_id": material_id, "quantity": quantity}]
     if not normalized:
         raise ValueError("Добавьте позиции")
@@ -1513,6 +1603,17 @@ def create_request(*, site_id: int, material_id: int | None = None, quantity: An
         _require(conn, "sm_sites", site_id, "Площадка")
         for mid, _ in parsed:
             _require(conn, "sm_materials", mid, "Материал")
+            existing = _find_open_request_conn(conn, int(site_id), mid)
+            if existing and not confirm_duplicate:
+                status_label = {
+                    "draft": "Черновик", "submitted": "Новая", "accepted": "Принята",
+                    "in_transit": "В пути", "partially_received": "Принята частично",
+                    "received": "Получена",
+                }.get(str(existing.get("status") or ""), str(existing.get("status") or "в работе"))
+                raise ValueError(
+                    f"По этому материалу уже есть заявка №{existing['id']} ({status_label}). "
+                    "Подтвердите создание повторной заявки."
+                )
         now = time.time()
         first_mid, first_qty = parsed[0]
         cur = conn.execute(
@@ -1572,12 +1673,86 @@ def _get_request(conn: sqlite3.Connection, request_id: int) -> dict:
         first = item_dicts[0]
         result.update(material_id=first["material_id"], material_name=first["material_name"],
                       material_unit=first["material_unit"], quantity=first["quantity"])
-    return result
+    return _enrich_request_eta(conn, result)
 
 
 def get_request(request_id: int) -> dict:
     with _connect() as conn:
         return _get_request(conn, int(request_id))
+
+
+_TIMELINE_STATUS = {
+    "submitted": "отправлена",
+    "accepted": "принята",
+    "in_transit": "в пути",
+    "partially_received": "частично на базе",
+    "received": "полностью на базе",
+    "closed": "закрыта",
+    "rejected": "отклонена",
+    "cancelled": "отменена",
+}
+
+
+def _timeline_entry(action: str, details: dict) -> tuple[str, str]:
+    if action == "request_create":
+        return "Заявка создана", ""
+    if action == "request_transition":
+        status = _TIMELINE_STATUS.get(str(details.get("to") or ""), str(details.get("to") or ""))
+        return f"Статус: {status}", ""
+    if action == "request_eta_update":
+        days = details.get("to_days")
+        return "Срок поставки изменён", f"→ {days} дн." if days else ""
+    if action == "delivery_create":
+        supplier = details.get("supplier_name") or ""
+        return "Заказ у поставщика", supplier
+    if action == "delivery_receive":
+        return "Поставка на базу", ""
+    return action, ""
+
+
+def get_request_timeline(request_id: int) -> list[dict]:
+    request_id = int(request_id)
+    with _connect() as conn:
+        delivery_ids = [
+            str(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM sm_deliveries WHERE request_id=? ORDER BY id",
+                (request_id,),
+            )
+        ]
+        clauses = ["(entity_type='request' AND entity_id=?)"]
+        params: list[Any] = [str(request_id)]
+        if delivery_ids:
+            placeholders = ",".join("?" * len(delivery_ids))
+            clauses.append(f"(entity_type='delivery' AND entity_id IN ({placeholders}))")
+            params.extend(delivery_ids)
+        rows = conn.execute(
+            f"""SELECT actor_max_id, actor_name, action, details_json, created_at
+                FROM sm_audit_log
+                WHERE {" OR ".join(clauses)}
+                ORDER BY created_at ASC, id ASC""",
+            params,
+        ).fetchall()
+        timeline: list[dict] = []
+        for row in rows:
+            try:
+                details = json.loads(row["details_json"] or "{}")
+            except json.JSONDecodeError:
+                details = {}
+            if not isinstance(details, dict):
+                details = {}
+            label, detail = _timeline_entry(str(row["action"]), details)
+            timeline.append(
+                {
+                    "created_at": float(row["created_at"]),
+                    "action": str(row["action"]),
+                    "label": label,
+                    "detail": detail,
+                    "actor_name": str(row["actor_name"] or ""),
+                    "actor_max_id": row["actor_max_id"],
+                }
+            )
+        return timeline
 
 
 def list_requests(*, site_id: int | None = None, status: str | None = None,
@@ -1597,9 +1772,31 @@ def list_requests(*, site_id: int | None = None, status: str | None = None,
         return [_get_request(conn, item_id) for item_id in ids]
 
 
+def find_open_request_for_material(*, site_id: int, material_id: int) -> dict | None:
+    with _connect() as conn:
+        return _find_open_request_conn(conn, int(site_id), int(material_id))
+
+
+def _find_open_request_conn(
+    conn: sqlite3.Connection, site_id: int, material_id: int
+) -> dict | None:
+    row = conn.execute(
+        """SELECT r.id, r.status, r.created_at, r.urgency, r.comment
+           FROM sm_requests r
+           JOIN sm_request_items i ON i.request_id=r.id
+           WHERE r.site_id=? AND i.material_id=?
+             AND r.status NOT IN ('closed','rejected','cancelled')
+           ORDER BY r.updated_at DESC, r.id DESC
+           LIMIT 1""",
+        (int(site_id), int(material_id)),
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def transition_request(*, request_id: int, new_status: str, actor_role: str,
                        actor_max_id: int | None, actor_name: str,
-                       comment: str = "", idempotency_key: str | None = None) -> dict:
+                       comment: str = "", expected_delivery_days: int | None = None,
+                       idempotency_key: str | None = None) -> dict:
     if new_status not in REQUEST_STATUSES or actor_role not in ROLES:
         raise ValueError("Недопустимый статус или роль")
     with _connect() as conn:
@@ -1611,6 +1808,13 @@ def transition_request(*, request_id: int, new_status: str, actor_role: str,
         if actor_role not in TRANSITIONS.get(current["status"], {}).get(new_status, set()):
             raise ValueError(f"Переход {current['status']} → {new_status} недоступен для роли {actor_role}")
         now = time.time()
+        if new_status == "in_transit":
+            if expected_delivery_days is None:
+                raise ValueError("Укажите срок поставки в днях")
+            _apply_request_eta(
+                conn, request_id, expected_delivery_days,
+                actor_max_id=actor_max_id, actor_name=actor_name, now=now,
+            )
         extra = ", accepted_at=?" if new_status == "accepted" else ", closed_at=?" if new_status == "closed" else ""
         params: list[Any] = [new_status, comment.strip(), now]
         if extra:
@@ -1628,11 +1832,69 @@ def transition_request(*, request_id: int, new_status: str, actor_role: str,
         return result
 
 
+def update_request_eta(*, request_id: int, expected_delivery_days: int,
+                       actor_role: str, actor_max_id: int | None, actor_name: str,
+                       idempotency_key: str | None = None) -> dict:
+    if actor_role not in {"supply", "admin"}:
+        raise ValueError("Недостаточно прав для изменения срока")
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        cached = _cached(conn, idempotency_key, "request_eta_update")
+        if cached:
+            return cached
+        current = _get_request(conn, request_id)
+        if current["status"] not in {"in_transit", "partially_received"}:
+            raise ValueError("Срок можно менять только для заявок в пути")
+        now = time.time()
+        old_days = current.get("expected_delivery_days")
+        _apply_request_eta(
+            conn, request_id, expected_delivery_days,
+            actor_max_id=actor_max_id, actor_name=actor_name, now=now,
+        )
+        result = _get_request(conn, request_id)
+        _audit(conn, actor_max_id, actor_name, "request_eta_update", "request", request_id,
+               {"from_days": old_days, "to_days": result.get("expected_delivery_days")})
+        _cache(conn, idempotency_key, "request_eta_update", result)
+        conn.commit()
+        return result
+
+
+def list_eta_reminders_due() -> list[dict]:
+    now = time.time()
+    with _connect() as conn:
+        ids = [
+            int(row["id"])
+            for row in conn.execute(
+                """SELECT id FROM sm_requests
+                   WHERE status IN ('in_transit','partially_received')
+                     AND expected_delivery_at IS NOT NULL
+                     AND expected_delivery_at > ?
+                     AND expected_delivery_at <= ?
+                     AND eta_reminder_sent_at IS NULL""",
+                (now, now + 86400),
+            )
+        ]
+        return [_get_request(conn, request_id) for request_id in ids]
+
+
+def mark_eta_reminder_sent(request_id: int) -> None:
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE sm_requests SET eta_reminder_sent_at=? WHERE id=?",
+            (now, int(request_id)),
+        )
+        conn.commit()
+
+
 def create_delivery(*, request_id: int, items: list[dict], supplier_id: int | None,
                     actor_max_id: int | None, actor_name: str, note: str = "",
+                    expected_delivery_days: int | None = None,
                     idempotency_key: str | None = None) -> dict:
     if not items:
-        raise ValueError("Добавьте позиции поставки")
+        raise ValueError("Добавьте позиции заказа")
+    if expected_delivery_days is None:
+        raise ValueError("Укажите срок поставки в днях")
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cached = _cached(conn, idempotency_key, "delivery_create")
@@ -1640,7 +1902,7 @@ def create_delivery(*, request_id: int, items: list[dict], supplier_id: int | No
             return cached
         request_doc = _get_request(conn, request_id)
         if request_doc["status"] not in {"accepted", "in_transit", "partially_received"}:
-            raise ValueError("Поставка недоступна в текущем статусе заявки")
+            raise ValueError("Заказ у поставщика недоступен в текущем статусе заявки")
         if supplier_id is not None:
             _require(conn, "sm_suppliers", supplier_id, "Поставщик")
         request_items = {x["id"]: x for x in request_doc["items"]}
@@ -1667,6 +1929,10 @@ def create_delivery(*, request_id: int, items: list[dict], supplier_id: int | No
             "INSERT INTO sm_delivery_items(delivery_id,request_item_id,quantity) VALUES(?,?,?)",
             ((delivery_id, item_id, qty) for item_id, qty in parsed),
         )
+        _apply_request_eta(
+            conn, request_id, expected_delivery_days,
+            actor_max_id=actor_max_id, actor_name=actor_name, now=now,
+        )
         conn.execute("UPDATE sm_requests SET status='in_transit',updated_at=? WHERE id=?",
                      (now, request_id))
         result = _get_delivery(conn, delivery_id)
@@ -1685,7 +1951,7 @@ def _get_delivery(conn: sqlite3.Connection, delivery_id: int) -> dict:
         (delivery_id,),
     ).fetchone()
     if not row:
-        raise ValueError("Поставка не найдена")
+        raise ValueError("Заказ не найден")
     result = dict(row)
     result["items"] = [dict(r) for r in conn.execute(
         """SELECT di.*,ri.material_id,m.name material_name,m.unit material_unit
@@ -1727,7 +1993,7 @@ def receive_delivery(*, delivery_id: int, items: list[dict] | None,
         for item_id, qty in requested.items():
             source = available[item_id]
             if float(source["received_quantity"]) + qty > float(source["quantity"]) + 1e-9:
-                raise ValueError("Принятое количество превышает поставку")
+                raise ValueError("Принятое количество превышает заказ")
             parsed.append((source, qty))
         request_doc = _get_request(conn, delivery["request_id"])
         received_now: list[dict] = []

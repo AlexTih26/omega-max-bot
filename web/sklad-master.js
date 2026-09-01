@@ -25,7 +25,15 @@
     roleDefaultsApplied: false,
     historyMaterialId: "",
     historyMaterialName: "",
-    editingReceiptId: ""
+    editingReceiptId: "",
+    materialCardId: "",
+    materialCardShowRequest: false,
+    materialCardUrgency: "plan",
+    materialCardMovements: [],
+    materialCardOpenRequest: null,
+    historyReturnTo: "",
+    historyReturnMaterialId: "",
+    historyReturnMaterialName: ""
   };
 
   function $(id) { return document.getElementById(id); }
@@ -87,6 +95,7 @@
   }
 
   function headers() {
+    syncInitData();
     var result = { "Content-Type": "application/json" };
     if (initData) result["X-Max-Init-Data"] = initData;
     return result;
@@ -127,7 +136,11 @@
   }
 
   function fail(error, fallback) {
-    toast((error && error.message) || fallback || "Не удалось выполнить действие");
+    var message = (error && error.message) || fallback || "Не удалось выполнить действие";
+    if (message === "open in MAX mini-app") {
+      message = "Сессия MAX истекла — закройте и откройте mini-app заново";
+    }
+    toast(message);
   }
 
   function allowed(action) {
@@ -147,6 +160,41 @@
     return ((data && data.sites) || []).filter(function (item) {
       return String(item.id) === String(id);
     })[0] || null;
+  }
+
+  function stockItemById(id) {
+    return ((data && data.stock) || []).filter(function (item) {
+      return String(item.id) === String(id);
+    })[0] || null;
+  }
+
+  function stockStatusLabel(status) {
+    return { critical: "Критично", warning: "Внимание", ok: "Норма" }[status] || status || "—";
+  }
+
+  var requestStatusLabels = {
+    draft: "Черновик",
+    submitted: "Новая",
+    accepted: "Принята",
+    in_transit: "В пути",
+    partially_received: "Принята частично",
+    received: "Получена",
+    closed: "Закрыта",
+    rejected: "Отклонена",
+    cancelled: "Отменена"
+  };
+
+  function defaultRequestQty(item) {
+    var balance = Number(item.balance || 0);
+    var minLevel = Number(item.min_level || 0);
+    if (balance < minLevel) {
+      return Math.max(0.001, minLevel - balance);
+    }
+    return 1;
+  }
+
+  function urgencyLabel(value) {
+    return value === "urgent" ? "срочно" : "планово";
   }
 
   function optionList(items, selected, placeholder, formatter) {
@@ -416,22 +464,236 @@
     $("movementsBox").hidden = state.stockTab !== "movements";
     $("transferForm").hidden = state.stockTab !== "transfer";
     $("stockSettingsBox").hidden = state.stockTab !== "settings";
-    Array.prototype.forEach.call(document.querySelectorAll("[data-stock-filter]"), function (button) {
-      button.classList.toggle("is-active", button.dataset.stockFilter === state.stockFilter);
-    });
-    var items = data.stock || [];
-    if (state.stockFilter !== "all") {
-      items = items.filter(function (item) { return item.status === state.stockFilter; });
+    var inMaterialCard = Boolean(state.materialCardId);
+    if ($("stockListBox")) $("stockListBox").hidden = inMaterialCard;
+    if ($("materialCardBox")) $("materialCardBox").hidden = !inMaterialCard;
+    if (inMaterialCard) {
+      renderMaterialCard();
+    } else {
+      Array.prototype.forEach.call(document.querySelectorAll("[data-stock-filter]"), function (button) {
+        button.classList.toggle("is-active", button.dataset.stockFilter === state.stockFilter);
+      });
+      var items = data.stock || [];
+      if (state.stockFilter !== "all") {
+        items = items.filter(function (item) { return item.status === state.stockFilter; });
+      }
+      var canOpenCard = allowed("request_create");
+      $("stockList").innerHTML = items.map(function (item) {
+        var tag = canOpenCard ? "button" : "article";
+        var attrs = canOpenCard
+          ? ' type="button" class="sm-row sm-row--' + esc(item.status || "ok") +
+            ' sm-row-btn sm-stock-row-btn" data-open-material="' + esc(item.id) +
+            '" data-open-material-name="' + esc(item.name) + '"'
+          : ' class="sm-row sm-row--' + esc(item.status || "ok") + '"';
+        return "<" + tag + attrs + "><div><b>" + esc(item.name) + '</b><span>Остаток: ' +
+          esc(formatQty(item.balance)) + " " + esc(item.unit || "") +
+          '</span></div><div class="sm-align-right"><span>Минимум</span><b>' +
+          esc(formatQty(item.min_level)) + "</b></div></" + tag + ">";
+      }).join("") || '<p class="sm-empty">Нет позиций в этой категории.</p>';
     }
-    $("stockList").innerHTML = items.map(function (item) {
-      return '<article class="sm-row sm-row--' + esc(item.status || "ok") + '">' +
-        '<div><b>' + esc(item.name) + '</b><span>Остаток: ' + esc(formatQty(item.balance)) +
-        " " + esc(item.unit || "") + '</span></div><div class="sm-align-right"><span>Минимум</span><b>' +
-        esc(formatQty(item.min_level)) + "</b></div></article>";
-    }).join("") || '<p class="sm-empty">Нет позиций в этой категории.</p>';
     renderMinimums();
     renderMaterialAdmin();
     renderMovements();
+  }
+
+  function renderMaterialCardBriefHistory() {
+    var box = $("materialCardHistory");
+    if (!box) return;
+    var items = state.materialCardMovements || [];
+    box.innerHTML = items.slice(0, 5).map(function (item) {
+      var delta = Number(item.quantity_delta || 0);
+      return '<article class="sm-history-card sm-history-card--compact"><div class="sm-heading-row"><div><b>' +
+        esc(movementLabels[item.op_type] || "Операция") + '</b><span>' +
+        esc(dateLabel(item.created_at)) + (item.supplier_name ? " · " + esc(item.supplier_name) : "") +
+        '</span></div><b class="' + (delta >= 0 ? "sm-positive" : "sm-negative") + '">' +
+        (delta > 0 ? "+" : "") + esc(formatQty(delta)) + " " + esc(item.material_unit || "") +
+        "</b></div></article>";
+    }).join("") || '<p class="sm-empty sm-empty--compact">Движений пока нет.</p>';
+  }
+
+  function renderMaterialCard() {
+    var item = stockItemById(state.materialCardId);
+    if (!item || !$("materialCardBox")) return;
+    var site = siteById(state.siteId) || {};
+    $("materialCardTitle").textContent = item.name || "Материал";
+    $("materialCardSite").textContent = "Площадка: " + (site.name || "—");
+    $("materialCardSite").hidden = false;
+    var status = item.status || "ok";
+    $("materialCardSummary").innerHTML =
+      '<div class="sm-material-card__stats sm-row--' + esc(status) + '">' +
+      '<span class="sm-material-card__status is-' + esc(status) + '">' +
+      esc(stockStatusLabel(status)) + "</span>" +
+      '<dl><div><dt>Остаток</dt><dd>' + esc(formatQty(item.balance)) + " " +
+      esc(item.unit || "") + '</dd></div><div><dt>Минимум</dt><dd>' +
+      esc(formatQty(item.min_level)) + " " + esc(item.unit || "") +
+      "</dd></div></dl></div>" +
+      (state.materialCardOpenRequest
+        ? '<div class="sm-material-card__open-request sm-section-gap"><p class="sm-note sm-note--tight"><b>Заявка уже есть</b><br>№' +
+          esc(state.materialCardOpenRequest.id) + " · " +
+          esc(state.materialCardOpenRequest.status_label ||
+            requestStatusLabels[state.materialCardOpenRequest.status] ||
+            state.materialCardOpenRequest.status || "в работе") +
+          "<br>Снабжение уже получило запрос. Повторную можно создать только при необходимости.</p></div>"
+        : "");
+    renderMaterialCardBriefHistory();
+    var canRequest = allowed("request_create");
+    var hasDuplicate = Boolean(state.materialCardOpenRequest);
+    $("materialCardRequestBtn").hidden = !canRequest || state.materialCardShowRequest;
+    $("materialCardRequestBox").hidden = !canRequest || !state.materialCardShowRequest;
+    if ($("materialCardRequestBtn")) {
+      $("materialCardRequestBtn").textContent = hasDuplicate
+        ? "Создать ещё одну заявку"
+        : "Сделать заявку";
+      $("materialCardRequestBtn").classList.toggle("sm-btn--ghost", hasDuplicate);
+      $("materialCardRequestBtn").classList.toggle("sm-btn--primary", !hasDuplicate);
+    }
+    if (canRequest && state.materialCardShowRequest) {
+      Array.prototype.forEach.call(document.querySelectorAll("[data-material-urgency]"), function (button) {
+        button.classList.toggle("is-active", button.dataset.materialUrgency === state.materialCardUrgency);
+      });
+    }
+  }
+
+  function loadMaterialCardData() {
+    if (!state.materialCardId || !state.siteId) return Promise.resolve();
+    var materialId = state.materialCardId;
+    return Promise.all([
+      api("/movements?site_id=" + encodeURIComponent(state.siteId) +
+        "&material_id=" + encodeURIComponent(materialId) + "&limit=5"),
+      api("/materials/" + encodeURIComponent(materialId) +
+        "/open-request?site_id=" + encodeURIComponent(state.siteId))
+    ]).then(function (results) {
+      state.materialCardMovements = (results[0].items || []);
+      state.materialCardOpenRequest = results[1].open_request || null;
+      renderMaterialCard();
+    });
+  }
+
+  function openMaterialCard(materialId, materialName) {
+    state.materialCardId = String(materialId);
+    state.materialCardShowRequest = false;
+    state.materialCardMovements = [];
+    state.materialCardOpenRequest = null;
+    if (materialName) {
+      state.historyMaterialName = materialName;
+    }
+    renderStock();
+    loadMaterialCardData().catch(fail);
+  }
+
+  function closeMaterialCard() {
+    state.materialCardId = "";
+    state.materialCardShowRequest = false;
+    state.materialCardMovements = [];
+    state.materialCardOpenRequest = null;
+    renderStock();
+  }
+
+  function openMaterialCardRequestForm() {
+    var item = stockItemById(state.materialCardId);
+    if (!item) return;
+    if (state.materialCardOpenRequest) {
+      var open = state.materialCardOpenRequest;
+      var label = open.status_label || requestStatusLabels[open.status] || "в работе";
+      if (!window.confirm(
+        "По этому материалу уже есть заявка №" + open.id + " (" + label + ").\n\n" +
+        "Снабжение уже получило запрос.\nСоздать ещё одну заявку?"
+      )) {
+        return;
+      }
+    }
+    state.materialCardShowRequest = true;
+    state.materialCardUrgency = (item.status === "critical") ? "urgent" : "plan";
+    var qty = defaultRequestQty(item);
+    $("materialCardQty").value = formatQty(qty);
+    $("materialCardQtyHint").textContent = Number(item.balance) < Number(item.min_level)
+      ? "До минимума: " + formatQty(qty) + " " + (item.unit || "")
+      : "Можно указать нужное количество";
+    $("materialCardComment").value = "";
+    renderMaterialCard();
+  }
+
+  function cancelMaterialCardRequestForm() {
+    state.materialCardShowRequest = false;
+    renderMaterialCard();
+  }
+
+  function openMaterialCardFullHistory() {
+    var materialId = state.materialCardId;
+    var materialName = (stockItemById(materialId) || {}).name || state.historyMaterialName || "";
+    state.historyReturnTo = "materialCard";
+    state.historyReturnMaterialId = String(materialId);
+    state.historyReturnMaterialName = materialName;
+    state.materialCardId = "";
+    state.materialCardShowRequest = false;
+    state.stockTab = "movements";
+    renderStock();
+    openMaterialHistory(materialId, materialName);
+  }
+
+  function buildMaterialRequestConfirmText(item, quantity, urgency, comment, openRequest) {
+    var site = siteById(state.siteId) || {};
+    var lines = [
+      "Отправить заявку в снабжение?",
+      "",
+      "Площадка: " + (site.name || "—"),
+      "Материал: " + (item.name || "Материал"),
+      "Количество: " + formatQty(quantity) + " " + (item.unit || ""),
+      "Срочность: " + urgencyLabel(urgency)
+    ];
+    if (comment) lines.push("Комментарий: " + comment);
+    if (openRequest) {
+      lines.push("");
+      lines.push(
+        "По этому материалу уже есть заявка №" + openRequest.id + " (" +
+        (openRequest.status_label || requestStatusLabels[openRequest.status] || "в работе") +
+        "). Всё равно создать новую?"
+      );
+    }
+    return lines.join("\n");
+  }
+
+  function saveMaterialCardRequest(form) {
+    var item = stockItemById(state.materialCardId);
+    if (!item) return toast("Материал не найден");
+    var quantity = positive($("materialCardQty").value);
+    if (!quantity) return toast("Количество должно быть больше нуля");
+    var urgency = state.materialCardUrgency || "plan";
+    var comment = $("materialCardComment").value.trim();
+    var button = $("materialCardSubmitBtn");
+    setBusy(button, true);
+    var submit = function (openRequest) {
+      var confirmText = buildMaterialRequestConfirmText(item, quantity, urgency, comment, openRequest);
+      if (!window.confirm(confirmText)) {
+        setBusy(button, false);
+        return;
+      }
+      post("/requests", {
+        site_id: Number(state.siteId),
+        items: [{ material_id: Number(state.materialCardId), quantity: quantity }],
+        urgency: urgency,
+        comment: comment,
+        confirm_duplicate: Boolean(openRequest)
+      }).then(function (body) {
+        var requestId = (body.request || {}).id;
+        closeMaterialCard();
+        return reload(requestId ? ("Заявка №" + requestId + " отправлена в снабжение") : "Заявка отправлена в снабжение");
+      }).catch(fail).then(function () { setBusy(button, false); });
+    };
+    if (state.materialCardOpenRequest) {
+      submit(state.materialCardOpenRequest);
+      return;
+    }
+    api("/materials/" + encodeURIComponent(state.materialCardId) +
+      "/open-request?site_id=" + encodeURIComponent(state.siteId))
+      .then(function (body) {
+        state.materialCardOpenRequest = body.open_request || null;
+        submit(state.materialCardOpenRequest);
+      })
+      .catch(function (error) {
+        fail(error);
+        setBusy(button, false);
+      });
   }
 
   function renderMaterialAdmin() {
@@ -583,13 +845,73 @@
   var actionLabels = {
     submit: "Отправить", cancel: "Отменить", accept: "Принять",
     reject: "Отклонить", mark_in_transit: "Отметить «В пути»",
-    create_delivery: "Создать поставку", receive_delivery: "Принять поставку", close: "Закрыть"
+    create_delivery: "Заказал у поставщика", receive_delivery: "Поставка", close: "Закрыть"
   };
   var transitionStatuses = {
     submit: "submitted", cancel: "cancelled", accept: "accepted",
     reject: "rejected", mark_in_transit: "in_transit", close: "closed"
   };
 
+  function etaPickerHtml(selectedDays) {
+    var preset = [1, 2, 3, 5, 7];
+    var selected = Number(selectedDays || 0);
+    var chips = preset.map(function (days) {
+      return '<button type="button" class="sm-chip' + (selected === days ? " is-active" : "") +
+        '" data-eta-days="' + days + '">' + days + " дн.</button>";
+    }).join("");
+    var customActive = selected && preset.indexOf(selected) < 0;
+    return '<div class="sm-eta-picker"><p class="sm-note">Срок до приёма на склад</p><div class="sm-chip-grid">' +
+      chips + '<button type="button" class="sm-chip' + (customActive ? " is-active" : "") +
+      '" data-eta-custom>Другое</button></div>' +
+      '<input class="sm-input sm-section-gap sm-eta-custom' + (customActive ? "" : " hidden") +
+      '" type="number" min="1" max="90" placeholder="Количество дней" data-eta-days-input value="' +
+      (customActive ? esc(selected) : "") + '"></div>';
+  }
+
+  function readEtaDays(form) {
+    var picker = form.querySelector(".sm-eta-picker");
+    if (!picker) return null;
+    var active = picker.querySelector(".sm-chip.is-active[data-eta-days]");
+    if (active) return Number(active.dataset.etaDays);
+    var custom = picker.querySelector("[data-eta-days-input]");
+    if (custom && !custom.hidden) return positive(custom.value);
+    return null;
+  }
+
+  function activateEtaChip(chip) {
+    var picker = chip.closest(".sm-eta-picker");
+    if (!picker) return;
+    Array.prototype.forEach.call(picker.querySelectorAll(".sm-chip"), function (button) {
+      button.classList.remove("is-active");
+    });
+    chip.classList.add("is-active");
+    var custom = picker.querySelector("[data-eta-days-input]");
+    if (!custom) return;
+    if (chip.dataset.etaCustom != null) {
+      custom.hidden = false;
+      custom.focus();
+    } else {
+      custom.hidden = true;
+      custom.value = "";
+    }
+  }
+
+  function requestStatusHtml(request) {
+    var label = esc(request.status_label || "Статус обновляется");
+    if (request.status === "in_transit" || request.status === "partially_received") {
+      return '<button type="button" class="sm-status sm-status--tap" data-request-eta="' +
+        esc(request.id) + '" title="Подробнее о поставке">' + label + "</button>";
+    }
+    return '<span class="sm-status">' + label + "</span>";
+  }
+
+  function requestEtaLineHtml(request) {
+    if (!request.eta_date_label) return "";
+    var text = "Ожидаем ~" + request.eta_date_label;
+    if (request.eta_label) text += " · " + request.eta_label;
+    if (request.eta_overdue) text += " · просрочено";
+    return '<p class="sm-note sm-eta-line">' + esc(text) + "</p>";
+  }
   function requestItemsHtml(request) {
     return (request.items || []).map(function (item) {
       var progress = Number(item.received || 0) ? " · получено " + formatQty(item.received) : "";
@@ -600,11 +922,13 @@
   }
 
   function requestActionsHtml(request) {
-    return (request.allowed_actions || []).map(function (action) {
-      if (!actionLabels[action]) return "";
+    var actions = (request.allowed_actions || []).map(function (action) {
+      if (!actionLabels[action] || action === "update_eta") return "";
       return '<button type="button" class="sm-mini-action" data-request-action="' + esc(action) +
         '" data-request-id="' + esc(request.id) + '">' + esc(actionLabels[action]) + "</button>";
     }).join("");
+    return actions + '<button type="button" class="sm-mini-action" data-request-history="' +
+      esc(request.id) + '">История</button>';
   }
 
   function requestExtraHtml(request) {
@@ -612,7 +936,59 @@
     if (!detail) return "";
     if (detail.mode === "delivery") return deliveryFormHtml(detail.request);
     if (detail.mode === "receive") return receiveFormHtml(detail.request);
+    if (detail.mode === "transit") return transitFormHtml(detail.request);
+    if (detail.mode === "eta_info") return etaInfoHtml(detail.request);
+    if (detail.mode === "eta_edit") return etaEditFormHtml(detail.request);
+    if (detail.mode === "history") return requestTimelineHtml(detail.request);
     return "";
+  }
+
+  function requestTimelineHtml(request) {
+    var items = request.timeline || [];
+    if (!items.length) {
+      return '<div class="sm-subpanel sm-timeline"><h3>История</h3><p class="sm-empty">Событий пока нет.</p></div>';
+    }
+    return '<div class="sm-subpanel sm-timeline"><h3>История</h3><ol class="sm-timeline-list">' +
+      items.map(function (item) {
+        var actor = item.actor_name
+          ? '<span class="sm-note"> · ' + esc(item.actor_name) +
+            (item.actor_max_id ? " (id " + esc(item.actor_max_id) + ")" : "") + "</span>"
+          : "";
+        var detail = item.detail ? '<span class="sm-note"> · ' + esc(item.detail) + "</span>" : "";
+        return '<li><span class="sm-timeline-when">' + esc(dateLabel(item.created_at)) +
+          '</span><b>' + esc(item.label || item.action || "Событие") + "</b>" + actor + detail + "</li>";
+      }).join("") + "</ol></div>";
+  }
+
+  function transitFormHtml(request) {
+    return '<form class="sm-subpanel sm-inline-panel" data-transit-form="' + esc(request.id) + '">' +
+      '<h3>Отметить «В пути»</h3>' + etaPickerHtml() +
+      '<button class="sm-btn sm-btn--primary sm-submit sm-section-gap" type="submit">Подтвердить</button></form>';
+  }
+
+  function etaInfoHtml(request) {
+    var materials = (request.items || []).map(function (item) {
+      return (item.material_name || "Материал") + " — " + formatQty(item.quantity || item.ordered) +
+        " " + (item.material_unit || "");
+    }).join("; ") || request.material_name || "—";
+    var etaText = request.eta_date_label
+      ? ("~" + request.eta_date_label + (request.eta_label ? " · " + request.eta_label : ""))
+      : "не указан";
+    var edit = (request.allowed_actions || []).indexOf("update_eta") >= 0
+      ? '<button type="button" class="sm-mini-action" data-request-eta-edit="' + esc(request.id) +
+        '">Изменить срок</button>' : "";
+    return '<div class="sm-subpanel sm-eta-panel"><h3>В пути</h3><dl>' +
+      "<dt>Материал</dt><dd>" + esc(materials) + "</dd>" +
+      "<dt>Площадка</dt><dd>" + esc(request.site_name || "—") + "</dd>" +
+      "<dt>Срок</dt><dd>" + esc(etaText) + "</dd>" +
+      "<dt>Поставщик</dt><dd>" + esc(request.supplier_name || "—") + "</dd>" +
+      "<dt>Заказал</dt><dd>" + esc(request.ordered_by_name || "—") + "</dd></dl>" + edit + "</div>";
+  }
+
+  function etaEditFormHtml(request) {
+    return '<form class="sm-subpanel sm-inline-panel" data-eta-form="' + esc(request.id) + '">' +
+      '<h3>Изменить срок</h3>' + etaPickerHtml(request.expected_delivery_days) +
+      '<button class="sm-btn sm-btn--primary sm-submit sm-section-gap" type="submit">Сохранить</button></form>';
   }
 
   function deliveryFormHtml(request) {
@@ -627,15 +1003,18 @@
         '" data-delivery-request-item="' + esc(item.id) + '"></label>';
     }).join("");
     return '<form class="sm-subpanel sm-inline-panel" data-delivery-form="' + esc(request.id) + '">' +
-      '<h3>Новая поставка</h3><select class="sm-input sm-select" name="supplier_id">' +
-      supplierOptions + '</select><div class="sm-section-gap">' + rows +
-      '</div><input class="sm-input sm-section-gap" name="note" placeholder="Примечание">' +
-      '<button class="sm-btn sm-btn--primary sm-submit" type="submit">Создать поставку</button></form>';
+      '<h3>Заказ у поставщика</h3><select class="sm-input sm-select" name="supplier_id">' +
+      supplierOptions + '</select><div class="sm-section-gap">' + rows + '</div>' +
+      etaPickerHtml() +
+      '<input class="sm-input sm-section-gap" name="note" placeholder="Примечание">' +
+      '<button class="sm-btn sm-btn--primary sm-submit" type="submit">Заказал у поставщика</button></form>';
   }
 
   function receiveFormHtml(request) {
     var deliveries = request.deliveries || [];
-    if (!deliveries.length) return '<p class="sm-empty">В заявке пока нет поставок.</p>';
+    if (!deliveries.length) {
+      return '<p class="sm-empty">Сначала оформите заказ у поставщика.</p>';
+    }
     return deliveries.map(function (delivery) {
       var detailItems = delivery.items || [];
       var rows = detailItems.map(function (item) {
@@ -650,11 +1029,11 @@
       var fallback = detailItems.length ? "" :
         '<p class="sm-note">Детализация недоступна — будет принят весь оставшийся объём.</p>';
       return '<form class="sm-subpanel sm-inline-panel" data-receive-form="' + esc(delivery.id) + '">' +
-        '<h3>Поставка №' + esc(delivery.id) + '</h3><p class="sm-note">Получено ' +
+        '<h3>Поставка · заказ №' + esc(delivery.id) + '</h3><p class="sm-note">На базе ' +
         esc(formatQty(delivery.received_quantity)) + " из " + esc(formatQty(delivery.quantity)) +
         "</p>" + fallback + rows +
-        '<input class="sm-input sm-section-gap" name="note" placeholder="Комментарий при приёмке">' +
-        '<button class="sm-btn sm-btn--primary sm-submit" type="submit">Принять выбранное</button></form>';
+        '<input class="sm-input sm-section-gap" name="note" placeholder="Комментарий к поставке">' +
+        '<button class="sm-btn sm-btn--primary sm-submit" type="submit">Поставка</button></form>';
     }).join("");
   }
 
@@ -664,8 +1043,9 @@
     $("requestsList").innerHTML = requests.map(function (request) {
       return '<article class="sm-request-card"><div class="sm-heading-row"><div><b>Заявка №' +
         esc(request.id) + '</b><span>' + esc(request.site_name || (siteById(request.site_id) || {}).name || "") +
-        '</span></div><span class="sm-status">' + esc(request.status_label || "Статус обновляется") +
-        '</span></div><ul class="sm-request-items">' + requestItemsHtml(request) +
+        '</span></div>' + requestStatusHtml(request) +
+        '</div>' + requestEtaLineHtml(request) +
+        '<ul class="sm-request-items">' + requestItemsHtml(request) +
         '</ul><div class="sm-request-meta">' +
         (request.urgency === "urgent" ? '<span class="sm-urgent">Срочно</span>' : "<span>Планово</span>") +
         (request.comment ? "<span>" + esc(request.comment) + "</span>" : "") +
@@ -686,8 +1066,9 @@
     reversal: "Сторно",
     request_create: "Заявка",
     request_transition: "Статус заявки",
-    delivery_create: "Поставка",
-    delivery_receive: "Приёмка поставки",
+    request_eta_update: "Срок поставки",
+    delivery_create: "Заказ у поставщика",
+    delivery_receive: "Поставка на базу",
     role_update: "Роль",
     site_material_minimum: "Минимум",
     material_update: "Материал"
@@ -969,6 +1350,7 @@
 
   function loadMovements() {
     if (!state.siteId) return Promise.resolve();
+    renderMovements();
     var path = "/movements?site_id=" + encodeURIComponent(state.siteId) + "&limit=100";
     if (state.historyMaterialId) {
       path += "&material_id=" + encodeURIComponent(state.historyMaterialId) + "&detailed=1";
@@ -982,12 +1364,27 @@
   function openMaterialHistory(materialId, materialName) {
     state.historyMaterialId = String(materialId);
     state.historyMaterialName = materialName || "";
-    loadMovements().catch(fail);
+    renderMovements();
+    return loadMovements().catch(fail);
   }
 
   function closeMaterialHistory() {
+    if (state.historyReturnTo === "materialCard" && state.historyReturnMaterialId) {
+      var materialId = state.historyReturnMaterialId;
+      var materialName = state.historyReturnMaterialName || "";
+      state.historyReturnTo = "";
+      state.historyReturnMaterialId = "";
+      state.historyReturnMaterialName = "";
+      state.historyMaterialId = "";
+      state.historyMaterialName = "";
+      state.stockTab = "materials";
+      renderStock();
+      openMaterialCard(materialId, materialName);
+      return;
+    }
     state.historyMaterialId = "";
     state.historyMaterialName = "";
+    renderMovements();
     loadMovements().catch(fail);
   }
 
@@ -998,17 +1395,38 @@
     }).catch(fail);
   }
 
-  function transitionRequest(id, action, button) {
+  function transitionRequest(id, action, button, extra) {
     var status = transitionStatuses[action];
     if (!status) return;
     var comment = "";
     if (action === "reject") comment = window.prompt("Причина отклонения:", "") || "";
+    var payload = Object.assign({ status: status, comment: comment }, extra || {});
     setBusy(button, true);
-    post("/requests/" + encodeURIComponent(id), {
-      status: status, comment: comment
-    }, "PATCH").then(function () {
+    post("/requests/" + encodeURIComponent(id), payload, "PATCH").then(function () {
       delete requestDetails[String(id)];
       return reload("Статус заявки обновлён");
+    }).catch(fail).then(function () { setBusy(button, false); });
+  }
+
+  function submitTransit(form) {
+    var days = readEtaDays(form);
+    if (!days) return toast("Выберите срок поставки");
+    var id = form.dataset.transitForm;
+    var button = form.querySelector('[type="submit"]');
+    transitionRequest(id, "mark_in_transit", button, { expected_delivery_days: days });
+  }
+
+  function updateRequestEta(form) {
+    var days = readEtaDays(form);
+    if (!days) return toast("Выберите срок поставки");
+    var id = form.dataset.etaForm;
+    var button = form.querySelector('[type="submit"]');
+    setBusy(button, true);
+    post("/requests/" + encodeURIComponent(id) + "/eta", {
+      expected_delivery_days: days
+    }, "PATCH").then(function () {
+      delete requestDetails[String(id)];
+      return reload("Срок поставки обновлён");
     }).catch(fail).then(function () { setBusy(button, false); });
   }
 
@@ -1021,16 +1439,19 @@
     ).filter(function (item) { return item.quantity; });
     if (!form.elements.supplier_id.value) return toast("Выберите поставщика");
     if (!items.length) return toast("Укажите положительное количество");
+    var days = readEtaDays(form);
+    if (!days) return toast("Выберите срок поставки");
     var id = form.dataset.deliveryForm;
     var button = form.querySelector('[type="submit"]');
     setBusy(button, true);
     post("/requests/" + encodeURIComponent(id) + "/deliveries", {
       supplier_id: Number(form.elements.supplier_id.value),
       items: items,
-      note: form.elements.note.value.trim()
+      note: form.elements.note.value.trim(),
+      expected_delivery_days: days
     }).then(function () {
       delete requestDetails[String(id)];
-      return reload("Поставка создана");
+      return reload("Заказ у поставщика оформлен");
     }).catch(fail).then(function () { setBusy(button, false); });
   }
 
@@ -1047,7 +1468,7 @@
       note: form.elements.note.value.trim()
     }).then(function () {
       requestDetails = {};
-      return reload("Поставка принята");
+      return reload("Поставка оформлена");
     }).catch(fail).then(function () { setBusy(button, false); });
   }
 
@@ -1184,6 +1605,11 @@
         state.siteId = target.dataset.siteId;
         state.historyMaterialId = "";
         state.historyMaterialName = "";
+        state.materialCardId = "";
+        state.materialCardShowRequest = false;
+        state.historyReturnTo = "";
+        state.historyReturnMaterialId = "";
+        state.historyReturnMaterialName = "";
         movements = [];
         requestDetails = {};
         loadBootstrap().catch(fail);
@@ -1193,6 +1619,7 @@
         state.stockFilter = target.dataset.summaryFilter;
         render();
       } else if (target.dataset.stockTab) {
+        if (state.materialCardId) closeMaterialCard();
         state.stockTab = target.dataset.stockTab;
         renderStock();
         if (state.stockTab === "movements") loadMovements();
@@ -1220,16 +1647,44 @@
         savePaymentPricing(target.dataset.savePricing, target);
       } else if (target.dataset.sendManager) {
         sendPaymentToManager(target.dataset.sendManager, target);
+      } else if (target.dataset.materialUrgency) {
+        state.materialCardUrgency = target.dataset.materialUrgency;
+        Array.prototype.forEach.call(document.querySelectorAll("[data-material-urgency]"), function (button) {
+          button.classList.toggle("is-active", button === target);
+        });
+      } else if (target.dataset.openMaterial) {
+        openMaterialCard(target.dataset.openMaterial, target.dataset.openMaterialName || "");
+      } else if (target.id === "materialCardBackBtn" || target.closest("#materialCardBackBtn")) {
+        closeMaterialCard();
+      } else if (target.id === "materialCardRequestBtn" || target.closest("#materialCardRequestBtn")) {
+        openMaterialCardRequestForm();
+      } else if (target.id === "materialCardCancelRequestBtn" || target.closest("#materialCardCancelRequestBtn")) {
+        cancelMaterialCardRequestForm();
+      } else if (target.id === "materialCardFullHistoryBtn" || target.closest("#materialCardFullHistoryBtn")) {
+        openMaterialCardFullHistory();
       } else if (target.dataset.editReceipt) {
         beginReceiptEdit(target.dataset.editReceipt).catch(fail);
       } else if (target.dataset.historyMaterial) {
+        state.historyReturnTo = "";
+        state.historyReturnMaterialId = "";
+        state.historyReturnMaterialName = "";
         openMaterialHistory(target.dataset.historyMaterial, target.dataset.historyMaterialName || "");
       } else if (target.id === "movementsBackBtn" || target.closest("#movementsBackBtn")) {
         closeMaterialHistory();
+      } else if (target.dataset.requestHistory) {
+        loadRequestDetail(target.dataset.requestHistory, "history");
+      } else if (target.dataset.etaDays || target.dataset.etaCustom != null) {
+        activateEtaChip(target);
+      } else if (target.dataset.requestEta) {
+        loadRequestDetail(target.dataset.requestEta, "eta_info");
+      } else if (target.dataset.requestEtaEdit) {
+        loadRequestDetail(target.dataset.requestEtaEdit, "eta_edit");
       } else if (target.dataset.requestAction) {
         var action = target.dataset.requestAction;
         if (action === "create_delivery" || action === "receive_delivery") {
           loadRequestDetail(target.dataset.requestId, action === "create_delivery" ? "delivery" : "receive");
+        } else if (action === "mark_in_transit") {
+          loadRequestDetail(target.dataset.requestId, "transit");
         } else {
           transitionRequest(target.dataset.requestId, action, target);
         }
@@ -1239,6 +1694,7 @@
       event.preventDefault();
       var form = event.target;
       if (form.id === "requestCreateForm") saveRequest(form);
+      else if (form.id === "materialCardRequestForm") saveMaterialCardRequest(form);
       else if (form.id === "transferForm") saveTransfer(form);
       else if (form.id === "adjustmentForm") saveAdjustment(form);
       else if (form.id === "roleAssignForm") saveRoleAssign(form);
@@ -1246,6 +1702,8 @@
       else if (form.dataset.minimumMaterial) saveMinimum(form);
       else if (form.dataset.deliveryForm) createDelivery(form);
       else if (form.dataset.receiveForm) receiveDelivery(form);
+      else if (form.dataset.transitForm) submitTransit(form);
+      else if (form.dataset.etaForm) updateRequestEta(form);
     });
     $("supplierSelect").addEventListener("change", function () { state.supplierId = this.value; });
     $("receiptMaterialSelect").addEventListener("change", function () { state.receiptMaterialId = this.value; });
@@ -1263,7 +1721,12 @@
     $("materialCreateBtn").addEventListener("click", createMaterial);
     $("addRequestItemBtn").addEventListener("click", addRequestItem);
     $("refreshMovementsBtn").addEventListener("click", loadMovements);
-    $("movementsBackBtn").addEventListener("click", closeMaterialHistory);
+    if ($("materialCardFullHistoryBtn")) {
+      $("materialCardFullHistoryBtn").addEventListener("click", openMaterialCardFullHistory);
+    }
+    if ($("materialCardCancelRequestBtn")) {
+      $("materialCardCancelRequestBtn").addEventListener("click", cancelMaterialCardRequestForm);
+    }
     $("refreshRequestsBtn").addEventListener("click", function () { loadBootstrap().catch(fail); });
     $("toggleRequestCreateBtn").addEventListener("click", function () {
       state.showRequestCreate = !state.showRequestCreate;

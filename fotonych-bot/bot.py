@@ -38,6 +38,7 @@ from drivers_chat import (
 )
 from taksimo_backup import backup_taksimo_db, daily_backup_loop
 from sklad_master_backup import backup_sklad_master_db, daily_sklad_backup_loop
+from sklad_master_reminders import sklad_eta_reminder_loop
 from taksimo_notify import daily_report_loop, notify_chat_id, set_bot as set_taksimo_bot
 from materials_chat import (
     handle_materials_chat_message,
@@ -550,6 +551,7 @@ async def main() -> None:
     report_task = asyncio.create_task(daily_report_loop())
     backup_task = asyncio.create_task(daily_backup_loop())
     sklad_backup_task = asyncio.create_task(daily_sklad_backup_loop())
+    sklad_eta_task = asyncio.create_task(sklad_eta_reminder_loop())
     materials_report_task = asyncio.create_task(materials_report_loop())
     materials_watch_task = asyncio.create_task(materials_watch_loop())
     drivers_remind_task = None
@@ -561,6 +563,7 @@ async def main() -> None:
         report_task.cancel()
         backup_task.cancel()
         sklad_backup_task.cancel()
+        sklad_eta_task.cancel()
         materials_report_task.cancel()
         materials_watch_task.cancel()
         if drivers_remind_task is not None:

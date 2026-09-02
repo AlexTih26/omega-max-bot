@@ -26,6 +26,7 @@
     historyMaterialId: "",
     historyMaterialName: "",
     editingReceiptId: "",
+    editingReceiptRecordedAt: "",
     materialCardId: "",
     materialCardShowRequest: false,
     materialCardUrgency: "plan",
@@ -435,10 +436,12 @@
         actions = '<div class="sm-action-list sm-action-list--stack">' + adminButtons.join("") + "</div>";
       }
       return '<article class="sm-history-card sm-payment-card"><div class="sm-heading-row sm-heading-row--card"><div class="sm-heading-main"><b>Приход №' +
-        esc(receipt.id) + '</b><span>' + esc(receipt.supplier_name || "") + " · " +
+        esc(receipt.id) + " · " + esc(receipt.document_date_label || dateOnlyLabel(receipt.document_date || receipt.created_at)) +
+        '</b><span>' + esc(receipt.supplier_name || "") + " · " +
         esc(receipt.site_name || "") + '</span></div><span class="sm-status">' +
         esc(paymentStatusLabel(receipt.payment_status)) + '</span></div><p class="sm-note sm-note--tight">Принял: ' +
-        esc(receipt.actor_name || "—") + " · " + esc(dateLabel(receipt.created_at)) +
+        esc(receipt.actor_name || "—") + " · внесено " +
+        esc(receipt.recorded_at_label || dateLabel(receipt.created_at)) +
         '</p><div class="sm-section-gap"><p class="sm-note sm-note--tight"><b>Итого к оплате</b></p>' +
         '<div class="sm-pay-list">' + itemsHtml + "</div></div>" +
         (receipt.total_amount
@@ -758,6 +761,51 @@
     return isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU", {
       day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
     });
+  }
+
+  function dateOnlyLabel(value) {
+    if (!value) return "";
+    var date = new Date(Number(value) < 100000000000 ? Number(value) * 1000 : value);
+    return isNaN(date.getTime()) ? "" : date.toLocaleDateString("ru-RU", {
+      day: "2-digit", month: "2-digit", year: "numeric"
+    });
+  }
+
+  function todayDateInputValue() {
+    var now = new Date();
+    var y = now.getFullYear();
+    var m = String(now.getMonth() + 1).padStart(2, "0");
+    var d = String(now.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + d;
+  }
+
+  function dateInputValue(value) {
+    if (!value) return todayDateInputValue();
+    var date = new Date(Number(value) < 100000000000 ? Number(value) * 1000 : value);
+    if (isNaN(date.getTime())) return todayDateInputValue();
+    var y = date.getFullYear();
+    var m = String(date.getMonth() + 1).padStart(2, "0");
+    var d = String(date.getDate()).padStart(2, "0");
+    return y + "-" + m + "-" + d;
+  }
+
+  function renderReceiptMeta() {
+    var meta = $("receiptMetaLine");
+    var hint = $("receiptRecordedHint");
+    var dateInput = $("receiptDocumentDate");
+    if (!dateInput) return;
+    if (state.editingReceiptId) {
+      if (meta) {
+        meta.hidden = false;
+        meta.textContent = "Приход №" + state.editingReceiptId +
+          (state.editingReceiptRecordedAt ? " · внесено " + state.editingReceiptRecordedAt : "");
+      }
+      if (hint) hint.textContent = "Дата прихода — по документу. Дата внесения в базу не меняется.";
+    } else {
+      if (meta) meta.hidden = true;
+      if (hint) hint.textContent = "В базу — сегодня · остаток увеличится при сохранении.";
+      if (!dateInput.value) dateInput.value = todayDateInputValue();
+    }
   }
 
   function movementSourceLabel(item) {
@@ -1198,6 +1246,7 @@
     renderSelectors();
     renderCreateBoxes();
     renderReceiptCart();
+    renderReceiptMeta();
     renderStock();
     renderRequests();
     renderPayment();
@@ -1241,9 +1290,11 @@
 
   function resetReceiptForm() {
     state.editingReceiptId = "";
+    state.editingReceiptRecordedAt = "";
     state.receiptCart = [];
     state.receiptMaterialId = "";
     $("receiptNote").value = "";
+    if ($("receiptDocumentDate")) $("receiptDocumentDate").value = todayDateInputValue();
   }
 
   function beginReceiptEdit(receiptId) {
@@ -1254,6 +1305,7 @@
         return;
       }
       state.editingReceiptId = String(receipt.id || receiptId);
+      state.editingReceiptRecordedAt = receipt.recorded_at_label || dateLabel(receipt.created_at);
       state.tab = "receipt";
       state.siteId = String(receipt.site_id || state.siteId);
       state.supplierId = String(receipt.supplier_id || "");
@@ -1264,6 +1316,9 @@
         };
       });
       $("receiptNote").value = receipt.note || "";
+      if ($("receiptDocumentDate")) {
+        $("receiptDocumentDate").value = dateInputValue(receipt.document_date || receipt.created_at);
+      }
       render();
       toast("Редактирование прихода №" + state.editingReceiptId);
     });
@@ -1305,7 +1360,8 @@
             quantity: Number(item.quantity)
           };
         }),
-        note: $("receiptNote").value.trim()
+        note: $("receiptNote").value.trim(),
+        document_date: $("receiptDocumentDate") ? $("receiptDocumentDate").value : ""
       };
       if (targetReceiptId && existingReceipt) {
         var combined = {};
@@ -1713,6 +1769,11 @@
 
   function bindEvents() {
     document.addEventListener("click", function (event) {
+      var auditCard = event.target.closest("[data-audit-id]");
+      if (auditCard) {
+        toggleAuditEntry(auditCard.dataset.auditId);
+        return;
+      }
       var target = event.target.closest("button");
       if (!target) return;
       if (target.dataset.tab) {
@@ -1794,9 +1855,6 @@
         openMaterialHistory(target.dataset.historyMaterial, target.dataset.historyMaterialName || "");
       } else if (target.id === "movementsBackBtn" || target.closest("#movementsBackBtn")) {
         closeMaterialHistory();
-      } else if (target.dataset.auditId || target.closest("[data-audit-id]")) {
-        var auditCard = target.closest("[data-audit-id]");
-        if (auditCard) toggleAuditEntry(auditCard.dataset.auditId);
       } else if (target.dataset.requestHistory) {
         loadRequestDetail(target.dataset.requestHistory, "history");
       } else if (target.dataset.etaDays || target.dataset.etaCustom != null) {

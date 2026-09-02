@@ -148,12 +148,16 @@ def _receipt_item_lines(receipt: dict) -> list[str]:
     return lines
 
 
-def _receipt_public_lines(receipt: dict, *, header: str | None = None) -> list[str]:
+def _receipt_date_label(receipt: dict) -> str:
     from datetime import datetime
-    stamp = receipt.get("created_at")
-    date_label = ""
-    if stamp:
-        date_label = datetime.fromtimestamp(float(stamp)).strftime("%d.%m.%Y")
+    stamp = receipt.get("document_date") or receipt.get("created_at")
+    if not stamp:
+        return ""
+    return datetime.fromtimestamp(float(stamp)).strftime("%d.%m.%Y")
+
+
+def _receipt_public_lines(receipt: dict, *, header: str | None = None) -> list[str]:
+    date_label = _receipt_date_label(receipt)
     lines = [
         header or "📦 Склад Мастер · приход",
         f"Приход №{receipt.get('id')} · {date_label}".strip(),
@@ -169,9 +173,7 @@ def _receipt_public_lines(receipt: dict, *, header: str | None = None) -> list[s
 
 
 def _receipt_payment_lines(receipt: dict, *, actor_name: str = "") -> list[str]:
-    from datetime import datetime
-    stamp = receipt.get("created_at")
-    date_label = datetime.fromtimestamp(float(stamp)).strftime("%d.%m.%Y") if stamp else ""
+    date_label = _receipt_date_label(receipt)
     lines = [
         "💰 Склад Мастер · к оплате",
         f"Приход №{receipt.get('id')} · {date_label}".strip(),
@@ -415,6 +417,7 @@ async def handle_receipt(request: web.Request) -> web.Response:
             actor_max_id=uid,
             actor_name=name,
             note=str(body.get("note") or ""),
+            document_date=body.get("document_date"),
             idempotency_key=_idempotency(request, body),
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -466,6 +469,7 @@ async def handle_receipt_edit(request: web.Request) -> web.Response:
             supplier_id=int(body["supplier_id"]),
             items=items,
             note=str(body.get("note") or ""),
+            document_date=body.get("document_date"),
             actor_max_id=uid,
             actor_name=name,
         )

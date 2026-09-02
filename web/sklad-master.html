@@ -7,7 +7,7 @@
   <title>Склад Мастер</title>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/sklad-master.css?v=34">
+  <link rel="stylesheet" href="/sklad-master.css?v=35">
 </head>
 <body>
   <div class="sm-app">
@@ -48,7 +48,11 @@
 
       <section class="sm-card" id="receiptPanel">
         <h2 id="receiptPanelTitle">Приход на площадку</h2>
-        <p class="sm-note">Основной склад — <b>Грузовой</b>. Перед сохранением убедитесь, что все позиции учтены в приходе.</p>
+        <p class="sm-note" id="receiptPanelNote">Основной склад — <b>Грузовой</b>. Перед сохранением убедитесь, что все позиции учтены в приходе.</p>
+        <p class="sm-note sm-note--tight" id="receiptMetaLine" hidden></p>
+        <label class="sm-subtitle" for="receiptDocumentDate">Дата прихода (по документу)</label>
+        <input id="receiptDocumentDate" class="sm-input" type="date">
+        <p class="sm-note sm-note--tight" id="receiptRecordedHint">В базу — сегодня · остаток увеличится при сохранении.</p>
         <div class="sm-pick-row">
           <select id="supplierSelect" class="sm-input sm-select">
             <option value="">Выберите поставщика</option>
@@ -263,6 +267,6 @@
     <div class="sm-toast" id="toast" hidden></div>
   </div>
 
-  <script src="/sklad-master.js?v=34"></script>
+  <script src="/sklad-master.js?v=35"></script>
 </body>
 </html>

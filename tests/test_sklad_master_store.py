@@ -396,6 +396,40 @@ class SkladMasterStoreTests(unittest.TestCase):
         audit = store.list_audit_log(limit=5)
         self.assertTrue(any(item["action"] == "receipt_edit" for item in audit["items"]))
 
+    def test_receipt_document_date_kept_separate_from_created_at(self):
+        import time
+        from datetime import datetime
+
+        before = time.time()
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 4}],
+            actor_max_id=10,
+            actor_name="Master",
+            document_date="2026-08-22",
+        )
+        after = time.time()
+        got = store.get_receipt(receipt["id"])
+        self.assertEqual(got["document_date_label"], "22.08.2026")
+        self.assertGreaterEqual(float(got["created_at"]), before)
+        self.assertLessEqual(float(got["created_at"]), after)
+        self.assertEqual(
+            datetime.fromtimestamp(float(got["document_date"])).strftime("%Y-%m-%d"),
+            "2026-08-22",
+        )
+        edited = store.edit_receipt(
+            receipt_id=receipt["id"],
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 4}],
+            note="",
+            document_date="2026-08-20",
+            actor_max_id=99,
+            actor_name="Admin",
+        )
+        self.assertEqual(edited["document_date_label"], "20.08.2026")
+        self.assertGreaterEqual(float(edited["created_at"]), before)
+
     def test_cancel_receipt_reverses_stock_and_hides_from_payment(self):
         receipt = store.record_receipt_batch(
             site_id=self.site1,

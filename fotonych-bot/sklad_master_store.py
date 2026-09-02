@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sklad_master.db"
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 DEFAULT_SITES = ("Туран", "Грузовой", "Площадка 3", "Площадка 4")
 DEFAULT_SUPPLIERS = (
@@ -227,6 +227,27 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
+
+
+def _start_of_day_ts(dt: datetime) -> float:
+    return datetime(dt.year, dt.month, dt.day).timestamp()
+
+
+def _parse_document_date(value: Any) -> float:
+    if value is None or value == "":
+        return _start_of_day_ts(datetime.now())
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:
+            ts /= 1000.0
+        return _start_of_day_ts(datetime.fromtimestamp(ts))
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y"):
+        try:
+            return _start_of_day_ts(datetime.strptime(text, fmt))
+        except ValueError:
+            continue
+    raise ValueError("Некорректная дата прихода")
 
 
 def _backup_before_migration(path: Path) -> Path | None:
@@ -473,6 +494,10 @@ def init_sklad_master_db() -> None:
         conn.execute(
             "UPDATE sm_requests SET received_at=updated_at "
             "WHERE status IN ('received','closed') AND received_at IS NULL"
+        )
+        _add_column(conn, "sm_receipts", "document_date REAL")
+        conn.execute(
+            "UPDATE sm_receipts SET document_date=created_at WHERE document_date IS NULL"
         )
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version < 10:
@@ -850,6 +875,7 @@ def record_receipt_batch(
     actor_max_id: int | None,
     actor_name: str,
     note: str = "",
+    document_date: Any = None,
     idempotency_key: str | None = None,
 ) -> dict:
     if not isinstance(items, list) or not items:
@@ -875,14 +901,15 @@ def record_receipt_batch(
             for material_id in combined
         }
         now = time.time()
+        doc_ts = _parse_document_date(document_date)
         receipt_cur = conn.execute(
             """INSERT INTO sm_receipts(
                    site_id,supplier_id,actor_max_id,actor_name,note,
-                   idempotency_key,created_at
-               ) VALUES(?,?,?,?,?,?,?)""",
+                   idempotency_key,created_at,document_date
+               ) VALUES(?,?,?,?,?,?,?,?)""",
             (
                 site_id, supplier_id, actor_max_id, actor_name.strip(),
-                note.strip(), idempotency_key, now,
+                note.strip(), idempotency_key, now, doc_ts,
             ),
         )
         receipt_id = int(receipt_cur.lastrowid)
@@ -935,6 +962,7 @@ def record_receipt_batch(
             "actor_name": actor_name.strip(),
             "note": note.strip(),
             "created_at": now,
+            "document_date": doc_ts,
             "payment_status": "pending",
             "total_amount": 0,
         }
@@ -1122,6 +1150,15 @@ def _decorate_receipt(result: dict, lines: list[dict]) -> dict:
     decorated["payment_status"] = str(decorated.get("payment_status") or "pending")
     decorated["total_amount"] = round(float(decorated.get("total_amount") or 0), 2)
     decorated["is_cancelled"] = bool(decorated.get("cancelled_at"))
+    doc_ts = float(decorated.get("document_date") or decorated.get("created_at") or 0)
+    created_ts = float(decorated.get("created_at") or 0)
+    decorated["document_date"] = doc_ts
+    decorated["document_date_label"] = (
+        datetime.fromtimestamp(doc_ts).strftime("%d.%m.%Y") if doc_ts else ""
+    )
+    decorated["recorded_at_label"] = (
+        datetime.fromtimestamp(created_ts).strftime("%d.%m.%Y %H:%M") if created_ts else ""
+    )
     return decorated
 
 
@@ -1200,6 +1237,7 @@ def edit_receipt(
     supplier_id: int,
     items: list[dict],
     note: str = "",
+    document_date: Any = None,
     actor_max_id: int | None,
     actor_name: str,
 ) -> dict:
@@ -1242,6 +1280,12 @@ def edit_receipt(
             "UPDATE sm_receipts SET supplier_id=?, note=? WHERE id=?",
             (supplier_id, note.strip(), int(receipt_id)),
         )
+        if document_date is not None:
+            doc_ts = _parse_document_date(document_date)
+            conn.execute(
+                "UPDATE sm_receipts SET document_date=? WHERE id=?",
+                (doc_ts, int(receipt_id)),
+            )
 
         for material_id, item in old_items.items():
             movement_id = int(item["movement_id"])
@@ -1469,8 +1513,8 @@ def list_payment_receipts(
     with _connect() as conn:
         rows = conn.execute(
             f"""SELECT r.id, r.site_id, s.name site_name, r.supplier_id, sup.name supplier_name,
-                       r.actor_name, r.note, r.created_at, r.payment_status, r.total_amount,
-                       r.priced_by_name, r.sent_to_manager_at, r.cancelled_at
+                       r.actor_name, r.note, r.created_at, r.document_date, r.payment_status,
+                       r.total_amount, r.priced_by_name, r.sent_to_manager_at, r.cancelled_at
                 FROM sm_receipts r
                 JOIN sm_sites s ON s.id=r.site_id
                 JOIN sm_suppliers sup ON sup.id=r.supplier_id
@@ -1482,8 +1526,9 @@ def list_payment_receipts(
         result = []
         for row in rows:
             item = dict(row)
+            lines = _get_receipt_lines(conn, int(row["id"]))
+            item = _decorate_receipt(item, lines)
             item["is_cancelled"] = bool(item.get("cancelled_at"))
-            item["items"] = _get_receipt_lines(conn, int(row["id"]))
             item["total_amount"] = round(float(item.get("total_amount") or 0), 2)
             result.append(item)
     return result

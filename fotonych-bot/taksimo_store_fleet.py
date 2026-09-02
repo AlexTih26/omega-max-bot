@@ -172,6 +172,30 @@ def add_fleet_wagons(
     return added, f"Добавлено вагонов: {added}"
 
 
+def deactivate_fleet_wagon(wagon_number: str) -> tuple[bool, str]:
+    num = "".join(ch for ch in (wagon_number or "").strip() if ch.isdigit())
+    if len(num) != 8:
+        return False, "Номер вагона — 8 цифр"
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT number, slot_id, stage FROM wagon_pool WHERE number=? AND active=1",
+            (num,),
+        ).fetchone()
+        if not row:
+            return False, f"Вагон {num} не найден в парке"
+        stage = str(row["stage"] or "")
+        if row["slot_id"] or stage == "at_slot":
+            return False, f"Вагон {num} в слоте — сначала освободите на «Плане»"
+        if stage == "departed":
+            return False, f"Вагон {num} в пути в Кодар"
+        conn.execute(
+            "UPDATE wagon_pool SET active=0, updated_at=? WHERE number=?",
+            (time.time(), num),
+        )
+        conn.commit()
+    return True, f"Вагон {num} снят с парка"
+
+
 def update_wagon_planned_zone(wagon_number: str, planned_zone: str) -> dict:
     wagon_number = (wagon_number or "").strip()
     zone = (planned_zone or "").strip().upper()

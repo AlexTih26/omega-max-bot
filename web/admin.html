@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/admin.css?v=4">
+  <link rel="stylesheet" href="/admin.css?v=5">
   <script src="https://st.max.ru/js/max-web-app.js"></script>
 </head>
 <body>
@@ -47,15 +47,31 @@
     </main>
 
     <main class="adm-main" id="panelFleet" hidden>
-      <p class="adm-section-title">Машины</p>
-      <p class="adm-meta" id="fleetMeta">—</p>
-      <ul class="adm-fleet" id="fleetList"></ul>
-      <p class="adm-empty" id="fleetEmpty" hidden>Нет записей в реестре.</p>
+      <nav class="adm-subtabs" id="fleetSubTabs">
+        <button type="button" class="adm-subtab adm-subtab--active" data-fleet-sub="trucks">🚛 Грузовики</button>
+        <button type="button" class="adm-subtab" data-fleet-sub="wagons">🚃 Вагоны</button>
+      </nav>
 
-      <p class="adm-section-title">Вагоны</p>
-      <p class="adm-meta" id="wagonsMeta">—</p>
-      <ul class="adm-fleet" id="wagonsList"></ul>
-      <p class="adm-empty" id="wagonsEmpty" hidden>Нет вагонов в парке.</p>
+      <div id="panelFleetTrucks">
+        <p class="adm-section-title">Таксimo · база машин</p>
+        <p class="adm-meta" id="vehiclesMeta">—</p>
+        <ul class="adm-fleet" id="vehiclesList"></ul>
+        <p class="adm-empty" id="vehiclesEmpty" hidden>Нет машин в базе Таксimo.</p>
+
+        <p class="adm-section-title">Реестр водителей</p>
+        <p class="adm-meta" id="fleetMeta">—</p>
+        <ul class="adm-fleet" id="fleetList"></ul>
+        <p class="adm-empty" id="fleetEmpty" hidden>Нет записей в реестре.</p>
+        <p class="adm-meta" id="orphanRegistryMeta" hidden>Только в реестре (без машины в Таксimo)</p>
+        <ul class="adm-fleet" id="orphanRegistryList"></ul>
+      </div>
+
+      <div id="panelFleetWagons" hidden>
+        <p class="adm-section-title">Ж/д вагоны</p>
+        <p class="adm-meta" id="wagonsMeta">—</p>
+        <ul class="adm-fleet" id="wagonsList"></ul>
+        <p class="adm-empty" id="wagonsEmpty" hidden>Нет вагонов в парке.</p>
+      </div>
     </main>
 
     <p class="adm-error" id="accessError" hidden></p>
@@ -65,10 +81,13 @@
     </footer>
 
     <footer class="adm-footer" id="footerFleet" hidden>
-      <div class="adm-footer-park">
+      <div class="adm-footer-park" id="footerFleetTrucks">
         <button type="button" class="adm-btn-compact adm-btn-compact--accent" id="addFleetBtn">+ Машина</button>
-        <button type="button" class="adm-btn-compact adm-btn-compact--accent" id="addWagonBtn">+ Вагон</button>
+        <button type="button" class="adm-btn-compact" id="importFleetBtn">⇣ В реестр</button>
         <button type="button" class="adm-btn-compact" id="syncFleetBtn">↻ Синхр.</button>
+      </div>
+      <div class="adm-footer-park" id="footerFleetWagons" hidden>
+        <button type="button" class="adm-btn-compact adm-btn-compact--accent" id="addWagonBtn">+ Вагон</button>
       </div>
     </footer>
   </div>
@@ -171,6 +190,6 @@
 
   <div class="adm-toast" id="toast" hidden></div>
 
-  <script src="/admin.js?v=6"></script>
+  <script src="/admin.js?v=7"></script>
 </body>
 </html>

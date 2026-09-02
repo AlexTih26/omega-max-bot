@@ -666,11 +666,27 @@ def _row_slab(row: sqlite3.Row) -> dict:
 
 
 def list_vehicles() -> list[dict]:
+    return list_all_vehicles(include_inactive=False)
+
+
+def list_all_vehicles(*, include_inactive: bool = True) -> list[dict]:
+    clause = "" if include_inactive else "WHERE active = 1"
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM vehicles WHERE active = 1 ORDER BY sort_order, id"
+            f"SELECT * FROM vehicles {clause} ORDER BY sort_order, id"
         ).fetchall()
     return [_row_vehicle(r) for r in rows]
+
+
+def set_vehicle_active(vehicle_id: int, *, active: bool) -> dict:
+    with _connect() as conn:
+        row = conn.execute("SELECT id FROM vehicles WHERE id=?", (int(vehicle_id),)).fetchone()
+        if not row:
+            raise ValueError("Машина не найдена")
+        conn.execute("UPDATE vehicles SET active=? WHERE id=?", (1 if active else 0, int(vehicle_id)))
+        conn.commit()
+        out = conn.execute("SELECT * FROM vehicles WHERE id=?", (int(vehicle_id),)).fetchone()
+    return _row_vehicle(out)
 
 
 def get_vehicle(vehicle_id: int) -> dict | None:

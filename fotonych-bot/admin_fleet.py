@@ -16,7 +16,12 @@ from drivers_chat import (
     _save_state,
     sync_drivers_registry,
 )
-from taksimo_store import sync_vehicles_from_drivers_registry, upsert_vehicle_by_tail
+from taksimo_store import (
+    list_all_vehicles,
+    set_vehicle_active,
+    sync_vehicles_from_drivers_registry,
+    upsert_vehicle_by_tail,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,38 @@ def _save_registry_file(data: dict) -> None:
     tmp.replace(_REGISTRY_PATH)
 
 
+def _normalize_plate_match(plate: str) -> str:
+    return re.sub(r"\s+", " ", (plate or "").strip().lower())
+
+
+def _guess_plate_tail(plate: str) -> str:
+    plate = (plate or "").strip()
+    if not plate or plate.startswith("—") or "резерв" in plate.lower():
+        return ""
+    chunks = re.findall(r"\d{2,4}", plate)
+    if chunks:
+        return chunks[-1][-3:] if len(chunks[-1]) > 3 else chunks[-1]
+    digits = re.sub(r"\D", "", plate)
+    return digits[-3:] if len(digits) >= 3 else digits
+
+
+def _registry_file_records(data: dict) -> list[dict]:
+    out: list[dict] = []
+    for item in data.get("drivers") or []:
+        if isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def _registry_by_plate(data: dict) -> dict[str, dict]:
+    indexed: dict[str, dict] = {}
+    for item in _registry_file_records(data):
+        plate = str(item.get("taksimo_plate") or "").strip()
+        if plate:
+            indexed[_normalize_plate_match(plate)] = item
+    return indexed
+
+
 def _trip_row(state: dict, rec: dict) -> dict:
     tail = str(rec.get("plate_tail") or "").strip()
     uid = int(rec.get("max_user_id") or 0)
@@ -50,7 +87,7 @@ def _trip_row(state: dict, rec: dict) -> dict:
     summary = _driver_status_summary(live) if isinstance(live, dict) else {}
     return {
         "phase": summary.get("phase") or "offline",
-        "phase_label": summary.get("phase_label") or "—",
+        "phase_label": summary.get("phase_label") or summary.get("label") or "—",
         "detail": summary.get("detail") or "",
         "has_trip": bool(
             live
@@ -84,7 +121,67 @@ def fleet_list_payload() -> dict:
             }
         )
     active_count = sum(1 for i in items if i.get("active") and i.get("plate_tail"))
-    return {"items": items, "active_count": active_count, "total": len(items)}
+    catalog = vehicles_catalog_payload()
+    return {
+        "items": items,
+        "active_count": active_count,
+        "total": len(items),
+        **catalog,
+    }
+
+
+def vehicles_catalog_payload() -> dict:
+    data = _load_registry_file()
+    by_plate = _registry_by_plate(data)
+    matched_registry: set[int] = set()
+    vehicles: list[dict] = []
+    for vehicle in list_all_vehicles(include_inactive=True):
+        norm = _normalize_plate_match(vehicle.get("plate") or "")
+        reg = by_plate.get(norm)
+        reg_view = None
+        if reg is not None:
+            matched_registry.add(id(reg))
+            tail = str(reg.get("plate_tail") or "").strip()
+            reg_view = {
+                "plate_tail": tail,
+                "name": reg.get("name") or "",
+                "max_user_id": int(reg.get("max_user_id") or 0),
+                "vehicle": reg.get("vehicle") or "",
+                "active": _registry_active(reg),
+                "reserve": bool(reg.get("reserve")),
+            }
+        vehicles.append(
+            {
+                **vehicle,
+                "in_registry": reg is not None,
+                "registry": reg_view,
+            }
+        )
+    orphan_registry: list[dict] = []
+    for item in _registry_file_records(data):
+        if id(item) in matched_registry:
+            continue
+        tail = str(item.get("plate_tail") or "").strip()
+        orphan_registry.append(
+            {
+                "max_user_id": int(item.get("max_user_id") or 0),
+                "name": item.get("name") or "",
+                "plate_tail": tail,
+                "vehicle": item.get("vehicle") or "",
+                "taksimo_plate": item.get("taksimo_plate") or "",
+                "active": _registry_active(item),
+                "reserve": bool(item.get("reserve")),
+            }
+        )
+    active_vehicles = sum(1 for item in vehicles if item.get("active"))
+    linked = sum(1 for item in vehicles if item.get("in_registry"))
+    return {
+        "vehicles": vehicles,
+        "orphan_registry": orphan_registry,
+        "vehicle_active_count": active_vehicles,
+        "vehicle_total": len(vehicles),
+        "vehicle_linked_count": linked,
+    }
 
 
 def _find_registry_entry(data: dict, *, plate_tail: str = "", max_user_id: int = 0) -> dict | None:
@@ -371,6 +468,87 @@ def set_fleet_active(*, plate_tail: str, active: bool) -> tuple[bool, str]:
     return True, f"…{tail} · {entry.get('name')} снят с рейса (в реестре остался)"
 
 
+def remove_registry_entry(*, plate_tail: str = "", max_user_id: int = 0) -> tuple[bool, str]:
+    data = _load_registry_file()
+    entry = _find_registry_entry(data, plate_tail=plate_tail, max_user_id=max_user_id)
+    if entry is None:
+        return False, "Запись не найдена в реестре"
+    tail = str(entry.get("plate_tail") or "").strip()
+    name = str(entry.get("name") or "").strip() or f"id {max_user_id or '?'}"
+    data["drivers"] = [item for item in _registry_file_records(data) if item is not entry]
+    _save_registry_file(data)
+    if tail:
+        reset_fleet_trip(plate_tail=tail)
+    sync_drivers_registry()
+    sync_vehicles_from_drivers_registry()
+    label = f"…{tail}" if tail else name
+    return True, f"{label} удалён из реестра"
+
+
+def import_unlinked_vehicles() -> tuple[bool, str]:
+    data = _load_registry_file()
+    by_plate = _registry_by_plate(data)
+    added = 0
+    updated = 0
+    for vehicle in list_all_vehicles(include_inactive=True):
+        plate = str(vehicle.get("plate") or "").strip()
+        if not plate or plate.startswith("—") or "резерв" in plate.lower():
+            continue
+        norm = _normalize_plate_match(plate)
+        if norm in by_plate:
+            continue
+        tail = _guess_plate_tail(plate)
+        if not tail:
+            continue
+        existing = _find_registry_entry(data, plate_tail=tail)
+        driver = str(vehicle.get("driver") or "").strip() or f"…{tail}"
+        if existing is not None:
+            if not str(existing.get("taksimo_plate") or "").strip():
+                existing["taksimo_plate"] = plate
+                updated += 1
+            if not str(existing.get("name") or "").strip():
+                existing["name"] = driver
+            by_plate[_normalize_plate_match(plate)] = existing
+            continue
+        entry = {
+            "max_user_id": 0,
+            "plate_tail": tail,
+            "name": driver,
+            "vehicle": str(vehicle.get("brand") or "").strip(),
+            "taksimo_plate": plate,
+            "active": bool(vehicle.get("active", True)),
+        }
+        data.setdefault("drivers", []).append(entry)
+        by_plate[norm] = entry
+        added += 1
+    _save_registry_file(data)
+    sync_drivers_registry()
+    sync_vehicles_from_drivers_registry()
+    if added <= 0 and updated <= 0:
+        return True, "Все активные машины уже в реестре"
+    parts = []
+    if added:
+        parts.append(f"добавлено {added}")
+    if updated:
+        parts.append(f"обновлено {updated}")
+    return True, "Реестр: " + ", ".join(parts)
+
+
+def set_vehicle_active_admin(*, vehicle_id: int, active: bool) -> tuple[bool, str]:
+    try:
+        vid = int(vehicle_id)
+    except (TypeError, ValueError):
+        return False, "Некорректный id машины"
+    try:
+        vehicle = set_vehicle_active(vid, active=active)
+    except ValueError as exc:
+        return False, str(exc)
+    plate = vehicle.get("plate") or "?"
+    if active:
+        return True, f"{plate} снова в списке Таксimo"
+    return True, f"{plate} скрыта из списка Таксimo"
+
+
 def assign_fleet_driver(
     *,
     plate_tail: str,
@@ -449,4 +627,21 @@ def apply_fleet_action(body: dict) -> tuple[bool, str]:
         sync_drivers_registry()
         sync_vehicles_from_drivers_registry()
         return True, "Реестр и Таксimo синхронизированы"
+    if action == "import_vehicles":
+        return import_unlinked_vehicles()
+    if action == "remove_registry":
+        try:
+            uid = int(body.get("max_user_id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        return remove_registry_entry(
+            plate_tail=str(body.get("plate_tail") or ""),
+            max_user_id=uid,
+        )
+    if action == "set_vehicle_active":
+        try:
+            vid = int(body.get("vehicle_id") or 0)
+        except (TypeError, ValueError):
+            return False, "Некорректный id машины"
+        return set_vehicle_active_admin(vehicle_id=vid, active=bool(body.get("active", True)))
     return False, "Неизвестное действие"

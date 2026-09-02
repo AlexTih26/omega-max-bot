@@ -1502,6 +1502,9 @@ def price_receipt(
         conn.execute("BEGIN IMMEDIATE")
         current = _get_receipt_conn(conn, receipt_id)
         _ensure_receipt_editable(current)
+        status = str(current.get("payment_status") or "pending")
+        if status != "pending":
+            raise ValueError("Цены по этому приходу уже сохранены")
         total = 0.0
         for payload in lines:
             line_id = payload.get("id")

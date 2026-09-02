@@ -378,12 +378,13 @@
     var canEdit = allowed("receipt_price");
     var canAdmin = allowed("roles_manage");
     $("paymentPanelNote").textContent = canEdit
-      ? "Проставьте цены по каждому приходу и нажмите «Отправить руководителю». Суммы уйдут только в личку."
+      ? "Проставьте цены по каждому приходу один раз и нажмите «Отправить руководителю». После сохранения суммы изменить нельзя."
       : "Ведомости к оплате. Суммы видны только руководителю в личных сообщениях MAX.";
     var receipts = data.payment_receipts || [];
     $("paymentList").innerHTML = receipts.map(function (receipt) {
+      var canPrice = canEdit && receipt.payment_status === "pending";
       var itemsHtml = (receipt.items || []).map(function (item) {
-        if (canEdit && receipt.payment_status !== "sent") {
+        if (canPrice) {
           return '<div class="sm-pay-item"><div class="sm-pay-item__info"><b>' +
             esc(item.material_name) + '</b><small>' + esc(formatQty(item.quantity)) + " " +
             esc(item.quantity_unit || "") + '</small></div><div class="sm-pay-fields">' +
@@ -415,10 +416,13 @@
         );
       }
       if (canEdit && receipt.payment_status !== "sent" && !receipt.is_cancelled && !receipt.cancelled_at) {
-        var buttons = [
-          '<button type="button" class="sm-mini-action" data-save-pricing="' + esc(receipt.id) +
-          '">Сохранить цены</button>'
-        ];
+        var buttons = [];
+        if (receipt.payment_status === "pending") {
+          buttons.push(
+            '<button type="button" class="sm-mini-action" data-save-pricing="' + esc(receipt.id) +
+            '">Сохранить цены</button>'
+          );
+        }
         if (receipt.payment_status === "priced") {
           buttons.push(
             '<button type="button" class="sm-mini-action" data-send-manager="' + esc(receipt.id) +

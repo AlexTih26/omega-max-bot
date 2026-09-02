@@ -21,12 +21,23 @@
   var tabBar = document.getElementById("tabBar");
   var panelAnnounce = document.getElementById("panelAnnounce");
   var panelFleet = document.getElementById("panelFleet");
+  var panelFleetTrucks = document.getElementById("panelFleetTrucks");
+  var panelFleetWagons = document.getElementById("panelFleetWagons");
+  var fleetSubTabs = document.getElementById("fleetSubTabs");
   var footerAnnounce = document.getElementById("footerAnnounce");
   var footerFleet = document.getElementById("footerFleet");
+  var footerFleetTrucks = document.getElementById("footerFleetTrucks");
+  var footerFleetWagons = document.getElementById("footerFleetWagons");
+  var vehiclesList = document.getElementById("vehiclesList");
+  var vehiclesEmpty = document.getElementById("vehiclesEmpty");
+  var vehiclesMeta = document.getElementById("vehiclesMeta");
+  var orphanRegistryList = document.getElementById("orphanRegistryList");
+  var orphanRegistryMeta = document.getElementById("orphanRegistryMeta");
   var fleetList = document.getElementById("fleetList");
   var fleetEmpty = document.getElementById("fleetEmpty");
   var fleetMeta = document.getElementById("fleetMeta");
   var syncFleetBtn = document.getElementById("syncFleetBtn");
+  var importFleetBtn = document.getElementById("importFleetBtn");
   var addFleetBtn = document.getElementById("addFleetBtn");
   var fleetSheet = document.getElementById("fleetSheet");
   var fleetSheetBackdrop = document.getElementById("fleetSheetBackdrop");
@@ -60,6 +71,7 @@
   var busy = false;
   var activeTemplate = "";
   var currentTab = "announce";
+  var fleetSubTab = "trucks";
   var fleetSheetMode = "";
   var fleetReserveUid = 0;
 
@@ -187,6 +199,19 @@
     accessError.textContent = msg;
   }
 
+  function switchFleetSubTab(tab) {
+    fleetSubTab = tab === "wagons" ? "wagons" : "trucks";
+    if (panelFleetTrucks) panelFleetTrucks.hidden = fleetSubTab !== "trucks";
+    if (panelFleetWagons) panelFleetWagons.hidden = fleetSubTab !== "wagons";
+    if (footerFleetTrucks) footerFleetTrucks.hidden = fleetSubTab !== "trucks";
+    if (footerFleetWagons) footerFleetWagons.hidden = fleetSubTab !== "wagons";
+    if (fleetSubTabs) {
+      fleetSubTabs.querySelectorAll(".adm-subtab").forEach(function (btn) {
+        btn.classList.toggle("adm-subtab--active", btn.getAttribute("data-fleet-sub") === fleetSubTab);
+      });
+    }
+  }
+
   function switchTab(tab) {
     currentTab = tab;
     if (panelAnnounce) panelAnnounce.hidden = tab !== "announce";
@@ -199,37 +224,10 @@
       });
     }
     if (tab === "fleet") {
+      switchFleetSubTab(fleetSubTab);
       loadFleet().catch(function () {});
       loadWagons().catch(function () {});
     }
-  }
-
-  function renderWagons(data) {
-    if (!wagonsList) return;
-    var items = (data && data.wagons) || [];
-    wagonsList.innerHTML = "";
-    if (wagonsMeta) {
-      wagonsMeta.textContent =
-        "В парке: " + (data.count || items.length) + " / " + (data.max_fleet_wagons || 50) +
-        " · конец цикла: " + (data.cycle_destination || "Кодар");
-    }
-    if (wagonsEmpty) wagonsEmpty.hidden = items.length > 0;
-    items.forEach(function (row) {
-      var li = document.createElement("li");
-      li.className = "adm-fleet-item";
-      var slot =
-        row.slot_zone && row.slot_index
-          ? row.slot_zone + " · слот №" + row.slot_index
-          : row.planned_zone
-            ? "→ " + row.planned_zone
-            : "—";
-      li.innerHTML =
-        '<div class="adm-fleet-head"><span class="adm-fleet-title">' + escapeHtml(row.number) + "</span>" +
-        '<span class="adm-fleet-badge">' + escapeHtml(row.stage_label || row.stage) + "</span></div>" +
-        '<p class="adm-fleet-detail">' + escapeHtml(slot) +
-        (row.slab_count ? " · блоков " + row.slab_count : "") + "</p>";
-      wagonsList.appendChild(li);
-    });
   }
 
   function loadWagons() {
@@ -295,6 +293,99 @@
       });
   }
 
+  function renderVehicles(data) {
+    if (!vehiclesList) return;
+    var items = (data && data.vehicles) || [];
+    vehiclesList.innerHTML = "";
+    if (vehiclesMeta) {
+      vehiclesMeta.textContent =
+        "В списке Таксimo: " + (data.vehicle_active_count || 0) +
+        " · всего в базе: " + (data.vehicle_total || items.length) +
+        " · в реестре: " + (data.vehicle_linked_count || 0);
+    }
+    if (vehiclesEmpty) vehiclesEmpty.hidden = items.length > 0;
+    items.forEach(function (row) {
+      var li = document.createElement("li");
+      var off = !row.active;
+      li.className = "adm-fleet-item" + (off ? " adm-fleet-item--off" : "");
+      var reg = row.registry || {};
+      var title = row.plate + (row.driver ? " · " + row.driver : "");
+      var badges = [];
+      if (!row.active) badges.push('<span class="adm-fleet-badge adm-fleet-badge--off">скрыта</span>');
+      else badges.push('<span class="adm-fleet-badge">в Таксimo</span>');
+      if (row.in_registry) {
+        badges.push('<span class="adm-fleet-badge">реестр</span>');
+      } else {
+        badges.push('<span class="adm-fleet-badge adm-fleet-badge--off">без реестра</span>');
+      }
+      var metaParts = [];
+      if (reg.plate_tail) metaParts.push("…" + reg.plate_tail);
+      if (reg.name && reg.name !== row.driver) metaParts.push(reg.name);
+      if (reg.max_user_id) metaParts.push("MAX " + reg.max_user_id);
+      else if (row.in_registry) metaParts.push("без MAX id");
+      var actions = "";
+      if (row.in_registry && reg.plate_tail) {
+        actions +=
+          '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="change" data-tail="' +
+          escapeHtml(reg.plate_tail) + '">Сменить</button>';
+        actions +=
+          '<button type="button" class="adm-fleet-btn adm-fleet-btn--warn" data-fleet-act="remove_registry" data-tail="' +
+          escapeHtml(reg.plate_tail) + '">Из реестра</button>';
+      } else {
+        actions +=
+          '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-vehicle-link="' +
+          escapeHtml(String(row.id)) + '">В реестр</button>';
+      }
+      actions +=
+        '<button type="button" class="adm-fleet-btn" data-vehicle-active="' +
+        escapeHtml(String(row.id)) + '" data-active="' + (row.active ? "0" : "1") + '">' +
+        (row.active ? "Скрыть" : "Вернуть") + "</button>";
+      li.innerHTML =
+        '<div class="adm-fleet-head"><p class="adm-fleet-title">' + escapeHtml(title) + "</p>" +
+        badges.join("") + "</div>" +
+        (metaParts.length ? '<p class="adm-fleet-meta">' + escapeHtml(metaParts.join(" · ")) + "</p>" : "") +
+        (actions ? '<div class="adm-fleet-actions">' + actions + "</div>" : "");
+      li.dataset.vehicle = JSON.stringify(row);
+      vehiclesList.appendChild(li);
+    });
+  }
+
+  function renderOrphanRegistry(data) {
+    if (!orphanRegistryList || !orphanRegistryMeta) return;
+    var items = (data && data.orphan_registry) || [];
+    orphanRegistryList.innerHTML = "";
+    orphanRegistryMeta.hidden = items.length === 0;
+    orphanRegistryList.hidden = items.length === 0;
+    items.forEach(function (row) {
+      var li = document.createElement("li");
+      li.className = "adm-fleet-item adm-fleet-item--off";
+      var title = row.plate_tail
+        ? "…" + row.plate_tail + " · " + (row.name || "—")
+        : (row.name || "—") + " · резерв";
+      var actions = "";
+      if (row.plate_tail) {
+        actions +=
+          '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="change" data-tail="' +
+          escapeHtml(row.plate_tail) + '">Сменить</button>';
+      } else if (row.reserve && row.max_user_id) {
+        actions +=
+          '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="reserve" data-uid="' +
+          row.max_user_id + '">Назначить машину</button>';
+      }
+      actions +=
+        '<button type="button" class="adm-fleet-btn adm-fleet-btn--warn" data-fleet-act="remove_registry" data-tail="' +
+        escapeHtml(row.plate_tail || "") + '" data-uid="' + escapeHtml(String(row.max_user_id || 0)) +
+        '">Удалить</button>';
+      li.innerHTML =
+        '<div class="adm-fleet-head"><p class="adm-fleet-title">' + escapeHtml(title) + "</p>" +
+        '<span class="adm-fleet-badge adm-fleet-badge--off">без Таксimo</span></div>' +
+        (row.taksimo_plate ? '<p class="adm-fleet-meta">' + escapeHtml(row.taksimo_plate) + "</p>" : "") +
+        (actions ? '<div class="adm-fleet-actions">' + actions + "</div>" : "");
+      li.dataset.row = JSON.stringify(row);
+      orphanRegistryList.appendChild(li);
+    });
+  }
+
   function renderFleet(data) {
     if (!fleetList) return;
     var items = (data && data.items) || [];
@@ -344,6 +435,9 @@
             escapeHtml(row.plate_tail) +
             '" data-active="1">Вернуть в парк</button>';
         }
+        actions +=
+          '<button type="button" class="adm-fleet-btn adm-fleet-btn--warn" data-fleet-act="remove_registry" data-tail="' +
+          escapeHtml(row.plate_tail) + '">Из реестра</button>';
       } else if (row.reserve && row.max_user_id) {
         actions +=
           '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="reserve" data-uid="' +
@@ -364,17 +458,76 @@
     });
   }
 
-  function findFleetRow(tail, uid) {
-    if (!fleetList) return null;
-    var nodes = fleetList.querySelectorAll("[data-row]");
+  function renderFleetPanel(data) {
+    renderVehicles(data);
+    renderFleet(data);
+    renderOrphanRegistry(data);
+  }
+
+  function findVehicleRow(id) {
+    if (!vehiclesList) return null;
+    var nodes = vehiclesList.querySelectorAll("[data-vehicle]");
     for (var i = 0; i < nodes.length; i++) {
       try {
-        var row = JSON.parse(nodes[i].dataset.row || "{}");
-        if (tail && row.plate_tail === tail) return row;
-        if (uid && row.max_user_id === uid) return row;
+        var row = JSON.parse(nodes[i].dataset.vehicle || "{}");
+        if (String(row.id) === String(id)) return row;
       } catch (e) {}
     }
     return null;
+  }
+
+  function guessTailFromPlate(plate) {
+    var chunks = String(plate || "").match(/\d{2,4}/g);
+    if (!chunks || !chunks.length) return "";
+    var last = chunks[chunks.length - 1];
+    return last.length > 3 ? last.slice(-3) : last;
+  }
+
+  function findFleetRow(tail, uid) {
+    var lists = [fleetList, orphanRegistryList];
+    for (var l = 0; l < lists.length; l++) {
+      if (!lists[l]) continue;
+      var nodes = lists[l].querySelectorAll("[data-row]");
+      for (var i = 0; i < nodes.length; i++) {
+        try {
+          var row = JSON.parse(nodes[i].dataset.row || "{}");
+          if (tail && row.plate_tail === tail) return row;
+          if (uid && row.max_user_id === uid) return row;
+        } catch (e) {}
+      }
+    }
+    return null;
+  }
+
+  function renderWagons(data) {
+    if (!wagonsList) return;
+    var items = (data && data.wagons) || [];
+    wagonsList.innerHTML = "";
+    if (wagonsMeta) {
+      wagonsMeta.textContent =
+        "В парке: " + (data.count || items.length) + " / " + (data.max_fleet_wagons || 50) +
+        " · конец цикла: " + (data.cycle_destination || "Кодар");
+    }
+    if (wagonsEmpty) wagonsEmpty.hidden = items.length > 0;
+    items.forEach(function (row) {
+      var li = document.createElement("li");
+      li.className = "adm-fleet-item";
+      var slot =
+        row.slot_zone && row.slot_index
+          ? row.slot_zone + " · слот №" + row.slot_index
+          : row.planned_zone
+            ? "→ " + row.planned_zone
+            : "—";
+      li.innerHTML =
+        '<div class="adm-fleet-head"><span class="adm-fleet-title">' + escapeHtml(row.number) + "</span>" +
+        '<span class="adm-fleet-badge">' + escapeHtml(row.stage_label || row.stage) + "</span></div>" +
+        '<p class="adm-fleet-detail">' + escapeHtml(slot) +
+        (row.slab_count ? " · блоков " + row.slab_count : "") + "</p>" +
+        '<div class="adm-fleet-actions">' +
+        '<button type="button" class="adm-fleet-btn adm-fleet-btn--warn" data-wagon-remove="' +
+        escapeHtml(row.number) + '">Снять</button></div>';
+      wagonsList.appendChild(li);
+    });
   }
 
   function openFleetSheet(mode, row) {
@@ -391,6 +544,16 @@
       if (fleetUid) { fleetUid.value = ""; fleetUid.disabled = false; }
       if (fleetVehicle) fleetVehicle.value = "";
       if (fleetTaksimoPlate) fleetTaksimoPlate.value = "";
+      if (fleetResetWrap) fleetResetWrap.hidden = true;
+      if (fleetReserveWrap) fleetReserveWrap.hidden = true;
+    } else if (mode === "from_vehicle") {
+      if (fleetSheetTitle) fleetSheetTitle.textContent = "В реестр · " + (row.plate || "");
+      if (fleetSheetHint) fleetSheetHint.textContent = "Создаст запись водителя и привяжет к машине в Таксimo";
+      if (fleetTail) { fleetTail.value = guessTailFromPlate(row.plate); fleetTail.disabled = false; }
+      if (fleetName) { fleetName.value = row.driver || ""; fleetName.disabled = false; }
+      if (fleetUid) { fleetUid.value = ""; fleetUid.disabled = false; }
+      if (fleetVehicle) fleetVehicle.value = row.brand || "";
+      if (fleetTaksimoPlate) { fleetTaksimoPlate.value = row.plate || ""; fleetTaksimoPlate.disabled = true; }
       if (fleetResetWrap) fleetResetWrap.hidden = true;
       if (fleetReserveWrap) fleetReserveWrap.hidden = true;
     } else if (mode === "reserve") {
@@ -435,7 +598,7 @@
     var taksimoPlate = (fleetTaksimoPlate && fleetTaksimoPlate.value || "").trim();
     var body = {};
 
-    if (fleetSheetMode === "add") {
+    if (fleetSheetMode === "add" || fleetSheetMode === "from_vehicle") {
       if (!tail || !name || !taksimoPlate) {
         showToast("Хвост, имя и номер Таксimo обязательны");
         return;
@@ -491,7 +654,7 @@
           return body;
         });
       })
-      .then(renderFleet);
+      .then(renderFleetPanel);
   }
 
   function postFleetAction(body) {
@@ -509,7 +672,7 @@
       })
       .then(function (data) {
         showToast(data.notification || "Готово");
-        renderFleet(data);
+        renderFleetPanel(data);
         haptic("success");
       })
       .catch(function (err) {
@@ -653,33 +816,103 @@
   if (wagonSheetBackdrop) wagonSheetBackdrop.addEventListener("click", closeWagonSheet);
   if (wagonSheetSave) wagonSheetSave.addEventListener("click", saveWagon);
 
-  if (fleetList) {
-    fleetList.addEventListener("click", function (e) {
-      var formBtn = e.target.closest("[data-fleet-form]");
-      if (formBtn && !busy) {
-        var mode = formBtn.getAttribute("data-fleet-form");
-        if (mode === "change") {
-          openFleetSheet("change", findFleetRow(formBtn.getAttribute("data-tail"), 0));
-        } else if (mode === "reserve") {
-          openFleetSheet("reserve", findFleetRow("", parseInt(formBtn.getAttribute("data-uid") || "0", 10)));
-        }
-        return;
+  function handleFleetPanelClick(e) {
+    var formBtn = e.target.closest("[data-fleet-form]");
+    if (formBtn && !busy) {
+      var mode = formBtn.getAttribute("data-fleet-form");
+      if (mode === "change") {
+        openFleetSheet("change", findFleetRow(formBtn.getAttribute("data-tail"), 0));
+      } else if (mode === "reserve") {
+        openFleetSheet("reserve", findFleetRow("", parseInt(formBtn.getAttribute("data-uid") || "0", 10)));
       }
-      var btn = e.target.closest("[data-fleet-act]");
+      return;
+    }
+    var linkBtn = e.target.closest("[data-vehicle-link]");
+    if (linkBtn && !busy) {
+      openFleetSheet("from_vehicle", findVehicleRow(linkBtn.getAttribute("data-vehicle-link")));
+      return;
+    }
+    var vehicleActiveBtn = e.target.closest("[data-vehicle-active]");
+    if (vehicleActiveBtn && !busy) {
+      if (!window.confirm("Изменить видимость машины в списке Таксimo?")) return;
+      postFleetAction({
+        action: "set_vehicle_active",
+        vehicle_id: parseInt(vehicleActiveBtn.getAttribute("data-vehicle-active") || "0", 10),
+        active: vehicleActiveBtn.getAttribute("data-active") === "1",
+      });
+      return;
+    }
+    var btn = e.target.closest("[data-fleet-act]");
+    if (!btn || busy) return;
+    var action = btn.getAttribute("data-fleet-act");
+    var tail = btn.getAttribute("data-tail") || "";
+    var uid = parseInt(btn.getAttribute("data-uid") || "0", 10);
+    var body = { action: action, plate_tail: tail };
+    if (uid > 0) body.max_user_id = uid;
+    if (action === "set_active") {
+      body.active = btn.getAttribute("data-active") === "1";
+    }
+    if (action === "remove_registry") {
+      if (!window.confirm("Удалить запись из реестра водителей?")) return;
+    }
+    postFleetAction(body);
+  }
+
+  function postWagonRemove(number) {
+    if (busy) return;
+    if (!window.confirm("Снять вагон " + number + " с парка?")) return;
+    busy = true;
+    apiFetch("/api/admin/wagons", {
+      method: "POST",
+      body: JSON.stringify({ action: "remove", number: number }),
+    })
+      .then(function (r) {
+        return r.json().then(function (data) {
+          if (!r.ok) throw new Error(data.notification || data.error || "action failed");
+          return data;
+        });
+      })
+      .then(function (data) {
+        showToast(data.notification || "Готово");
+        renderWagons(data);
+        haptic("success");
+      })
+      .catch(function (err) {
+        showToast(err.message || "Ошибка");
+      })
+      .finally(function () {
+        busy = false;
+      });
+  }
+
+  if (fleetSubTabs) {
+    fleetSubTabs.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-fleet-sub]");
+      if (!btn) return;
+      switchFleetSubTab(btn.getAttribute("data-fleet-sub"));
+    });
+  }
+
+  if (panelFleetTrucks) panelFleetTrucks.addEventListener("click", handleFleetPanelClick);
+
+  if (wagonsList) {
+    wagonsList.addEventListener("click", function (e) {
+      var btn = e.target.closest("[data-wagon-remove]");
       if (!btn || busy) return;
-      var action = btn.getAttribute("data-fleet-act");
-      var tail = btn.getAttribute("data-tail") || "";
-      var body = { action: action, plate_tail: tail };
-      if (action === "set_active") {
-        body.active = btn.getAttribute("data-active") === "1";
-      }
-      postFleetAction(body);
+      postWagonRemove(btn.getAttribute("data-wagon-remove"));
     });
   }
 
   if (addFleetBtn) {
     addFleetBtn.addEventListener("click", function () {
       openFleetSheet("add");
+    });
+  }
+
+  if (importFleetBtn) {
+    importFleetBtn.addEventListener("click", function () {
+      if (!window.confirm("Добавить в реестр все машины из Таксimo, которых там ещё нет?")) return;
+      postFleetAction({ action: "import_vehicles" });
     });
   }
 

@@ -308,6 +308,39 @@ class SkladMasterStoreTests(unittest.TestCase):
         self.assertEqual(sent["payment_status"], "sent")
         self.assertEqual(float(sent["total_amount"]), 1000.0)
 
+    def test_receipt_price_allowed_once(self):
+        receipt = store.record_receipt_batch(
+            site_id=self.site1,
+            supplier_id=self.supplier,
+            items=[{"material_id": self.material, "quantity": 5}],
+            actor_max_id=10,
+            actor_name="Master",
+        )
+        line = store.get_receipt(receipt["id"])["items"][0]
+        store.price_receipt(
+            receipt_id=receipt["id"],
+            lines=[{
+                "id": line["id"],
+                "unit_price": 50,
+                "billing_quantity": 5,
+                "billing_unit": "шт",
+            }],
+            actor_max_id=20,
+            actor_name="Supply",
+        )
+        with self.assertRaisesRegex(ValueError, "уже сохранены"):
+            store.price_receipt(
+                receipt_id=receipt["id"],
+                lines=[{
+                    "id": line["id"],
+                    "unit_price": 60,
+                    "billing_quantity": 5,
+                    "billing_unit": "шт",
+                }],
+                actor_max_id=20,
+                actor_name="Supply",
+            )
+
     def test_list_roles_returns_site_restrictions(self):
         store.set_role(max_id=501, role="master", site_ids=[self.site1], actor_max_id=99, actor_name="Admin")
         roles = store.list_roles()

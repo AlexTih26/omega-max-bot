@@ -9,7 +9,7 @@ from aiohttp import web
 
 from admin_announce import admin_meta_payload, list_recent_announcements, submit_drivers_announcement
 from admin_fleet import apply_fleet_action, fleet_list_payload
-from admin_wagons import add_wagons_admin, wagon_fleet_payload
+from admin_wagons import add_wagons_admin, remove_wagon_admin, wagon_fleet_payload
 from max_webapp import user_id_from_user, validate_init_data
 from super_admin import is_super_admin
 
@@ -131,6 +131,13 @@ async def handle_admin_wagons_add(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return _json({"error": "invalid json"}, 400)
+    action = str(body.get("action") or "add").strip().lower()
+    if action == "remove":
+        ok, notification = remove_wagon_admin(str(body.get("number") or body.get("wagon_number") or ""))
+        payload: dict = {"ok": ok, "notification": notification}
+        if ok:
+            payload.update(wagon_fleet_payload())
+        return _json(payload, 409 if not ok else 200)
     numbers = body.get("numbers") or body.get("number") or ""
     if isinstance(numbers, str):
         numbers = [n.strip() for n in numbers.replace(";", ",").split(",") if n.strip()]

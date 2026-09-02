@@ -349,6 +349,30 @@ body {
   color: var(--adm-text);
 }
 
+.adm-subtabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.adm-subtab {
+  appearance: none;
+  border: 1px solid var(--adm-border);
+  border-radius: 10px;
+  padding: 9px 8px;
+  background: var(--adm-surface);
+  color: var(--adm-muted);
+  font: 600 12px/1.2 Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.adm-subtab--active {
+  border-color: rgba(120, 170, 255, 0.45);
+  background: rgba(120, 170, 255, 0.1);
+  color: var(--adm-text);
+}
+
 .adm-fleet {
   list-style: none;
   margin: 0;

@@ -6,9 +6,8 @@ from taksimo_store import (
     CYCLE_DESTINATION,
     MAX_FLEET_WAGONS,
     WAGON_STAGE_LABELS,
-    add_fleet_wagons,
-    list_wagon_fleet,
 )
+from taksimo_store_fleet import add_fleet_wagons, deactivate_fleet_wagon, list_wagon_fleet
 
 
 def wagon_fleet_payload() -> dict:
@@ -32,3 +31,7 @@ def add_wagons_admin(
     if added <= 0:
         return False, message
     return True, message
+
+
+def remove_wagon_admin(wagon_number: str) -> tuple[bool, str]:
+    return deactivate_fleet_wagon(wagon_number)

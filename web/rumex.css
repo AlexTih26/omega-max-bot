@@ -433,3 +433,162 @@ body {
   padding: 16px;
   font-size: 16px;
 }
+
+.rmx-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.rmx-mode-tab {
+  appearance: none;
+  border: 1px solid var(--rmx-border);
+  border-radius: 10px;
+  padding: 10px 8px;
+  background: var(--rmx-surface);
+  color: var(--rmx-muted);
+  font: 600 12px/1.25 Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.rmx-mode-tab--active {
+  color: var(--rmx-text);
+  border-color: rgba(111, 191, 74, 0.45);
+  background: rgba(111, 191, 74, 0.12);
+}
+
+.rmx-mode-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--rmx-muted);
+}
+
+.rmx-driver-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(111, 191, 74, 0.1);
+  border: 1px solid rgba(111, 191, 74, 0.28);
+}
+
+.rmx-driver-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rmx-driver-plate {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--rmx-muted);
+}
+
+.rmx-driver-miss {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: #ff8f8f;
+}
+
+.rmx-count-row {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.rmx-count-btns {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.rmx-count-btn {
+  flex: 1;
+  appearance: none;
+  border: 1px solid var(--rmx-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--rmx-surface);
+  color: var(--rmx-text);
+  font: 600 15px/1 Inter, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.rmx-count-btn--active {
+  border-color: rgba(61, 139, 253, 0.55);
+  background: rgba(61, 139, 253, 0.15);
+}
+
+.rmx-blocks {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.rmx-block-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px;
+}
+
+.rmx-block-letter,
+.rmx-block-number {
+  border: 1px solid var(--rmx-border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--rmx-surface);
+  color: var(--rmx-text);
+  font: 600 16px/1 Inter, system-ui, sans-serif;
+}
+
+.rmx-block-letter {
+  text-align: center;
+}
+
+.rmx-active-section {
+  margin-top: 20px;
+}
+
+.rmx-card-status--wait {
+  color: var(--rmx-warn);
+}
+
+.rmx-card-status--kontur {
+  color: var(--rmx-accent);
+}
+
+.rmx-btn--card {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.rmx-kontur-card {
+  margin: 10px 0 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--rmx-surface);
+  border: 1px solid var(--rmx-border);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.rmx-kontur-card p {
+  margin: 0 0 8px;
+}
+
+.rmx-kontur-label {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--rmx-muted);
+}
+
+.rmx-kontur-blocks {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.rmx-back-btn {
+  margin-bottom: 8px;
+}

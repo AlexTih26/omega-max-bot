@@ -21,6 +21,7 @@ KIND_LABELS = {
 
 APP_LABELS = {
     "rumex": "Румекс",
+    "rumex_accountant": "Румекс · бухгалтер",
     "drivers": "Водители",
     "ipdocs": "Счёт и акт",
 }

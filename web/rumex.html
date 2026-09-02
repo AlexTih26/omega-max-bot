@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rumex.css?v=8">
+  <link rel="stylesheet" href="/rumex.css?v=10">
   <link rel="stylesheet" href="/panel-feedback.css?v=1">
   <script src="https://st.max.ru/js/max-web-app.js"></script>
 </head>
@@ -17,17 +17,50 @@
   <div class="rmx-app">
     <header class="rmx-header">
       <p class="rmx-kicker" id="siteLabel">Румекс · Северомуйск</p>
-      <h1 class="rmx-title">Выдача документов</h1>
-      <p class="rmx-sub" id="rmxSub">Введите хвост номера и нажмите кнопку</p>
-      <p class="rmx-brief">Очередь и парк — в админ-панели. Здесь только выдача документов.</p>
+      <h1 class="rmx-title" id="rmxTitle">Завод Румекс</h1>
+      <p class="rmx-sub" id="rmxSub">Хвост номера и действие</p>
     </header>
 
     <main class="rmx-main">
+      <div class="rmx-mode-tabs" role="tablist" aria-label="Режим работы">
+        <button type="button" class="rmx-mode-tab rmx-mode-tab--active" data-mode="load" role="tab" aria-selected="true">Загрузка с завода</button>
+        <button type="button" class="rmx-mode-tab" data-mode="docs" role="tab" aria-selected="false">Документы после Таксimo</button>
+      </div>
+      <p class="rmx-mode-hint" id="modeHint">ТТН на бумаге. Блоки — здесь. Расписку оформляет бухгалтер.</p>
+
       <div class="rmx-docs-form">
         <label class="rmx-label" for="plateTail">Хвост номера</label>
-        <input class="rmx-input" id="plateTail" type="text" inputmode="numeric" autocomplete="off" placeholder="348" maxlength="6">
-        <button type="button" class="rmx-btn rmx-btn--docs rmx-btn--wide" id="docsBtn">📄 Выдала документы</button>
+        <input class="rmx-input" id="plateTail" type="text" inputmode="numeric" autocomplete="off" placeholder="553" maxlength="6">
+        <div class="rmx-driver-card" id="driverCard" hidden>
+          <p class="rmx-driver-name" id="driverName"></p>
+          <p class="rmx-driver-plate" id="driverPlate"></p>
+        </div>
+        <p class="rmx-driver-miss" id="driverMiss" hidden>Не найдено — проверьте хвост или реестр.</p>
       </div>
+
+      <section id="loadSection">
+        <div class="rmx-count-row" id="blockCountRow">
+          <span class="rmx-label">Сколько блоков</span>
+          <div class="rmx-count-btns" id="blockCountBtns"></div>
+        </div>
+        <div class="rmx-blocks" id="blocksForm"></div>
+        <button type="button" class="rmx-btn rmx-btn--primary rmx-btn--wide" id="loadedBtn">📦 Машина загружена · ждать расписку</button>
+      </section>
+
+      <section id="docsSection" hidden>
+        <p class="rmx-brief">Как раньше: хвост и «Выдала документы». Блоки не нужны.</p>
+        <button type="button" class="rmx-btn rmx-btn--docs rmx-btn--wide" id="docsBtn">📄 Выдала документы</button>
+      </section>
+
+      <section class="rmx-active-section" id="activeSection" hidden>
+        <h2 class="rmx-section-title">Сейчас на заводе</h2>
+        <ul class="rmx-list" id="activeList"></ul>
+      </section>
+
+      <section class="rmx-active-section" id="docsQueueSection" hidden>
+        <h2 class="rmx-section-title">Очередь после Таксimo</h2>
+        <ul class="rmx-list" id="docsQueueList"></ul>
+      </section>
 
       <p class="rmx-error" id="outsideMax" hidden>Откройте панель из MAX или войдите как диспетчер Румекс.</p>
     </main>
@@ -35,8 +68,8 @@
     <div class="rmx-footer">
       <button type="button" class="rmx-info-btn" id="infoBtn" aria-expanded="false">ℹ️ Информация</button>
       <div class="rmx-info-panel" id="infoPanel" hidden>
-        <p>После выгрузки в Таксimo водитель приезжает на завод.</p>
-        <p><strong>Выдала документы</strong> — единственное действие. В чат уходит «выехал с завода», если водитель сам не нажал.</p>
+        <p><strong>Загрузка с завода</strong> — хвост, блоки, бухгалтер, выезд после Контура.</p>
+        <p><strong>Документы после Таксimo</strong> — как раньше: хвост и одна кнопка.</p>
         <p><strong>Ошибка / идея</strong> — кнопка внизу.</p>
       </div>
       <button type="button" class="pfb-link" id="panelFeedbackBtn">💬 Ошибка / идея</button>
@@ -62,6 +95,6 @@
     <div class="rmx-toast" id="toast" hidden></div>
   </div>
   <script src="/panel-feedback.js?v=1"></script>
-  <script src="/rumex.js?v=10"></script>
+  <script src="/rumex.js?v=12"></script>
 </body>
 </html>

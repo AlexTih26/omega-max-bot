@@ -738,6 +738,19 @@ async def bridge_taksimo_yard_arrival(session: dict) -> None:
     result = record_taksimo_yard_arrival(session, operator_event=True)
     if result and result.ok and result.public_message:
         await publish_driver_action(result)
+    plate = _vehicle_plate_from_session(session)
+    if plate:
+        try:
+            from rumex_loading import mark_loading_accepted_taksimo, publish_rumex_loading_result
+            from rumex_loading import RumexLoadingResult
+
+            accepted_line = mark_loading_accepted_taksimo(plate)
+            if accepted_line:
+                await publish_rumex_loading_result(
+                    RumexLoadingResult(True, "Принята в Таксimo", public_messages=[accepted_line])
+                )
+        except Exception:
+            logger.exception("rumex loading accepted bridge plate=%s", plate)
 
 
 async def bridge_taksimo_yard_departure(session: dict, *, when_label: str | None = None) -> None:

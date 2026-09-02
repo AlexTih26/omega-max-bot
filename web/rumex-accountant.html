@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#141a12">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <title>Омега-М · бухгалтер</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/rumex.css?v=10">
+  <link rel="stylesheet" href="/panel-feedback.css?v=1">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="rmx-app">
+    <header class="rmx-header">
+      <p class="rmx-kicker" id="siteLabel">Омега-М · бухгалтер</p>
+      <h1 class="rmx-title">Ждут расписку</h1>
+      <p class="rmx-sub" id="accSub">Экспедиторская расписка · Контур</p>
+    </header>
+
+    <main class="rmx-main">
+      <ul class="rmx-list" id="awaitingList"></ul>
+      <p class="rmx-empty" id="awaitingEmpty" hidden>Нет машин, ждущих расписку.</p>
+
+      <section id="detailSection" hidden>
+        <button type="button" class="rmx-btn rmx-btn--ghost rmx-back-btn" id="backBtn">← Назад</button>
+        <div class="rmx-kontur-card" id="konturCard"></div>
+        <button type="button" class="rmx-btn rmx-btn--fix rmx-btn--wide" id="copyBtn">📋 Скопировать для Контура</button>
+        <button type="button" class="rmx-btn rmx-btn--primary rmx-btn--wide" id="konturBtn">✓ Отправила в Контур</button>
+        <button type="button" class="rmx-btn rmx-btn--ghost rmx-btn--wide" id="undoBtn" hidden>Отменить отметку</button>
+      </section>
+
+      <section class="rmx-active-section" id="historySection">
+        <h2 class="rmx-section-title">Отправлено сегодня</h2>
+        <ul class="rmx-list rmx-list--muted" id="historyList"></ul>
+      </section>
+
+      <p class="rmx-error" id="outsideMax" hidden>Кабинет только для бухгалтера Омега-М.</p>
+    </main>
+
+    <div class="rmx-footer">
+      <button type="button" class="pfb-link" id="panelFeedbackBtn">💬 Ошибка / идея</button>
+    </div>
+
+    <div class="pfb-sheet" id="panelFeedbackSheet" hidden>
+      <div class="pfb-backdrop"></div>
+      <div class="pfb-panel" role="dialog" aria-labelledby="pfbTitle">
+        <p class="pfb-title" id="pfbTitle">Сообщить разработчику</p>
+        <p class="pfb-hint">Не в чат водителей.</p>
+        <div class="pfb-kind" role="group" aria-label="Тип сообщения">
+          <button type="button" class="pfb-kind-btn pfb-kind-btn--active" data-pfb-kind="bug">🐞 Ошибка</button>
+          <button type="button" class="pfb-kind-btn" data-pfb-kind="feature">💡 Идея</button>
+        </div>
+        <textarea class="pfb-text" maxlength="2000" placeholder="Что не сработало…"></textarea>
+        <div class="pfb-actions">
+          <button type="button" class="pfb-btn pfb-btn--ghost" data-pfb-close>Отмена</button>
+          <button type="button" class="pfb-btn pfb-btn--primary" data-pfb-send>Отправить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="rmx-toast" id="toast" hidden></div>
+  </div>
+  <script src="/panel-feedback.js?v=1"></script>
+  <script src="/rumex-accountant.js?v=1"></script>
+</body>
+</html>

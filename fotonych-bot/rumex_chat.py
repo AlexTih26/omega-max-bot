@@ -24,6 +24,14 @@ from drivers_chat import (
     _tz_label,
     publish_driver_action,
 )
+from rumex_loading import (
+    BLOCK_COUNTS,
+    BLOCK_LETTERS,
+    is_rumex_accountant,
+    loading_registry_payload,
+    lookup_registry_by_tail,
+    suggest_rumex_mode,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +73,8 @@ def is_rumex_dispatcher(user_id: int | None) -> bool:
 def panel_role(user_id: int) -> str:
     if is_rumex_dispatcher(user_id):
         return "rumex"
+    if is_rumex_accountant(user_id):
+        return "rumex_accountant"
     if _driver_record(_load_state(), user_id):
         return "driver"
     return "guest"
@@ -73,6 +83,8 @@ def panel_role(user_id: int) -> str:
 def panel_redirect(role: str) -> str:
     if role == "rumex":
         return "/rumex.html"
+    if role == "rumex_accountant":
+        return "/rumex-accountant.html"
     if role == "driver":
         return "/drivers.html"
     return "/drivers.html"
@@ -295,6 +307,9 @@ def rumex_registry_payload() -> dict:
         "journal": _rumex_journal(state),
         "tz_label": _tz_label(),
         "site_label": "Румекс · Северомуйск",
+        "loadings": loading_registry_payload(),
+        "block_letters": sorted(BLOCK_LETTERS),
+        "block_counts": sorted(BLOCK_COUNTS),
     }
 
 

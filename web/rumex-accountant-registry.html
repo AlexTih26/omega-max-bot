@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17221d">
+  <meta name="application-name" content="РУМЕКС · бухгалтер">
+  <title>РУМЕКС · бухгалтерский реестр</title>
+  <link rel="stylesheet" href="/rumex-accountant-registry.css?v=3">
+</head>
+<body>
+  <div class="rr-app">
+    <header class="rr-header">
+      <div>
+        <p class="rr-kicker" id="siteLabel">РУМЕКС · бухгалтерский реестр</p>
+        <h1>Отгрузки и документы</h1>
+        <p class="rr-subtitle">ЭР сначала · ТТН после подтверждения ЭР</p>
+      </div>
+      <div class="rr-user">
+        <span id="currentUser"></span>
+        <button class="rr-link-button" id="logoutButton" type="button" hidden>Выйти</button>
+      </div>
+    </header>
+
+    <main class="rr-main">
+      <div class="rr-notice" id="configNotice" hidden></div>
+      <nav class="rr-tabs" aria-label="Разделы кабинета">
+        <button class="rr-tab" id="registryTab" type="button" aria-selected="true">Реестр</button>
+        <button class="rr-tab" id="testTab" type="button" aria-selected="false">Тестовые погрузки</button>
+        <button class="rr-tab" id="directoryTab" type="button" aria-selected="false">Справочники</button>
+      </nav>
+
+      <section id="registryPanel" aria-labelledby="registryTab">
+        <div class="rr-toolbar">
+          <p class="rr-count" id="registryCount">Загрузка реестра…</p>
+          <button class="rr-refresh" id="refreshButton" type="button">Обновить</button>
+        </div>
+
+        <p class="rr-empty" id="emptyState" hidden>
+          В новом реестре пока нет отгрузок. После подключения диспетчерской они появятся здесь с номером РМ-ГОД-НОМЕР.
+        </p>
+        <section class="rr-list" id="registryList" aria-label="Реестр отгрузок"></section>
+      </section>
+
+      <section id="testPanel" hidden aria-labelledby="testTab">
+        <div class="rr-toolbar">
+          <div>
+            <p class="rr-kicker">Изолированный контур</p>
+            <h2>Завод Румекс · тестовая погрузка</h2>
+            <p class="rr-subtitle">Проверьте фактическую загрузку, верните её на исправление при необходимости и вручную отметьте отправку расписки в ЭДО Контур.</p>
+          </div>
+          <button class="rr-refresh" id="testRefreshButton" type="button">Обновить</button>
+        </div>
+        <p class="rr-empty" id="testEmptyState" hidden>Тестовых погрузок пока нет.</p>
+        <section class="rr-test-list" id="testRegistryList" aria-label="Тестовые погрузки"></section>
+      </section>
+
+      <section id="directoryPanel" hidden aria-labelledby="directoryTab">
+        <div class="rr-directory-heading">
+          <div>
+            <p class="rr-kicker">Подтверждённые данные</p>
+            <h2>Перевозчики</h2>
+            <p class="rr-subtitle">Реквизиты вносятся только вручную по карточке контрагента, старой ТТН или данным из Контура. По машине и водителю они не определяются.</p>
+          </div>
+          <button class="rr-primary-button" id="newCarrierButton" type="button" hidden>Добавить перевозчика</button>
+        </div>
+
+        <p class="rr-notice" id="directoryAccessNotice" hidden>
+          Просмотр справочника доступен всем бухгалтерам. Создавать и изменять карточки может только Бухгалтер 1.
+        </p>
+
+        <form class="rr-carrier-form" id="carrierForm" hidden novalidate>
+          <div class="rr-form-heading">
+            <div>
+              <h3 id="carrierFormTitle">Новый перевозчик</h3>
+              <p class="rr-help">Обязательные поля отмечены знаком * и должны совпадать с подтверждённым источником.</p>
+            </div>
+            <button class="rr-link-button" id="cancelCarrierButton" type="button">Закрыть</button>
+          </div>
+          <div class="rr-form-grid">
+            <label class="rr-field rr-field--wide" for="carrierName">Официальное наименование *
+              <input id="carrierName" name="name" type="text" maxlength="300" autocomplete="organization" required>
+            </label>
+            <label class="rr-field" for="carrierInn">ИНН *
+              <input id="carrierInn" name="inn" type="text" inputmode="numeric" maxlength="12" pattern="[0-9]{10}|[0-9]{12}" required>
+            </label>
+            <label class="rr-field" for="carrierKpp">КПП *
+              <input id="carrierKpp" name="kpp" type="text" inputmode="numeric" maxlength="9" pattern="[0-9]{9}" required>
+            </label>
+            <label class="rr-field rr-field--wide" for="carrierAddress">Юридический адрес *
+              <textarea id="carrierAddress" name="legal_address" maxlength="1000" rows="3" required></textarea>
+            </label>
+            <label class="rr-field" for="confirmationSource">Подтверждённый источник *
+              <select id="confirmationSource" name="confirmation_source" required>
+                <option value="">Выберите источник</option>
+                <option value="counterparty_card">Карточка контрагента</option>
+                <option value="legacy_tn">Старая ТТН</option>
+                <option value="kontur">Реквизиты из Контура</option>
+              </select>
+            </label>
+            <label class="rr-field" for="confirmationReference">Реквизит источника *
+              <input id="confirmationReference" name="confirmation_reference" type="text" maxlength="500" placeholder="Например: карточка от 01.09.2026" required>
+            </label>
+            <label class="rr-field" for="carrierOgrn">ОГРН
+              <input id="carrierOgrn" name="ogrn" type="text" inputmode="numeric" maxlength="15">
+            </label>
+            <label class="rr-field" for="carrierContactName">Контактное лицо
+              <input id="carrierContactName" name="contact_name" type="text" maxlength="200">
+            </label>
+            <label class="rr-field" for="carrierPhone">Телефон
+              <input id="carrierPhone" name="contact_phone" type="tel" maxlength="80" autocomplete="tel">
+            </label>
+            <label class="rr-field rr-field--wide" for="carrierNote">Примечание
+              <textarea id="carrierNote" name="note" maxlength="1000" rows="2"></textarea>
+            </label>
+          </div>
+          <label class="rr-check" for="carrierActive"><input id="carrierActive" name="active" type="checkbox" checked> Карточка активна и доступна для будущих отгрузок</label>
+          <p class="rr-form-error" id="carrierFormError" role="alert"></p>
+          <div class="rr-form-actions">
+            <button class="rr-primary-button" id="saveCarrierButton" type="submit">Сохранить подтверждённые данные</button>
+            <button class="rr-refresh" type="button" id="cancelCarrierButtonBottom">Отмена</button>
+          </div>
+        </form>
+
+        <section class="rr-directory-section" aria-labelledby="samplesTitle">
+          <div class="rr-section-heading">
+            <div>
+              <h3 id="samplesTitle">Образцы документов</h3>
+              <p class="rr-help">Открывайте или скачивайте только загруженные образцы: они помогают сверить форму, которую увидит диспетчер.</p>
+            </div>
+          </div>
+          <div class="rr-samples" id="samplesList" aria-live="polite"></div>
+        </section>
+
+        <section class="rr-directory-section" aria-labelledby="carrierListTitle">
+          <div class="rr-section-heading">
+            <div>
+              <h3 id="carrierListTitle">Карточки перевозчиков</h3>
+              <p class="rr-help" id="carrierCount">Загрузка справочника…</p>
+            </div>
+          </div>
+          <p class="rr-empty" id="carrierEmptyState" hidden>Карточки перевозчиков ещё не заведены. Данные появятся только после ручного ввода Бухгалтером 1 по подтверждённым источникам.</p>
+          <div class="rr-carrier-list" id="carrierList" aria-label="Справочник перевозчиков"></div>
+        </section>
+
+        <section class="rr-directory-section" aria-labelledby="fleetTitle">
+          <div class="rr-section-heading">
+            <div>
+              <h3 id="fleetTitle">Документный парк</h3>
+              <p class="rr-help">Это односторонний снимок физического парка супер-админа. Полный номер, модель и активность машины здесь не редактируются.</p>
+            </div>
+            <button class="rr-primary-button" id="importFleetButton" type="button" hidden>Обновить снимок машин</button>
+          </div>
+          <p class="rr-notice" id="fleetAccessNotice" hidden>
+            Просмотр снимка доступен всем бухгалтерам. Обновить снимок и подтвердить документную связь может только Бухгалтер 1.
+          </p>
+          <p class="rr-empty" id="fleetEmptyState" hidden>Снимок физического парка ещё не загружен. Бухгалтер 1 должен обновить его из реестра супер-админа.</p>
+          <div class="rr-fleet-list" id="fleetList" aria-label="Документный снимок парка"></div>
+
+          <form class="rr-fleet-binding-form" id="fleetBindingForm" hidden novalidate>
+            <div class="rr-form-heading">
+              <div>
+                <h3>Подтверждение документной связи</h3>
+                <p class="rr-help" id="fleetBindingVehicle">Машина не выбрана.</p>
+              </div>
+              <button class="rr-link-button" id="cancelFleetBindingButton" type="button">Закрыть</button>
+            </div>
+            <p class="rr-notice rr-binding-notice">Физические поля машины фиксируются из снимка супер-админа. После сохранения создаётся новая неизменяемая ревизия связи.</p>
+            <div class="rr-form-grid">
+              <label class="rr-field" for="bindingCarrierId">Перевозчик *
+                <select id="bindingCarrierId" name="carrier_id" required></select>
+              </label>
+              <label class="rr-field" for="bindingDriverName">ФИО водителя *
+                <input id="bindingDriverName" name="driver_full_name" type="text" maxlength="200" autocomplete="name" required>
+              </label>
+              <label class="rr-field rr-field--wide" for="bindingNote">Примечание к подтверждению
+                <textarea id="bindingNote" name="note" maxlength="1000" rows="2"></textarea>
+              </label>
+            </div>
+            <p class="rr-form-error" id="fleetBindingFormError" role="alert"></p>
+            <div class="rr-form-actions">
+              <button class="rr-primary-button" id="saveFleetBindingButton" type="submit">Подтвердить связь и создать ревизию</button>
+              <button class="rr-refresh" id="cancelFleetBindingButtonBottom" type="button">Отмена</button>
+            </div>
+          </form>
+        </section>
+      </section>
+    </main>
+
+    <div class="rr-toast" id="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+  <script src="/rumex-accountant-registry.js?v=3"></script>
+</body>
+</html>

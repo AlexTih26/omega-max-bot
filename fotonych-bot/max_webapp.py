@@ -11,6 +11,27 @@ from urllib.parse import unquote
 _MAX_AGE_SEC = 3600
 
 
+def init_data_from_request(request) -> str:
+    """initData из заголовка или query (запасной путь для desktop MAX)."""
+    init_data = request.headers.get("X-Max-Init-Data", "").strip()
+    if not init_data:
+        init_data = request.rel_url.query.get("initData", "").strip()
+    return init_data
+
+
+def user_id_from_request(request, bot_token: str) -> int | None:
+    init_data = init_data_from_request(request)
+    if not init_data:
+        return None
+    parsed = validate_init_data(init_data, bot_token)
+    if parsed is None:
+        return None
+    user = parsed.get("user")
+    if not isinstance(user, dict):
+        return None
+    return user_id_from_user(user)
+
+
 def _build_launch_params(pairs: list[tuple[str, str]]) -> str:
     filtered = [(k, v) for k, v in pairs if k != "hash"]
     filtered.sort(key=lambda x: x[0])

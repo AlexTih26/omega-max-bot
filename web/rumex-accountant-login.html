@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17221d">
+  <title>РУМЕКС · вход бухгалтера</title>
+  <link rel="stylesheet" href="/rumex-accountant-registry.css?v=3">
+</head>
+<body class="rr-login-page">
+  <main class="rr-login-wrap">
+    <section class="rr-login-card" aria-labelledby="loginTitle">
+      <p class="rr-kicker">РУМЕКС</p>
+      <h1 id="loginTitle">Кабинет бухгалтера</h1>
+      <p class="rr-subtitle">Введите свой 5-значный PIN</p>
+      <form id="loginForm">
+        <label class="rr-label" for="pin">PIN</label>
+        <input id="pin" class="rr-pin" type="password" inputmode="numeric" pattern="[0-9]{5}"
+          minlength="5" maxlength="5" autocomplete="off" placeholder="•••••" required autofocus>
+        <button class="rr-primary-button" id="loginButton" type="submit">Войти</button>
+      </form>
+      <p class="rr-form-error" id="loginError" role="alert"></p>
+      <p class="rr-help">Если PIN не выдан или не работает, обратитесь к руководителю.</p>
+    </section>
+  </main>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      var next = params.get("next") || "/rumex-accountant-registry.html";
+      if (!next.startsWith("/") || next.startsWith("//")) next = "/rumex-accountant-registry.html";
+      var form = document.getElementById("loginForm");
+      var pin = document.getElementById("pin");
+      var error = document.getElementById("loginError");
+      var button = document.getElementById("loginButton");
+
+      function responseBody(response) {
+        return response.text().then(function (text) {
+          try {
+            return text ? JSON.parse(text) : {};
+          } catch (e) {
+            return {};
+          }
+        });
+      }
+
+      function responseError(response, body) {
+        if (body && body.error) return body.error;
+        if (response.status === 404) return "Сервер кабинета ещё не обновлён. Повторите через минуту.";
+        return "Сервер вернул ошибку. Повторите позже.";
+      }
+
+      fetch("/api/rumex-registry/auth/check", { credentials: "same-origin" })
+        .then(function (response) {
+          if (response.ok) return response.json();
+          return responseBody(response).then(function (body) {
+            throw new Error(responseError(response, body));
+          });
+        })
+        .then(function (body) {
+          if (body.authenticated) location.replace(next);
+        })
+        .catch(function (err) { error.textContent = err.message || "Не удалось проверить вход"; });
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        error.textContent = "";
+        button.disabled = true;
+        fetch("/api/rumex-registry/auth", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: pin.value.trim() })
+        })
+          .then(function (response) {
+            return responseBody(response).then(function (body) {
+              if (!response.ok) throw new Error(responseError(response, body));
+              return body;
+            });
+          })
+          .then(function () { location.replace(next); })
+          .catch(function (err) {
+            error.textContent = err.message || "Не удалось войти";
+            pin.select();
+            button.disabled = false;
+          });
+      });
+    })();
+  </script>
+</body>
+</html>

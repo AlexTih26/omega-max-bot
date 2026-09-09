@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17221d">
+  <meta name="application-name" content="Завод Румекс · тестовая погрузка">
+  <title>Завод Румекс · тестовая погрузка</title>
+  <link rel="stylesheet" href="/rumex-test-loading.css?v=1">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <div class="rtl-app">
+    <header class="rtl-header">
+      <p class="rtl-kicker">Завод Румекс · тестовая погрузка</p>
+      <h1>Документы после загрузки</h1>
+      <p class="rtl-subtitle">Изолированный тестовый контур. Не меняет очередь, рейсы, склад, вагоны или Таксимо.</p>
+    </header>
+
+    <main class="rtl-main">
+      <p class="rtl-notice" id="accessNotice" hidden></p>
+
+      <section class="rtl-panel" id="loadingPanel" aria-labelledby="loadingTitle">
+        <div class="rtl-section-heading">
+          <div>
+            <p class="rtl-kicker">Новая запись</p>
+            <h2 id="loadingTitle">Фактическая погрузка</h2>
+          </div>
+          <button class="rtl-secondary" id="refreshButton" type="button">Обновить</button>
+        </div>
+        <form id="loadingForm" novalidate>
+          <div class="rtl-form-grid">
+            <label class="rtl-field" for="plateTail">Хвост машины *
+              <input id="plateTail" name="plate_tail" type="text" inputmode="numeric" maxlength="12" placeholder="Например: 553" required>
+            </label>
+            <label class="rtl-field" for="loadedAt">Фактическая погрузка *
+              <input id="loadedAt" name="loaded_at" type="datetime-local" required>
+            </label>
+            <label class="rtl-field" for="blockCount">Число блоков *
+              <input id="blockCount" name="block_count" type="number" min="1" max="200" value="1" required>
+            </label>
+          </div>
+
+          <section class="rtl-vehicle-card" id="vehicleCard" hidden aria-live="polite">
+            <p class="rtl-section-label">Подтверждённая документная карточка</p>
+            <div id="vehicleDetails"></div>
+          </section>
+          <p class="rtl-help" id="vehicleHelp">После ввода хвоста карточка подставится только из подтверждённого бухгалтером снимка.</p>
+
+          <section class="rtl-block-section" aria-labelledby="blocksTitle">
+            <div class="rtl-section-heading">
+              <div>
+                <h3 id="blocksTitle">Блоки</h3>
+                <p class="rtl-help">Вес подставляется из утверждённого справочника. Диспетчер вводит только букву и индивидуальный номер.</p>
+              </div>
+            </div>
+            <div class="rtl-blocks" id="blocksList"></div>
+            <p class="rtl-total" id="totalWeight">Итого: 0 кг</p>
+          </section>
+
+          <p class="rtl-error" id="formError" role="alert"></p>
+          <button class="rtl-primary" id="submitButton" type="submit">📦 Машина загружена · ждать расписку</button>
+        </form>
+      </section>
+
+      <section class="rtl-panel" id="correctionPanel" hidden aria-labelledby="correctionTitle">
+        <div class="rtl-section-heading">
+          <div>
+            <p class="rtl-kicker">Возвращено бухгалтером</p>
+            <h2 id="correctionTitle">Исправьте погрузку</h2>
+          </div>
+          <button class="rtl-secondary" id="closeCorrectionButton" type="button">Закрыть</button>
+        </div>
+        <p class="rtl-notice rtl-notice--warning" id="correctionReason"></p>
+        <form id="correctionForm" novalidate>
+          <div class="rtl-form-grid">
+            <label class="rtl-field" for="correctionLoadedAt">Фактическая погрузка *
+              <input id="correctionLoadedAt" name="loaded_at" type="datetime-local" required>
+            </label>
+            <label class="rtl-field" for="correctionBlockCount">Число блоков *
+              <input id="correctionBlockCount" name="block_count" type="number" min="1" max="200" required>
+            </label>
+          </div>
+          <div class="rtl-blocks" id="correctionBlocksList"></div>
+          <p class="rtl-total" id="correctionTotalWeight">Итого: 0 кг</p>
+          <p class="rtl-error" id="correctionError" role="alert"></p>
+          <button class="rtl-primary" id="resubmitButton" type="submit">Отправить исправленную погрузку бухгалтеру</button>
+        </form>
+      </section>
+
+      <section class="rtl-panel" aria-labelledby="registryTitle">
+        <div class="rtl-section-heading">
+          <div>
+            <p class="rtl-kicker">История</p>
+            <h2 id="registryTitle">Тестовые погрузки</h2>
+          </div>
+          <p class="rtl-count" id="registryCount">Загрузка…</p>
+        </div>
+        <p class="rtl-empty" id="emptyState" hidden>Тестовых погрузок пока нет.</p>
+        <div class="rtl-list" id="registryList"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="rtl-dialog-backdrop" id="handoverDialog" hidden>
+    <section class="rtl-dialog" role="dialog" aria-modal="true" aria-labelledby="handoverTitle">
+      <h2 id="handoverTitle">Вы распечатали документы и передали их водителю?</h2>
+      <p>Подтверждение будет сохранено навсегда с вашим именем и временем.</p>
+      <div class="rtl-dialog-actions">
+        <button class="rtl-primary" id="confirmHandoverButton" type="button">Подтвердить</button>
+        <button class="rtl-secondary" id="cancelHandoverButton" type="button">Отмена</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="rtl-toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/rumex-test-loading.js?v=1"></script>
+</body>
+</html>

@@ -28,6 +28,11 @@ from max_webapp import (
 from drivers_api import register_drivers_routes
 from panel_api import register_panel_routes
 from rumex_api import register_rumex_routes
+from rumex_registry_api import register_rumex_registry_routes
+from rumex_registry_auth import (
+    register_rumex_registry_auth_routes,
+    rumex_registry_auth_middleware,
+)
 from taksimo_find_api import register_taksimo_find_routes
 from taksimo_api import register_taksimo_routes
 from taksimo_auth import register_taksimo_auth_routes, taksimo_auth_middleware
@@ -239,7 +244,9 @@ def create_app() -> web.Application:
     init_db()
     init_work_db()
     init_omega_chat_db()
-    app = web.Application(middlewares=[taksimo_auth_middleware])
+    app = web.Application(
+        middlewares=[taksimo_auth_middleware, rumex_registry_auth_middleware]
+    )
     app.router.add_get("/api/health", handle_health)
     app.router.add_get("/api/posts/{post_id}", handle_get_post)
     app.router.add_post("/api/posts/{post_id}/comments", handle_post_comment)
@@ -254,6 +261,8 @@ def create_app() -> web.Application:
     register_panel_routes(app)
     register_admin_routes(app)
     register_rumex_routes(app)
+    register_rumex_registry_auth_routes(app)
+    register_rumex_registry_routes(app)
     from ipdocs_api import register_ipdocs_routes
 
     register_ipdocs_routes(app)

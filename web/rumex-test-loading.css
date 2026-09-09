@@ -66,6 +66,7 @@ h3 { font-size: 1rem; }
 .rtl-timeline li { color: #c8d8cb; font-size: .82rem; line-height: 1.35; }
 .rtl-timeline time { display: block; color: #91a99a; font-size: .76rem; }
 .rtl-dialog-backdrop { position: fixed; z-index: 5; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(5, 12, 8, .72); }
+.rtl-dialog-backdrop[hidden] { display: none; }
 .rtl-dialog { width: min(100%, 450px); padding: 21px; border: 1px solid #53735c; border-radius: 16px; background: #1e2d22; box-shadow: 0 20px 60px rgba(0, 0, 0, .38); }
 .rtl-dialog h2 { font-size: 1.15rem; }
 .rtl-dialog p { margin: 12px 0 0; color: #b5c7b9; line-height: 1.45; }

@@ -52,6 +52,7 @@
   var fleetBindingFormError = document.getElementById("fleetBindingFormError");
   var bindingCarrierId = document.getElementById("bindingCarrierId");
   var bindingDriverName = document.getElementById("bindingDriverName");
+  var bindingDriverLicense = document.getElementById("bindingDriverLicense");
   var bindingNote = document.getElementById("bindingNote");
   var saveFleetBindingButton = document.getElementById("saveFleetBindingButton");
   var cancelFleetBindingButton = document.getElementById("cancelFleetBindingButton");
@@ -290,7 +291,7 @@
     var driver = snapshot.driver || {};
     var section = element("div", "rr-test-snapshot");
     section.appendChild(element("p", "rr-test-detail", "Автомобиль: " + ([vehicle.full_plate, vehicle.model].filter(Boolean).join(" · ") || "—")));
-    section.appendChild(element("p", "rr-test-detail", "Водитель: " + (driver.full_name || "—")));
+    section.appendChild(element("p", "rr-test-detail", "Водитель: " + (driver.full_name || "—") + (driver.license_number ? " · удостоверение " + driver.license_number : "")));
     section.appendChild(element("p", "rr-test-detail", "Перевозчик: " + (carrier.name || "—") + (carrier.inn ? " · ИНН " + carrier.inn : "")));
     section.appendChild(element("p", "rr-test-detail", "Юридический адрес: " + (carrier.legal_address || "—")));
     parent.appendChild(section);
@@ -424,7 +425,8 @@
     var card = element("article", "rr-test-card");
     var heading = element("div", "rr-test-heading");
     var title = element("div");
-    title.appendChild(element("h3", "", shipment.registry_number));
+    title.appendChild(element("h3", "", shipment.ttn_number || shipment.registry_number));
+    if (shipment.ttn_number) title.appendChild(element("p", "rr-test-meta", "Внутренняя запись: " + shipment.registry_number));
     title.appendChild(element("p", "rr-test-meta", "Погрузка: " + formatTime(shipment.loaded_at) + " · ревизия №" + (shipment.revision_number || 1)));
     title.appendChild(element("p", "rr-test-meta", "Масса: " + Number(shipment.total_weight_kg || 0).toLocaleString("ru-RU") + " кг"));
     heading.appendChild(title);
@@ -647,6 +649,7 @@
       bindingCarrierId.appendChild(option);
     });
     bindingDriverName.value = binding ? binding.driver_full_name || "" : vehicle.source_driver_name || "";
+    bindingDriverLicense.value = binding ? binding.driver_license_number || "" : "";
     bindingNote.value = "";
     fleetBindingFormError.textContent = "";
     fleetBindingForm.hidden = false;
@@ -708,6 +711,7 @@
         var details = element("div", "rr-fleet-binding");
         var carrier = binding.carrier_snapshot || {};
         details.appendChild(element("p", "rr-fleet-detail", "Подтверждённая связь: " + (binding.driver_full_name || "—")));
+        details.appendChild(element("p", "rr-fleet-detail", "Удостоверение: " + (binding.driver_license_number || "—")));
         details.appendChild(element("p", "rr-fleet-detail", "Перевозчик: " + (carrier.name || "—") + (carrier.inn ? " · ИНН " + carrier.inn : "")));
         details.appendChild(element("p", "rr-fleet-detail", "Проверено: " + formatTime(binding.checked_at) + (binding.confirmed_by ? " · " + binding.confirmed_by : "")));
         card.appendChild(details);
@@ -756,6 +760,7 @@
       body: JSON.stringify({
         carrier_id: Number(bindingCarrierId.value),
         driver_full_name: bindingDriverName.value.trim(),
+        driver_license_number: bindingDriverLicense.value.trim(),
         note: bindingNote.value.trim()
       })
     })

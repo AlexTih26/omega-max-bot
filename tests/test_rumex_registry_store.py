@@ -63,6 +63,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 "test_shipment_revisions",
                 "test_shipment_items",
                 "test_shipment_documents",
+                "test_ttn_number_sequences",
                 "rumex_test_shipment_events",
                 "block_types",
                 "shipments",
@@ -186,12 +187,14 @@ class RumexRegistryStoreTests(unittest.TestCase):
             plate_tail="553",
             carrier_id=carrier["id"],
             driver_full_name="Иванов Иван Иванович",
+            driver_license_number="38 12 123456",
             accountant_name="Бухгалтер 1",
             checked_at=1_767_225_700.0,
         )
         self.assertEqual(first["status"], "confirmed")
         self.assertEqual(first["full_plate_snapshot"], "К553НХ 138")
         self.assertEqual(first["carrier_snapshot"]["inn"], "1234567890")
+        self.assertEqual(first["driver_license_number"], "38 12 123456")
 
         source["drivers"][0]["vehicle"] = "FAW J7"
         source["drivers"][0]["taksimo_plate"] = "К553НХ 138 (новый снимок)"
@@ -205,6 +208,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
             plate_tail="553",
             carrier_id=carrier["id"],
             driver_full_name="Иванов Иван Иванович",
+            driver_license_number="38 12 123456",
             accountant_name="Бухгалтер 1",
             checked_at=1_767_225_900.0,
         )
@@ -228,7 +232,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
                     "DELETE FROM document_vehicle_bindings WHERE id = ?", (first["id"],)
                 )
 
-    def test_test_shipment_flow_uses_shared_number_and_keeps_revisions_forever(self) -> None:
+    def test_test_shipment_flow_assigns_immutable_ttn_number_and_keeps_revisions_forever(self) -> None:
         source_path = Path(self._tmpdir.name) / "drivers_registry.json"
         source_path.write_text(
             json.dumps(
@@ -264,14 +268,19 @@ class RumexRegistryStoreTests(unittest.TestCase):
             plate_tail="553",
             carrier_id=carrier["id"],
             driver_full_name="Иванов Иван Иванович",
+            driver_license_number="38 12 123456",
             accountant_name="Бухгалтер 1",
         )
         existing = self._create_shipment(number="100")
 
         shipment = store.create_test_shipment(
             plate_tail="553",
-            block_count=2,
-            items=[{"letter": "A", "number": "3611"}, {"letter": "K", "number": "7741"}],
+            block_count=3,
+            items=[
+                {"letter": "A", "number": "3611"},
+                {"letter": "K", "number": "7741"},
+                {"letter": "A", "number": "3612"},
+            ],
             dispatcher_max_user_id=9001,
             dispatcher_name="Диспетчер теста",
             loaded_at=1_767_225_600.0,
@@ -281,9 +290,10 @@ class RumexRegistryStoreTests(unittest.TestCase):
         self.assertEqual(existing["registry_number"], "РМ-2026-000001")
         self.assertEqual(shipment["registry_number"], "РМ-2026-000002")
         self.assertEqual(shipment["status"], "awaiting_accountant_review")
-        self.assertEqual(shipment["total_weight_kg"], 11630)
+        self.assertEqual(shipment["total_weight_kg"], 19410)
         self.assertEqual(shipment["document_snapshot"]["vehicle"]["full_plate"], "К553НХ 138")
         self.assertEqual(shipment["document_snapshot"]["driver"]["full_name"], "Иванов Иван Иванович")
+        self.assertEqual(shipment["document_snapshot"]["driver"]["license_number"], "38 12 123456")
         self.assertEqual(shipment["documents"], [])
         history = store.list_test_block_history("A", "3611")
         self.assertEqual(history[0]["registry_number"], shipment["registry_number"])
@@ -299,8 +309,12 @@ class RumexRegistryStoreTests(unittest.TestCase):
 
         corrected = store.resubmit_test_shipment(
             shipment["id"],
-            block_count=2,
-            items=[{"letter": "A", "number": "51151"}, {"letter": "K", "number": "7741"}],
+            block_count=3,
+            items=[
+                {"letter": "A", "number": "51151"},
+                {"letter": "K", "number": "7741"},
+                {"letter": "A", "number": "3612"},
+            ],
             loaded_at=1_767_228_000.0,
             dispatcher_max_user_id=9001,
             dispatcher_name="Диспетчер теста",
@@ -308,7 +322,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
         )
         self.assertEqual(corrected["revision_number"], 2)
         self.assertEqual(corrected["status"], "awaiting_accountant_review")
-        self.assertEqual([item["block_number"] for item in corrected["items"]], ["51151", "7741"])
+        self.assertEqual([item["block_number"] for item in corrected["items"]], ["51151", "7741", "3612"])
         self.assertEqual(store.list_test_block_history("A", "3611")[0]["revision_number"], 1)
 
         reviewed = store.review_test_shipment(
@@ -316,9 +330,16 @@ class RumexRegistryStoreTests(unittest.TestCase):
             occurred_at=1_767_228_200.0,
         )
         self.assertEqual(reviewed["status"], "awaiting_er_sent")
+        self.assertEqual(reviewed["ttn_number"], "ТТН №РМ-2026-000001")
+        self.assertEqual(reviewed["ttn_year"], 2026)
+        self.assertEqual(reviewed["ttn_sequence"], 1)
         self.assertEqual(
             {document["document_kind"]: document["status"] for document in reviewed["documents"]},
             {"ER": "draft", "TN": "draft"},
+        )
+        self.assertEqual(
+            {document["document_kind"]: document["registry_number"] for document in reviewed["documents"]}["TN"],
+            "ТТН №РМ-2026-000001",
         )
 
         ready = store.mark_test_er_sent_to_kontur(
@@ -363,10 +384,99 @@ class RumexRegistryStoreTests(unittest.TestCase):
         with sqlite3.connect(store.DB_PATH) as conn:
             revision_id = handed["revisions"][0]["id"]
             item_id = store.list_test_block_history("A", "3611")[0]["id"]
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "Выданный номер ТТН нельзя изменять"):
+                conn.execute(
+                    "UPDATE test_shipments SET ttn_number = 'ТТН №РМ-2026-000002' WHERE id = ?",
+                    (shipment["id"],),
+                )
+            with self.assertRaisesRegex(sqlite3.DatabaseError, "Выданную ТТН нельзя удалить"):
+                conn.execute("DELETE FROM test_shipments WHERE id = ?", (shipment["id"],))
             with self.assertRaisesRegex(sqlite3.DatabaseError, "нельзя изменять"):
                 conn.execute("UPDATE test_shipment_revisions SET actor_name = 'x' WHERE id = ?", (revision_id,))
             with self.assertRaisesRegex(sqlite3.DatabaseError, "нельзя удалять"):
                 conn.execute("DELETE FROM test_shipment_items WHERE id = ?", (item_id,))
+
+    def test_test_ttn_number_restarts_each_loaded_at_calendar_year(self) -> None:
+        source_path = Path(self._tmpdir.name) / "drivers_registry.json"
+        source_path.write_text(
+            json.dumps(
+                {
+                    "drivers": [
+                        {
+                            "max_user_id": 42,
+                            "plate_tail": "553",
+                            "name": "Иванов Иван Иванович",
+                            "vehicle": "FAW J6",
+                            "taksimo_plate": "К553НХ 138",
+                            "active": True,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        carrier = store.save_carrier(
+            name="ООО «Тестовый перевозчик»",
+            inn="1234567890",
+            kpp="123456789",
+            legal_address="г. Иркутск, ул. Тестовая, д. 1",
+            confirmation_source="counterparty_card",
+            confirmation_reference="Карточка от 01.09.2026",
+            actor_name="Бухгалтер 1",
+        )
+        store.import_document_fleet_snapshot(
+            accountant_name="Бухгалтер 1", source_path=source_path
+        )
+        store.confirm_document_vehicle_binding(
+            plate_tail="553",
+            carrier_id=carrier["id"],
+            driver_full_name="Иванов Иван Иванович",
+            driver_license_number="38 12 123456",
+            accountant_name="Бухгалтер 1",
+        )
+
+        def create_and_review(*, loaded_at: float, item_number: str) -> dict:
+            shipment = store.create_test_shipment(
+                plate_tail="553",
+                block_count=3,
+                items=[
+                    {"letter": "A", "number": item_number},
+                    {"letter": "K", "number": f"K{item_number}"},
+                    {"letter": "A", "number": f"A{item_number}"},
+                ],
+                dispatcher_max_user_id=9001,
+                dispatcher_name="Диспетчер теста",
+                loaded_at=loaded_at,
+                registry_year=2026,
+                created_at=loaded_at + 100.0,
+            )
+            return store.review_test_shipment(
+                shipment["id"],
+                accountant_name="Бухгалтер 1",
+                er_required=False,
+                occurred_at=loaded_at + 200.0,
+            )
+
+        loaded_in_2026 = create_and_review(loaded_at=1_767_225_600.0, item_number="2026")
+        loaded_in_2027 = create_and_review(loaded_at=1_798_761_600.0, item_number="2027")
+
+        self.assertEqual(loaded_in_2026["ttn_number"], "ТТН №РМ-2026-000001")
+        self.assertEqual(loaded_in_2026["ttn_sequence"], 1)
+        self.assertEqual(loaded_in_2027["ttn_number"], "ТТН №РМ-2027-000001")
+        self.assertEqual(loaded_in_2027["ttn_sequence"], 1)
+        self.assertEqual(loaded_in_2027["registry_year"], 2026)
+
+    def test_test_shipment_rejects_outside_approved_block_count(self) -> None:
+        with self.assertRaisesRegex(ValueError, "от 3 до 6 блоков"):
+            store.create_test_shipment(
+                plate_tail="553",
+                block_count=2,
+                items=[{"letter": "A", "number": "1"}, {"letter": "A", "number": "2"}],
+                dispatcher_max_user_id=9001,
+                dispatcher_name="Диспетчер теста",
+                loaded_at=1_767_225_600.0,
+            )
 
     def test_registry_number_is_unique(self) -> None:
         shipment = self._create_shipment()

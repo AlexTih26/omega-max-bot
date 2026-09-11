@@ -20,10 +20,11 @@ from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "rumex_registry.db"
 FLEET_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "data" / "drivers_registry.json"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 PRODUCT_NAME = "Блок 9,7/8,8"
 BLOCK_CODES = ("A", "B", "C", "D", "E", "F", "K")
+TEST_SHIPMENT_BLOCK_COUNTS = (3, 4, 5, 6)
 DEFAULT_PROFILE_CODE = "rumex-8102-v1"
 CONFIRMATION_SOURCES = (
     "counterparty_card",
@@ -105,15 +106,37 @@ def _json(value: Mapping[str, Any] | None = None) -> str:
 def _seed_reference_data(conn: sqlite3.Connection, *, now: float) -> None:
     """Добавить исходные справочники, не перезаписывая отредактированные данные."""
     organizations = (
-        ("ООО «Омега-М»", "Грузоотправитель и грузополучатель по образцу 8102"),
-        ("ООО «РУМЕКС»", "Заказчик услуг по организации перевозки по образцу 8102"),
+        (
+            "ООО «Омега-М»",
+            "143405, Московская область, г.о. Красногорск,\nг. Красногорск, ул. Почтовая, д. 3",
+            "5406829253",
+            "502401001",
+            "1235400005301",
+            "Грузоотправитель и грузополучатель утверждённой ТТН РУМЕКС",
+        ),
+        (
+            "ООО «РУМЕКС»",
+            "364030, Чеченская Республика, г.о. город Грозный,\nг. Грозный, р-н Байсангуровский, ул. Сайханова, двлд. 222",
+            "9728126848",
+            "201001001",
+            "1247700186029",
+            "Заказчик услуг по организации перевозки утверждённой ТТН РУМЕКС",
+        ),
     )
-    for name, note in organizations:
+    for name, legal_address, inn, kpp, ogrn, note in organizations:
         conn.execute(
-            """INSERT INTO organizations (name, note, active, created_at, updated_at)
-               VALUES (?, ?, 1, ?, ?)
-               ON CONFLICT(name) DO NOTHING""",
-            (name, note, now, now),
+            """INSERT INTO organizations (
+                   name, legal_address, inn, kpp, ogrn, note, active, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   legal_address = excluded.legal_address,
+                   inn = excluded.inn,
+                   kpp = excluded.kpp,
+                   ogrn = excluded.ogrn,
+                   note = excluded.note,
+                   active = 1,
+                   updated_at = excluded.updated_at""",
+            (name, legal_address, inn, kpp, ogrn, note, now, now),
         )
 
     org_ids = {
@@ -126,23 +149,36 @@ def _seed_reference_data(conn: sqlite3.Connection, *, now: float) -> None:
     omega_id = org_ids["ООО «Омега-М»"]
     rumex_id = org_ids["ООО «РУМЕКС»"]
     conn.execute(
-        """INSERT INTO document_profiles (
-               code, title, template_reference, sender_organization_id,
-               organizer_organization_id, recipient_organization_id,
-               delivery_location, delivery_station_code, active, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-           ON CONFLICT(code) DO NOTHING""",
-        (
-            DEFAULT_PROFILE_CODE,
-            "Транспортная накладная РУМЕКС, образец 8102",
-            "docs/registry/8102 образец.pdf",
-            omega_id,
-            rumex_id,
-            omega_id,
-            "ж/д станция Таксимо",
-            "90440",
-            now,
-            now,
+            """INSERT INTO document_profiles (
+                code, title, template_reference, sender_organization_id,
+                organizer_organization_id, recipient_organization_id,
+                pickup_location, delivery_location, delivery_station_code, active, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(code) DO UPDATE SET
+                title = excluded.title,
+                template_reference = excluded.template_reference,
+                sender_organization_id = excluded.sender_organization_id,
+                organizer_organization_id = excluded.organizer_organization_id,
+                recipient_organization_id = excluded.recipient_organization_id,
+                pickup_location = excluded.pickup_location,
+                delivery_location = excluded.delivery_location,
+                delivery_station_code = excluded.delivery_station_code,
+                active = 1,
+                updated_at = excluded.updated_at""",
+            (
+                DEFAULT_PROFILE_CODE,
+                "Транспортная накладная РУМЕКС, утверждённый бланк",
+                "fotonych-bot/rumex_templates/ТТН РУМЕКС — утверждённый шаблон.xlsx",
+                omega_id,
+                rumex_id,
+                omega_id,
+                "Завод по производству тоннельной обделки на восточном\n"
+                "портале Северомуйского тоннеля пгт. Северомуйск, расположенный "
+                "Республика Бурятия, Муйский р-н, ГП «Северомуйское», пгт. Северомуйск",
+                "ж/д станция Таксимо",
+                "90440",
+                now,
+                now,
         ),
     )
 
@@ -295,6 +331,7 @@ def init_rumex_registry_db() -> None:
                 full_plate_snapshot TEXT NOT NULL DEFAULT '',
                 model_snapshot TEXT NOT NULL DEFAULT '',
                 driver_full_name TEXT NOT NULL,
+                driver_license_number TEXT NOT NULL DEFAULT '',
                 vehicle_snapshot_json TEXT NOT NULL DEFAULT '{}',
                 carrier_snapshot_json TEXT NOT NULL DEFAULT '{}',
                 checked_at REAL NOT NULL,
@@ -342,6 +379,10 @@ def init_rumex_registry_db() -> None:
                 kontur_reference TEXT NOT NULL DEFAULT '',
                 kontur_sent_at REAL,
                 documents_ready_at REAL,
+                ttn_number TEXT NOT NULL DEFAULT '',
+                ttn_year INTEGER,
+                ttn_sequence INTEGER,
+                ttn_assigned_at REAL,
                 printed_by_max_user_id INTEGER,
                 printed_by_name TEXT NOT NULL DEFAULT '',
                 printed_confirmed_at REAL,
@@ -431,6 +472,12 @@ def init_rumex_registry_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_rumex_test_documents_number
                 ON test_shipment_documents(registry_number, document_kind);
+
+            CREATE TABLE IF NOT EXISTS test_ttn_number_sequences (
+                ttn_year INTEGER PRIMARY KEY CHECK (ttn_year BETWEEN 2000 AND 9999),
+                last_sequence INTEGER NOT NULL CHECK (last_sequence >= 0),
+                updated_at REAL NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS rumex_test_shipment_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -653,6 +700,36 @@ def init_rumex_registry_db() -> None:
             conn,
             "test_shipments",
             "printed_by_identity_id TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            conn,
+            "document_vehicle_bindings",
+            "driver_license_number TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(conn, "test_shipments", "ttn_number TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "test_shipments", "ttn_year INTEGER")
+        _add_column_if_missing(conn, "test_shipments", "ttn_sequence INTEGER")
+        _add_column_if_missing(conn, "test_shipments", "ttn_assigned_at REAL")
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_rumex_test_shipments_ttn_number
+               ON test_shipments(ttn_number) WHERE ttn_number <> ''"""
+        )
+        conn.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS test_shipments_ttn_number_no_change
+            BEFORE UPDATE OF ttn_number, ttn_year, ttn_sequence, ttn_assigned_at ON test_shipments
+            WHEN OLD.ttn_number <> ''
+            BEGIN
+                SELECT RAISE(ABORT, 'Выданный номер ТТН нельзя изменять');
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS test_shipments_issued_ttn_no_delete
+            BEFORE DELETE ON test_shipments
+            WHEN OLD.ttn_number <> ''
+            BEGIN
+                SELECT RAISE(ABORT, 'Выданную ТТН нельзя удалить');
+            END;
+            """
         )
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _seed_reference_data(conn, now=now)
@@ -1062,6 +1139,37 @@ def _reserve_number_in_transaction(
     return sequence, f"РМ-{registry_year}-{sequence:06d}"
 
 
+def _test_ttn_year_for_loaded_at(loaded_at: float) -> int:
+    """Вернуть календарный год фактической погрузки в рабочем часовом поясе."""
+    return datetime.fromtimestamp(loaded_at, _timezone()).year
+
+
+def _reserve_test_ttn_number_in_transaction(
+    conn: sqlite3.Connection, *, ttn_year: int, now: float
+) -> tuple[int, str]:
+    """Выдать необратимый номер утверждённой ТТН в текущей IMMEDIATE-транзакции."""
+    row = conn.execute(
+        "SELECT last_sequence FROM test_ttn_number_sequences WHERE ttn_year = ?",
+        (ttn_year,),
+    ).fetchone()
+    if row is None:
+        sequence = 1
+        conn.execute(
+            """INSERT INTO test_ttn_number_sequences (ttn_year, last_sequence, updated_at)
+               VALUES (?, ?, ?)""",
+            (ttn_year, sequence, now),
+        )
+    else:
+        sequence = int(row["last_sequence"]) + 1
+        conn.execute(
+            """UPDATE test_ttn_number_sequences
+               SET last_sequence = ?, updated_at = ?
+               WHERE ttn_year = ?""",
+            (sequence, now, ttn_year),
+        )
+    return sequence, f"ТТН №РМ-{ttn_year}-{sequence:06d}"
+
+
 def _normalized_items(
     conn: sqlite3.Connection, items: Iterable[Mapping[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -1351,6 +1459,7 @@ def confirm_document_vehicle_binding(
     plate_tail: Any,
     carrier_id: int,
     driver_full_name: Any,
+    driver_license_number: Any,
     accountant_name: str,
     note: Any = "",
     checked_at: float | None = None,
@@ -1365,6 +1474,9 @@ def confirm_document_vehicle_binding(
     if not actor:
         raise ValueError("Не определён бухгалтер")
     driver = _required_carrier_text(driver_full_name, "ФИО водителя", max_length=200)
+    driver_license = _required_carrier_text(
+        driver_license_number, "номер водительского удостоверения", max_length=100
+    )
     binding_note = _optional_carrier_text(note, "примечание", max_length=1000)
     try:
         parsed_carrier_id = int(carrier_id)
@@ -1402,10 +1514,10 @@ def confirm_document_vehicle_binding(
             cursor = conn.execute(
                 """INSERT INTO document_vehicle_bindings (
                        document_vehicle_id, carrier_id, status, plate_tail_snapshot,
-                       full_plate_snapshot, model_snapshot, driver_full_name,
+                       full_plate_snapshot, model_snapshot, driver_full_name, driver_license_number,
                        vehicle_snapshot_json, carrier_snapshot_json, checked_at,
                        confirmed_by, note, created_at
-                   ) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, 'confirmed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     int(vehicle["id"]),
                     parsed_carrier_id,
@@ -1413,6 +1525,7 @@ def confirm_document_vehicle_binding(
                     vehicle_snapshot["full_plate"],
                     vehicle_snapshot["model"],
                     driver,
+                    driver_license,
                     _json(vehicle_snapshot),
                     _json(carrier_snapshot),
                     now,
@@ -1434,6 +1547,7 @@ def confirm_document_vehicle_binding(
                     "plate_tail": tail,
                     "carrier_id": parsed_carrier_id,
                     "driver_full_name": driver,
+                    "driver_license_number": driver_license,
                 },
                 occurred_at=now,
             )
@@ -1507,7 +1621,10 @@ def _test_document_snapshot(
         "document_profile": profile,
         "vehicle": vehicle,
         "carrier": carrier,
-        "driver": {"full_name": str(binding["driver_full_name"])},
+        "driver": {
+            "full_name": str(binding["driver_full_name"]),
+            "license_number": str(binding["driver_license_number"]),
+        },
         "document_vehicle_binding_id": int(binding["id"]),
         "document_binding_checked_at": float(binding["checked_at"]),
         "document_binding_confirmed_by": str(binding["confirmed_by"]),
@@ -1717,8 +1834,8 @@ def create_test_shipment(
         expected_count = int(block_count)
     except (TypeError, ValueError):
         raise ValueError("Укажите число блоков") from None
-    if expected_count <= 0 or expected_count > 200:
-        raise ValueError("Число блоков должно быть от 1 до 200")
+    if expected_count not in TEST_SHIPMENT_BLOCK_COUNTS:
+        raise ValueError("Для ТТН укажите от 3 до 6 блоков")
     dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
         dispatcher_max_user_id=dispatcher_max_user_id,
         dispatcher_name=dispatcher_name,
@@ -1893,8 +2010,8 @@ def resubmit_test_shipment(
         expected_count = int(block_count)
     except (TypeError, ValueError):
         raise ValueError("Укажите число блоков") from None
-    if expected_count <= 0 or expected_count > 200:
-        raise ValueError("Число блоков должно быть от 1 до 200")
+    if expected_count not in TEST_SHIPMENT_BLOCK_COUNTS:
+        raise ValueError("Для ТТН укажите от 3 до 6 блоков")
     dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
         dispatcher_max_user_id=dispatcher_max_user_id,
         dispatcher_name=dispatcher_name,
@@ -1996,25 +2113,52 @@ def review_test_shipment(
             shipment = _test_shipment_for_update(conn, shipment_id)
             if str(shipment["status"]) != "awaiting_accountant_review":
                 raise ValueError("Проверить можно только погрузку, ожидающую бухгалтера")
+            if str(shipment["ttn_number"] or ""):
+                raise ValueError("Для этой погрузки уже выдан неизменяемый номер ТТН")
+            snapshot = json.loads(str(shipment["document_snapshot_json"]))
+            license_number = str((snapshot.get("driver") or {}).get("license_number") or "").strip()
+            if not license_number:
+                raise ValueError(
+                    "В снимке документа нет номера водительского удостоверения. "
+                    "Подтвердите новую связь машины у Бухгалтера 1 и создайте новую погрузку."
+                )
+            items_count = int(
+                conn.execute(
+                    """SELECT COUNT(*) AS count FROM test_shipment_items
+                       WHERE test_shipment_id = ? AND revision_number = ?""",
+                    (shipment_id, int(shipment["revision_number"])),
+                ).fetchone()["count"]
+            )
+            if items_count not in TEST_SHIPMENT_BLOCK_COUNTS:
+                raise ValueError("Утверждённая ТТН доступна только для погрузки от 3 до 6 блоков")
+            ttn_year = _test_ttn_year_for_loaded_at(float(shipment["loaded_at"]))
+            ttn_sequence, ttn_number = _reserve_test_ttn_number_in_transaction(
+                conn, ttn_year=ttn_year, now=now
+            )
             next_status = "awaiting_er_sent" if er_required else "documents_ready"
             conn.execute(
                 """UPDATE test_shipments SET
                        status = ?, accountant_name = ?, accountant_reviewed_at = ?,
-                       er_required = ?, documents_ready_at = ?, updated_at = ?
-                   WHERE id = ?""",
+                       er_required = ?, documents_ready_at = ?, ttn_number = ?, ttn_year = ?,
+                       ttn_sequence = ?, ttn_assigned_at = ?, updated_at = ?
+                    WHERE id = ?""",
                 (
                     next_status,
                     actor,
                     now,
                     int(er_required),
                     None if er_required else now,
+                    ttn_number,
+                    ttn_year,
+                    ttn_sequence,
+                    now,
                     now,
                     shipment_id,
                 ),
             )
             documents = (
                 (shipment_id, "ER", str(shipment["registry_number"]), "ЭР", "draft" if er_required else "not_required", now, now),
-                (shipment_id, "TN", str(shipment["registry_number"]), "ТТН", "draft" if er_required else "ready", now, now),
+                (shipment_id, "TN", ttn_number, "ТТН", "draft" if er_required else "ready", now, now),
             )
             conn.executemany(
                 """INSERT INTO test_shipment_documents (
@@ -2030,7 +2174,13 @@ def review_test_shipment(
                 actor_kind="accountant",
                 actor_id=actor,
                 actor_name=actor,
-                payload={"er_required": er_required, "status": next_status},
+                payload={
+                    "er_required": er_required,
+                    "status": next_status,
+                    "ttn_number": ttn_number,
+                    "ttn_year": ttn_year,
+                    "ttn_sequence": ttn_sequence,
+                },
                 occurred_at=now,
             )
             conn.commit()

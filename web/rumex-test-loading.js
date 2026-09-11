@@ -197,7 +197,7 @@
 
   function renderBlocks(scope, items) {
     var target = scopeElements(scope);
-    var count = Math.max(1, Math.min(200, Number(target.count.value) || 1));
+    var count = Math.max(3, Math.min(6, Number(target.count.value) || 3));
     target.count.value = count;
     var previous = items || collectBlocks(scope);
     target.list.replaceChildren();
@@ -238,7 +238,7 @@
     var vehicle = binding.vehicle_snapshot || {};
     [
       ["Полный номер", vehicle.full_plate], ["Марка / модель", vehicle.model],
-      ["Водитель", binding.driver_full_name], ["Перевозчик", carrier.name],
+      ["Водитель", binding.driver_full_name], ["Удостоверение", binding.driver_license_number], ["Перевозчик", carrier.name],
       ["ИНН", carrier.inn], ["Юридический адрес", carrier.legal_address],
       ["Проверено", formatTime(binding.checked_at)]
     ].forEach(function (pair) {
@@ -266,9 +266,10 @@
       });
   }
 
-  function documentUrl(shipmentId) {
+  function documentUrl(shipmentId, copyNumber) {
     var url = API + "/shipments/" + encodeURIComponent(shipmentId) + "/documents/tn";
-    return initData ? url + "?initData=" + encodeURIComponent(initData) : url;
+    var query = "?copy=" + encodeURIComponent(copyNumber);
+    return initData ? url + query + "&initData=" + encodeURIComponent(initData) : url + query;
   }
 
   function renderDocuments(shipment, parent) {
@@ -276,10 +277,13 @@
     documents.forEach(function (item) {
       var box = createElement("div", "rtl-document");
       if (item.document_kind === "TN" && ["ready", "issued"].indexOf(item.status) >= 0) {
-        var link = document.createElement("a");
-        link.href = documentUrl(shipment.id);
-        link.textContent = "Скачать ТТН №" + shipment.registry_number;
-        box.appendChild(link);
+        [1, 2, 3, 4].forEach(function (copyNumber) {
+          var link = document.createElement("a");
+          link.href = documentUrl(shipment.id, copyNumber);
+          link.textContent = "Скачать " + (shipment.ttn_number || "ТТН") + " · экземпляр № " + copyNumber;
+          box.appendChild(link);
+          box.appendChild(document.createElement("br"));
+        });
       } else if (item.document_kind === "ER") {
         box.textContent = item.status === "not_required"
           ? "ЭР не требуется"
@@ -295,7 +299,7 @@
     correctionShipment = shipment;
     correctionReason.textContent = shipment.correction_reason || "Бухгалтер запросил исправление.";
     correctionLoadedAt.value = localDatetimeValue(shipment.loaded_at);
-    correctionBlockCount.value = (shipment.items || []).length || 1;
+    correctionBlockCount.value = (shipment.items || []).length || 3;
     renderBlocks("correction", shipment.items || []);
     correctionError.textContent = "";
     correctionPanel.hidden = false;
@@ -310,7 +314,8 @@
       var card = createElement("article", "rtl-card");
       var head = createElement("div", "rtl-card-head");
       var heading = document.createElement("div");
-      heading.appendChild(createElement("h3", "", shipment.registry_number));
+      heading.appendChild(createElement("h3", "", shipment.ttn_number || shipment.registry_number));
+      if (shipment.ttn_number) heading.appendChild(createElement("p", "", "Внутренняя запись: " + shipment.registry_number));
       var snapshot = shipment.document_snapshot || {};
       var vehicle = snapshot.vehicle || {};
       heading.appendChild(createElement("p", "", "…" + (vehicle.plate_tail || "—") + " · " + ((snapshot.driver || {}).full_name || "Водитель не указан")));
@@ -326,6 +331,7 @@
         ["Автомобиль", [vehicle.full_plate, vehicle.model].filter(Boolean).join(" · ") || "—"],
         ["Перевозчик", ((snapshot.carrier || {}).name || "—")],
         ["Водитель", ((snapshot.driver || {}).full_name || "—")],
+        ["Удостоверение", ((snapshot.driver || {}).license_number || "—")],
         ["Ревизия", "№" + (shipment.revision_number || 1)]
       ].forEach(function (pair) {
         list.appendChild(createElement("dt", "", pair[0]));
@@ -413,10 +419,10 @@
         showToast("Погрузка " + body.shipment.registry_number + " сохранена и ждёт бухгалтера.");
         loadingForm.reset();
         loadedAt.value = localDatetimeValue();
-        blockCount.value = 1;
+        blockCount.value = 3;
         vehicleCard.hidden = true;
         vehicleHelp.textContent = "После ввода хвоста карточка подставится только из подтверждённого бухгалтером снимка.";
-        renderBlocks("new", [{ letter: "A", number: "" }]);
+        renderBlocks("new", [{ letter: "A", number: "" }, { letter: "A", number: "" }, { letter: "A", number: "" }]);
         return loadRegistry();
       })
       .catch(function (error) { formError.textContent = error.message || "Не удалось сохранить погрузку."; })

@@ -150,6 +150,7 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             plate_tail="553",
             carrier_id=carrier["id"],
             driver_full_name="Иванов Иван Иванович",
+            driver_license_number="38 12 123456",
             accountant_name="Бухгалтер 1",
         )
 
@@ -253,6 +254,7 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             json={
                 "carrier_id": detail_body["vehicle"]["document_binding"]["carrier_id"],
                 "driver_full_name": "Петров Пётр Петрович",
+                "driver_license_number": "38 12 654321",
                 "note": "Перепроверено по карточке перевозчика",
             },
         )
@@ -298,8 +300,12 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             headers={**headers, "Content-Type": "application/json"},
             json={
                 "plate_tail": "553",
-                "block_count": 1,
-                "items": [{"letter": "A", "number": "3611"}],
+                "block_count": 3,
+                "items": [
+                    {"letter": "A", "number": "3611"},
+                    {"letter": "K", "number": "7741"},
+                    {"letter": "A", "number": "3612"},
+                ],
                 "loaded_at": 1_767_225_600.0,
             },
         )
@@ -308,7 +314,7 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertEqual(shipment["status"], "awaiting_accountant_review")
         shipment_url = "/api/rumex-registry/test/shipments/" + str(shipment["id"])
 
-        before_open = await self.client.get(shipment_url + "/documents/tn", headers=headers)
+        before_open = await self.client.get(shipment_url + "/documents/tn?copy=1", headers=headers)
         self.assertEqual(before_open.status, 409)
 
         accountant_token = await self._login("23456")
@@ -317,7 +323,9 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             shipment_url + "/review", headers=accountant_headers, json={"er_required": True}
         )
         self.assertEqual(reviewed.status, 200)
-        self.assertEqual((await reviewed.json())["shipment"]["status"], "awaiting_er_sent")
+        reviewed_shipment = (await reviewed.json())["shipment"]
+        self.assertEqual(reviewed_shipment["status"], "awaiting_er_sent")
+        self.assertEqual(reviewed_shipment["ttn_number"], "ТТН №РМ-2026-000001")
 
         sent = await self.client.post(
             shipment_url + "/er-sent",
@@ -327,13 +335,19 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertEqual(sent.status, 200)
         self.assertEqual((await sent.json())["shipment"]["status"], "documents_ready")
 
-        document = await self.client.get(shipment_url + "/documents/tn", headers=headers)
-        self.assertEqual(document.status, 200)
-        self.assertEqual(
-            document.content_type,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        self.assertIn("attachment", document.headers.get("Content-Disposition", ""))
+        missing_copy = await self.client.get(shipment_url + "/documents/tn", headers=headers)
+        self.assertEqual(missing_copy.status, 400)
+        for copy_number in (1, 2, 3, 4):
+            document = await self.client.get(
+                shipment_url + "/documents/tn?copy=" + str(copy_number), headers=headers
+            )
+            self.assertEqual(document.status, 200)
+            self.assertEqual(
+                document.content_type,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            self.assertIn("attachment", document.headers.get("Content-Disposition", ""))
+            self.assertIn("%E2%84%96", document.headers.get("Content-Disposition", ""))
 
     async def test_test_dispatcher_password_session_is_isolated_from_accountants(self):
         self._prepare_test_vehicle()
@@ -355,8 +369,12 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             cookies=headers,
             json={
                 "plate_tail": "553",
-                "block_count": 1,
-                "items": [{"letter": "A", "number": "4621"}],
+                "block_count": 3,
+                "items": [
+                    {"letter": "A", "number": "4621"},
+                    {"letter": "A", "number": "4622"},
+                    {"letter": "K", "number": "7741"},
+                ],
                 "loaded_at": 1_767_225_600.0,
             },
         )

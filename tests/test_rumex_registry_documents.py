@@ -1,13 +1,14 @@
-"""Tests for technical XLSX generation in the isolated RUMEX test flow."""
+"""Tests for approved XLSX generation in the isolated RUMEX test flow."""
 
 from __future__ import annotations
 
-import json
+import hashlib
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from zipfile import ZipFile
+
+from openpyxl import load_workbook
 
 ROOT = Path(__file__).resolve().parent.parent
 BOT = ROOT / "fotonych-bot"
@@ -18,60 +19,77 @@ import rumex_registry_documents as documents  # noqa: E402
 
 
 class RumexRegistryDocumentsTests(unittest.TestCase):
-    def test_technical_ttn_uses_snapshot_and_safe_filename(self) -> None:
+    def test_approved_ttn_preserves_template_and_creates_all_four_copies(self) -> None:
         shipment = {
             "registry_number": "РМ-2026-000123",
+            "ttn_number": "ТТН №РМ-2026-000001",
             "loaded_at": 1_767_225_600.0,
             "items": [
-                {
-                    "block_type_code": "A",
-                    "block_number": "3611",
-                    "product_name": "Блок 9,7/8,8",
-                    "weight_kg": 7780,
-                }
+                {"block_type_code": "K", "block_number": "7741", "weight_kg": 3850},
+                {"block_type_code": "A", "block_number": "3611", "weight_kg": 7780},
+                {"block_type_code": "A", "block_number": "3612", "weight_kg": 7780},
             ],
             "document_snapshot": {
-                "document_profile": {
-                    "sender_name": "ООО «Омега-М»",
-                    "sender_inn": "1234567890",
-                    "sender_kpp": "123456789",
-                    "sender_legal_address": "г. Иркутск",
-                    "recipient_name": "ООО «Омега-М»",
-                    "delivery_location": "Станция назначения",
-                    "pickup_location": "Завод Румекс",
-                },
-                "carrier": {
-                    "name": "ООО «Перевозчик»",
-                    "inn": "1098765432",
-                    "kpp": "987654321",
-                    "legal_address": "г. Братск",
-                },
                 "vehicle": {"plate_tail": "553", "full_plate": "К553НХ 138", "model": "FAW J6"},
-                "driver": {"full_name": "Иванов/Иван Иванович"},
-                "document_binding_checked_at": 1_767_225_500.0,
+                "driver": {
+                    "full_name": "Иванов Иван Иванович",
+                    "license_number": "38 12 123456",
+                },
             },
         }
-        template = ROOT / "docs" / "registry" / "ТТН — шаблон автозаполнения.xlsx"
-        if not template.is_file():
-            self.skipTest("Технический шаблон ТТН отсутствует в рабочем окружении")
+        source_hash = hashlib.sha256(documents.APPROVED_TTN_TEMPLATE_PATH.read_bytes()).hexdigest()
+        self.assertEqual(
+            source_hash,
+            "02d8a20a0d9b420b69e7fce5581038e9c80526fa83d5501b98a63dc46270f093",
+        )
 
-        content = documents.build_test_ttn_workbook(shipment, issued_at=1_767_228_300.0)
-        self.assertGreater(len(content), 1000)
-        with tempfile.NamedTemporaryFile(suffix=".xlsx") as generated:
-            generated.write(content)
-            generated.flush()
-            with ZipFile(generated.name) as workbook:
-                sheet = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
-        self.assertIn("Тестовая техническая форма", sheet)
-        self.assertIn("РМ-2026-000123", sheet)
-        self.assertIn("Иванов/Иван Иванович", sheet)
-        self.assertIn("К553НХ 138", sheet)
-        self.assertIn("3611", sheet)
-        self.assertNotIn("{{TTN_NUMBER}}", sheet)
+        for copy_number in (1, 2, 3, 4):
+            content = documents.build_test_ttn_workbook(shipment, copy_number=copy_number)
+            self.assertGreater(len(content), 10_000)
+            with tempfile.NamedTemporaryFile(suffix=".xlsx") as generated:
+                generated.write(content)
+                generated.flush()
+                workbook = load_workbook(generated.name, data_only=False)
+            sheet = workbook["ТТН"]
+            self.assertEqual(sheet["AC5"].value, "ТТН №РМ-2026-000001")
+            self.assertEqual(sheet["W6"].value, str(copy_number))
+            self.assertEqual(sheet["BF20"].value, "K 7741")
+            self.assertEqual(sheet["BF21"].value, "A 3611")
+            self.assertEqual(sheet["BF22"].value, "A 3612")
+            self.assertEqual([sheet[f"BF{row}"].value for row in range(23, 27)], ["0", "0", "0", "0"])
+            self.assertEqual(sheet["A28"].value, "19 410 кг")
+            self.assertEqual(sheet["A60"].value, "19 410 кг, расчётная масса")
+            self.assertEqual(sheet["A62"].value, 3)
+            self.assertEqual(sheet["BE62"].value, "без тары")
+            self.assertEqual(sheet["CG43"].value, "38 12 123456")
+            self.assertIsNone(sheet["BE58"].value)
+            self.assertIsNone(sheet["CH58"].value)
+            self.assertIsNone(sheet["A78"].value)
+            self.assertIsNone(sheet["BE78"].value)
+            self.assertIsNone(sheet["AF80"].value)
+            self.assertIsNone(sheet["BE80"].value)
+            self.assertEqual(sheet["BE56"].value, "=G5")
+            self.assertEqual(sheet["CO66"].value, "=BE43")
+            self.assertEqual(sheet["CO82"].value, "=CO66")
+            self.assertEqual(str(sheet.print_area), "'ТТН'!$A$1:$DG$101")
+            self.assertEqual(sheet.page_setup.orientation, "portrait")
+            self.assertEqual(sheet.page_setup.paperSize, 9)
+            self.assertEqual(sheet.page_setup.scale, 98)
+            self.assertEqual(
+                documents.test_ttn_filename(shipment, copy_number=copy_number),
+                f"ТТН №РМ-2026-000001 — Экземпляр № {copy_number}.xlsx",
+            )
 
-        filename = documents.test_ttn_filename(shipment, issued_at=1_767_228_300.0)
-        self.assertTrue(filename.startswith("ТТН №РМ-2026-000123 — Иванов Иван Иванович — "))
-        self.assertTrue(filename.endswith(".xlsx"))
+        self.assertEqual(
+            hashlib.sha256(documents.APPROVED_TTN_TEMPLATE_PATH.read_bytes()).hexdigest(), source_hash
+        )
+
+    def test_approved_ttn_requires_assigned_number_and_valid_copy(self) -> None:
+        shipment = {"ttn_number": "", "loaded_at": 1, "items": []}
+        with self.assertRaisesRegex(ValueError, "не выдан утверждённый номер"):
+            documents.build_test_ttn_workbook(shipment, copy_number=1)
+        with self.assertRaisesRegex(ValueError, "экземпляр ТТН от 1 до 4"):
+            documents.test_ttn_filename({"ttn_number": "ТТН №РМ-2026-000001"}, copy_number=5)
 
 
 if __name__ == "__main__":

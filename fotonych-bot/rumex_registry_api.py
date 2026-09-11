@@ -51,12 +51,6 @@ REGISTRY_SAMPLES = {
         "filename": "8102 образец ТТН.xls",
         "content_type": "application/vnd.ms-excel",
     },
-    "tn-template-xlsx": {
-        "title": "ТТН · шаблон с полями автозаполнения (Excel)",
-        "document_kind": "TN",
-        "filename": "ТТН — шаблон автозаполнения.xlsx",
-        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    },
     "er": {
         "title": "ЭР · образец",
         "document_kind": "ER",
@@ -151,17 +145,22 @@ def _test_documents_are_open(shipment: dict) -> bool:
     return shipment.get("status") in {"documents_ready", "documents_handed_to_driver"}
 
 
-def _test_ttn_response(shipment: dict) -> web.Response:
+def _test_ttn_copy_number(request: web.Request) -> int | None:
+    try:
+        copy_number = int(str(request.query.get("copy") or ""))
+    except (TypeError, ValueError):
+        return None
+    return copy_number if copy_number in {1, 2, 3, 4} else None
+
+
+def _test_ttn_response(shipment: dict, *, copy_number: int) -> web.Response:
     if not _test_documents_are_open(shipment):
         return _json({"error": "Документы ещё не открыты бухгалтером"}, 409)
-    issued_at = float(shipment.get("documents_ready_at") or 0)
-    if issued_at <= 0:
-        return _json({"error": "Не зафиксирована дата выпуска документов"}, 409)
     try:
-        workbook = build_test_ttn_workbook(shipment, issued_at=issued_at)
+        workbook = build_test_ttn_workbook(shipment, copy_number=copy_number)
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
-    filename = test_ttn_filename(shipment, issued_at=issued_at)
+    filename = test_ttn_filename(shipment, copy_number=copy_number)
     return web.Response(
         body=workbook,
         headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename)},
@@ -311,6 +310,7 @@ async def handle_document_vehicle_binding(request: web.Request) -> web.Response:
             plate_tail=request.match_info.get("plate_tail"),
             carrier_id=body.get("carrier_id"),
             driver_full_name=body.get("driver_full_name"),
+            driver_license_number=body.get("driver_license_number"),
             accountant_name=accountant or "",
             note=body.get("note"),
         )
@@ -461,7 +461,10 @@ async def handle_test_ttn_download(request: web.Request) -> web.Response:
     shipment = get_test_shipment(shipment_id)
     if shipment is None:
         return _json({"error": "Тестовая погрузка не найдена"}, 404)
-    return _test_ttn_response(shipment)
+    copy_number = _test_ttn_copy_number(request)
+    if copy_number is None:
+        return _json({"error": "Укажите экземпляр ТТН: copy=1, 2, 3 или 4"}, 400)
+    return _test_ttn_response(shipment, copy_number=copy_number)
 
 
 async def _test_accountant_action(request: web.Request, action: str) -> web.Response:

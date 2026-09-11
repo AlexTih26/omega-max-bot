@@ -1,9 +1,7 @@
-"""Техническое формирование документов тестовой погрузки РУМЕКС.
+"""Формирование четырёх экземпляров утверждённой ТТН РУМЕКС.
 
-Этот модуль не подменяет юридически утверждённые бланки. Сейчас он умеет
-создавать только тестовую ТТН на основе загруженного технического XLSX-шаблона.
-Экспедиторская расписка остаётся внешним документом Контура, пока не появится
-утверждённая форма ЭР.
+Источник формы неизменяем: для каждого экземпляра открывается его отдельная
+копия, в которую подставляются только согласованные документные данные.
 """
 
 from __future__ import annotations
@@ -12,15 +10,48 @@ import os
 import re
 import tempfile
 from datetime import datetime
-from html import escape
+from io import BytesIO
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
+from typing import Any
 
+from openpyxl import load_workbook
 from zoneinfo import ZoneInfo
 
-REGISTRY_DOCUMENTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry"
-TEST_TN_TEMPLATE_PATH = REGISTRY_DOCUMENTS_DIR / "ТТН — шаблон автозаполнения.xlsx"
-TEST_DOCUMENT_EXPORTS_DIR = REGISTRY_DOCUMENTS_DIR / "exports"
+APPROVED_TTN_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent / "rumex_templates" / "ТТН РУМЕКС — утверждённый шаблон.xlsx"
+)
+TEST_DOCUMENT_EXPORTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry" / "exports"
+
+OMEGA_DETAILS = (
+    "ООО «Омега-М»\n"
+    "ИНН 5406829253\n"
+    "КПП 502401001\n"
+    "ОГРН 1235400005301\n"
+    "143405, Московская область, г.о. Красногорск,\n"
+    "г. Красногорск, ул. Почтовая, д. 3"
+)
+RUMEX_DETAILS = (
+    "ООО «РУМЕКС»\n"
+    "364030, Чеченская Республика, г.о. город Грозный,\n"
+    "г. Грозный, р-н Байсангуровский, ул. Сайханова, двлд. 222\n"
+    "ОГРН 1247700186029\n"
+    "ИНН 9728126848\n"
+    "КПП 201001001"
+)
+CARRIER_DETAILS = (
+    "ООО «Комсомольская ТК», ИНН 2721252270,\n"
+    "Юридический адрес 664025, Иркутская область,\n"
+    "г. Иркутск, ул. Сурикова, д. 6, офис 2"
+)
+PICKUP_LOCATION = (
+    "Завод по производству тоннельной обделки на восточном\n"
+    "портале Северомуйского тоннеля пгт. Северомуйск,\n"
+    "расположенный Республика Бурятия, Муйский р-н,\n"
+    "ГП «Северомуйское», пгт. Северомуйск"
+)
+DELIVERY_LOCATION = "ж/д станция Таксимо (код станции ЕСР 90440)"
+PRODUCT_NAME = "БЛОК 9,7/8,8"
+COPY_NUMBERS = (1, 2, 3, 4)
 
 
 def _timezone() -> ZoneInfo:
@@ -30,220 +61,175 @@ def _timezone() -> ZoneInfo:
         return ZoneInfo("Asia/Irkutsk")
 
 
-def _format_timestamp(value: float | int | None, *, with_time: bool = True) -> str:
-    if not value:
-        return ""
-    pattern = "%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y"
-    return datetime.fromtimestamp(float(value), _timezone()).strftime(pattern)
-
-
 def _safe_filename_part(value: str, *, fallback: str) -> str:
     text = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", (value or "").strip())
     text = re.sub(r"\s+", " ", text).strip(" .")
     return (text or fallback)[:160]
 
 
-def test_ttn_filename(shipment: dict, *, issued_at: float) -> str:
-    snapshot = shipment.get("document_snapshot") or {}
-    driver = (snapshot.get("driver") or {}).get("full_name") or "Водитель не указан"
+def _loaded_datetime(shipment: dict) -> datetime:
+    try:
+        timestamp = float(shipment["loaded_at"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("У ТТН не указана фактическая дата погрузки") from None
+    if timestamp <= 0:
+        raise ValueError("У ТТН не указана фактическая дата погрузки")
+    return datetime.fromtimestamp(timestamp, _timezone())
+
+
+def _copy_number(value: Any) -> int:
+    try:
+        copy_number = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("Укажите экземпляр ТТН от 1 до 4") from None
+    if copy_number not in COPY_NUMBERS:
+        raise ValueError("Укажите экземпляр ТТН от 1 до 4")
+    return copy_number
+
+
+def _approved_ttn_number(shipment: dict) -> str:
+    number = str(shipment.get("ttn_number") or "").strip()
+    if not re.fullmatch(r"ТТН №РМ-\d{4}-\d{6}", number):
+        raise ValueError("Для погрузки ещё не выдан утверждённый номер ТТН")
+    return number
+
+
+def _required_snapshot_text(value: Any, label: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"В снимке документа не указано: {label}")
+    return text
+
+
+def _total_weight(items: list[dict]) -> int:
+    if len(items) not in {3, 4, 5, 6}:
+        raise ValueError("Утверждённая ТТН формируется только для погрузки от 3 до 6 блоков")
+    try:
+        return sum(int(item["weight_kg"]) for item in items)
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("В ТТН отсутствует утверждённый вес одного из блоков") from None
+
+
+def _clear_cells(sheet, *references: str) -> None:
+    for reference in references:
+        sheet[reference] = None
+
+
+def test_ttn_filename(shipment: dict, *, copy_number: int) -> str:
+    """Имя отдельного файла одного из четырёх обязательных экземпляров."""
+    number = _approved_ttn_number(shipment)
+    copy_value = _copy_number(copy_number)
     return (
-        "ТТН №"
-        + _safe_filename_part(str(shipment.get("registry_number") or ""), fallback="без номера")
-        + " — "
-        + _safe_filename_part(str(driver), fallback="Водитель не указан")
-        + " — "
-        + _format_timestamp(issued_at, with_time=False)
-        + ".xlsx"
+        _safe_filename_part(number, fallback="ТТН")
+        + f" — Экземпляр № {copy_value}.xlsx"
     )
 
 
-def _inline_cell(reference: str, value: str, *, style: int = 4) -> str:
-    text = escape(value, quote=False)
-    preserve = ' xml:space="preserve"' if value[:1].isspace() or value[-1:].isspace() else ""
-    return f'<c r="{reference}" s="{style}" t="inlineStr"><is><t{preserve}>{text}</t></is></c>'
+def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
+    """Сформировать один отдельный экземпляр утверждённого бланка ТТН.
 
-
-def _row(index: int, cells: list[str], *, height: int | None = None) -> str:
-    height_attrs = f' ht="{height}" customHeight="1"' if height else ""
-    return f'<row r="{index}"{height_attrs}>' + "".join(cells) + "</row>"
-
-
-def _test_ttn_sheet_xml(shipment: dict, *, issued_at: float) -> bytes:
+    Макет, объединения, стили, юридический текст, формулы и настройки печати
+    остаются из утверждённого исходного файла. Исходник никогда не изменяется.
+    """
+    if not APPROVED_TTN_TEMPLATE_PATH.is_file():
+        raise ValueError("Утверждённый шаблон ТТН не загружен")
+    number = _approved_ttn_number(shipment)
+    copy_value = _copy_number(copy_number)
+    loaded_at = _loaded_datetime(shipment)
+    items = list(shipment.get("items") or [])
+    total_weight_kg = _total_weight(items)
     snapshot = shipment.get("document_snapshot") or {}
-    profile = snapshot.get("document_profile") or {}
-    carrier = snapshot.get("carrier") or {}
     vehicle = snapshot.get("vehicle") or {}
     driver = snapshot.get("driver") or {}
-    items = shipment.get("items") or []
-    registry_number = str(shipment.get("registry_number") or "")
-    loaded_at = _format_timestamp(shipment.get("loaded_at"))
-    total_weight = sum(int(item.get("weight_kg") or 0) for item in items)
-    vehicle_label = " · ".join(
-        part for part in (str(vehicle.get("full_plate") or ""), str(vehicle.get("model") or "")) if part
-    )
-    special_notes = "Тестовая погрузка. Техническая форма: требует утверждения бухгалтерией."
+    driver_name = _required_snapshot_text(driver.get("full_name"), "ФИО водителя")
+    driver_license = _required_snapshot_text(driver.get("license_number"), "водительское удостоверение")
+    vehicle_model = _required_snapshot_text(vehicle.get("model"), "модель автомобиля")
+    vehicle_plate = _required_snapshot_text(vehicle.get("full_plate"), "государственный номер автомобиля")
 
-    rows = [
-        _row(1, [_inline_cell("A1", "ТОВАРНО-ТРАНСПОРТНАЯ НАКЛАДНАЯ", style=1)], height=28),
-        _row(
-            2,
-            [_inline_cell("A2", "Тестовая техническая форма — не юридически утверждённый бланк.", style=2)],
-            height=30,
-        ),
-        _row(4, [
-            _inline_cell("A4", "Номер ТТН", style=3),
-            _inline_cell("B4", f"ТТН №{registry_number}"),
-            _inline_cell("D4", "Дата выпуска", style=3),
-            _inline_cell("E4", _format_timestamp(issued_at, with_time=False)),
-        ], height=28),
-        _row(5, [
-            _inline_cell("A5", "Грузоотправитель", style=3),
-            _inline_cell("B5", str(profile.get("sender_name") or "")),
-            _inline_cell("D5", "ИНН / КПП", style=3),
-            _inline_cell("E5", " / ".join(filter(None, [str(profile.get("sender_inn") or ""), str(profile.get("sender_kpp") or "")]))),
-        ], height=28),
-        _row(6, [
-            _inline_cell("A6", "Адрес грузоотправителя", style=3),
-            _inline_cell("B6", str(profile.get("sender_legal_address") or "")),
-        ], height=28),
-        _row(7, [
-            _inline_cell("A7", "Грузополучатель", style=3),
-            _inline_cell("B7", str(profile.get("recipient_name") or "")),
-            _inline_cell("D7", "ИНН / КПП", style=3),
-            _inline_cell("E7", " / ".join(filter(None, [str(profile.get("recipient_inn") or ""), str(profile.get("recipient_kpp") or "")]))),
-        ], height=28),
-        _row(8, [
-            _inline_cell("A8", "Адрес выгрузки", style=3),
-            _inline_cell("B8", str(profile.get("delivery_location") or "")),
-        ], height=28),
-        _row(9, [
-            _inline_cell("A9", "Перевозчик", style=3),
-            _inline_cell("B9", str(carrier.get("name") or "")),
-            _inline_cell("D9", "ИНН / КПП", style=3),
-            _inline_cell("E9", " / ".join(filter(None, [str(carrier.get("inn") or ""), str(carrier.get("kpp") or "")]))),
-        ], height=28),
-        _row(10, [
-            _inline_cell("A10", "Адрес перевозчика", style=3),
-            _inline_cell("B10", str(carrier.get("legal_address") or "")),
-        ], height=28),
-        _row(11, [
-            _inline_cell("A11", "Автомобиль", style=3),
-            _inline_cell("B11", vehicle_label),
-            _inline_cell("D11", "Хвост машины", style=3),
-            _inline_cell("E11", str(vehicle.get("plate_tail") or "")),
-        ], height=28),
-        _row(12, [
-            _inline_cell("A12", "Водитель", style=3),
-            _inline_cell("B12", str(driver.get("full_name") or "")),
-            _inline_cell("D12", "Проверено для документов", style=3),
-            _inline_cell("E12", _format_timestamp(snapshot.get("document_binding_checked_at"))),
-        ], height=28),
-        _row(13, [
-            _inline_cell("A13", "Адрес погрузки", style=3),
-            _inline_cell("B13", str(profile.get("pickup_location") or "")),
-            _inline_cell("D13", "Фактическая погрузка", style=3),
-            _inline_cell("E13", loaded_at),
-        ], height=28),
-        _row(14, [
-            _inline_cell("A14", "Особые отметки", style=3),
-            _inline_cell("B14", special_notes),
-        ], height=34),
-        _row(15, [_inline_cell("A15", "СВЕДЕНИЯ О ГРУЗЕ", style=5)]),
-        _row(16, [
-            _inline_cell("A16", "№", style=5),
-            _inline_cell("B16", "Наименование груза", style=5),
-            _inline_cell("C16", "Кол-во мест", style=5),
-            _inline_cell("D16", "Масса, кг", style=5),
-            _inline_cell("E16", "Тип блока", style=5),
-            _inline_cell("F16", "Индивидуальный номер", style=5),
-        ], height=34),
-    ]
-    row_number = 17
-    for index, item in enumerate(items, start=1):
-        code = str(item.get("block_type_code") or "")
-        block_number = str(item.get("block_number") or "")
-        rows.append(
-            _row(row_number, [
-                _inline_cell(f"A{row_number}", str(index), style=6),
-                _inline_cell(f"B{row_number}", str(item.get("product_name") or "")),
-                _inline_cell(f"C{row_number}", "1"),
-                _inline_cell(f"D{row_number}", str(item.get("weight_kg") or "")),
-                _inline_cell(f"E{row_number}", code),
-                _inline_cell(f"F{row_number}", block_number),
-            ], height=26)
-        )
-        row_number += 1
-    rows.append(
-        _row(row_number, [
-            _inline_cell(f"A{row_number}", "Итого", style=5),
-            _inline_cell(f"C{row_number}", str(len(items)), style=5),
-            _inline_cell(f"D{row_number}", f"{total_weight} кг", style=5),
-        ], height=28)
-    )
-    row_number += 1
-    rows.append(
-        _row(row_number, [
-            _inline_cell(f"A{row_number}", "Груз сдал: ____________________", style=7),
-            _inline_cell(f"D{row_number}", f"Водитель принял: {driver.get('full_name') or ''}", style=7),
-        ], height=42)
-    )
-    row_number += 1
-    rows.append(
-        _row(row_number, [
-            _inline_cell(f"A{row_number}", "Техническая ТТН сформирована для тестовой погрузки РУМЕКС.", style=7),
-        ], height=32)
+    workbook = load_workbook(APPROVED_TTN_TEMPLATE_PATH, data_only=False)
+    if "ТТН" not in workbook.sheetnames:
+        raise ValueError("Утверждённый шаблон ТТН имеет неверную структуру")
+    sheet = workbook["ТТН"]
+
+    # Шапка и стороны перевозки.
+    sheet["G5"] = loaded_at.date()
+    sheet["AC5"] = number
+    sheet["W6"] = str(copy_value)
+    sheet["W8"] = "✓"
+    sheet["A9"] = OMEGA_DETAILS
+    sheet["BO9"] = RUMEX_DETAILS
+    _clear_cells(sheet, "A11", "BO11")
+    sheet["A14"] = OMEGA_DETAILS
+    sheet["A16"] = DELIVERY_LOCATION
+
+    # Ровно семь строк формы: фактические блоки в порядке ввода, остальные -- 0.
+    for row_number, item in zip(range(20, 27), items, strict=False):
+        code = _required_snapshot_text(item.get("block_type_code"), "тип блока")
+        block_number = _required_snapshot_text(item.get("block_number"), "номер блока")
+        sheet[f"A{row_number}"] = PRODUCT_NAME
+        sheet[f"BF{row_number}"] = f"{code} {block_number}"
+    for row_number in range(20 + len(items), 27):
+        sheet[f"A{row_number}"] = PRODUCT_NAME
+        sheet[f"BF{row_number}"] = "0"
+    sheet["A28"] = f"{total_weight_kg:,} кг".replace(",", " ")
+    _clear_cells(sheet, "A30", "BE30", "A33", "A35")
+    sheet["B38"] = "-"
+
+    # Перевозчик и неизменяемый бухгалтерский снимок машины/водителя.
+    sheet["B43"] = CARRIER_DETAILS
+    sheet["BE43"] = driver_name
+    sheet["CG43"] = driver_license
+    _clear_cells(sheet, "CX43")
+    sheet["B46"] = vehicle_model
+    sheet["BE46"] = vehicle_plate
+    sheet["A49"] = "Тип владения: собственность"
+
+    # Приём у отправителя. Формулы BE56, CO66 и CO82 сохраняются из бланка.
+    sheet["A52"] = PICKUP_LOCATION
+    sheet["A54"] = RUMEX_DETAILS
+    sheet["A56"] = PICKUP_LOCATION
+    sheet["A58"] = loaded_at.date()
+    sheet["AC58"] = loaded_at.time().replace(second=0, microsecond=0)
+    sheet["A60"] = f"{total_weight_kg:,}".replace(",", " ") + " кг, расчётная масса"
+    sheet["A62"] = len(items)
+    sheet["BE62"] = "без тары"
+    sheet["A64"] = "-"
+    _clear_cells(sheet, "BE58", "CH58")
+
+    # Выдача груза оформляется вручную после прибытия: никаких примерных фактов.
+    sheet["A74"] = DELIVERY_LOCATION
+    _clear_cells(
+        sheet,
+        "A76",
+        "Z76",
+        "BE76",
+        "A78",
+        "BE78",
+        "AF80",
+        "BE80",
+        "B90",
+        "B96",
+        "B97",
     )
 
-    merged = [
-        "A1:F1", "A2:F2", "B4:C4", "E4:F4", "B5:C5", "E5:F5", "B6:F6",
-        "B7:C7", "E7:F7", "B8:F8", "B9:C9", "E9:F9", "B10:F10", "B11:C11",
-        "E11:F11", "B12:C12", "E12:F12", "B13:C13", "E13:F13", "B14:F14", "A15:F15",
-        f"A{row_number - 1}:C{row_number - 1}", f"D{row_number - 1}:F{row_number - 1}",
-        f"A{row_number}:F{row_number}",
-    ]
-    xml = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        '<sheetViews><sheetView workbookViewId="0"/></sheetViews>'
-        '<sheetFormatPr defaultRowHeight="15"/>'
-        '<cols><col min="1" max="1" width="10" customWidth="1"/>'
-        '<col min="2" max="2" width="36" customWidth="1"/>'
-        '<col min="3" max="3" width="15" customWidth="1"/>'
-        '<col min="4" max="4" width="18" customWidth="1"/>'
-        '<col min="5" max="5" width="18" customWidth="1"/>'
-        '<col min="6" max="6" width="26" customWidth="1"/></cols>'
-        '<sheetData>' + "".join(rows) + '</sheetData>'
-        '<mergeCells count="' + str(len(merged)) + '">' + "".join(
-            f'<mergeCell ref="{reference}"/>' for reference in merged
-        ) + '</mergeCells>'
-        '<pageMargins left="0.3" right="0.3" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>'
-        '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>'
-        '</worksheet>'
-    )
-    return xml.encode("utf-8")
+    # Реквизиты составителей, но не подписи, основания, расчёты или оплату.
+    sheet["B92"] = CARRIER_DETAILS
+    sheet["BF92"] = OMEGA_DETAILS
+    sheet["BF96"] = OMEGA_DETAILS
+
+    calculation = workbook.calculation
+    calculation.fullCalcOnLoad = True
+    calculation.forceFullCalc = True
+    calculation.calcMode = "auto"
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
-def build_test_ttn_workbook(shipment: dict, *, issued_at: float) -> bytes:
-    """Собрать XLSX из технического шаблона, сохранив его стили и структуру."""
-    if not TEST_TN_TEMPLATE_PATH.is_file():
-        raise ValueError("Технический шаблон ТТН не загружен")
-    sheet_xml = _test_ttn_sheet_xml(shipment, issued_at=issued_at)
-    with ZipFile(TEST_TN_TEMPLATE_PATH, "r") as source:
-        if "xl/worksheets/sheet1.xml" not in source.namelist():
-            raise ValueError("Технический шаблон ТТН имеет неверную структуру")
-        with tempfile.SpooledTemporaryFile(max_size=2 * 1024 * 1024) as output:
-            with ZipFile(output, "w", compression=ZIP_DEFLATED) as result:
-                for info in source.infolist():
-                    content = sheet_xml if info.filename == "xl/worksheets/sheet1.xml" else source.read(info.filename)
-                    result.writestr(info, content)
-            output.seek(0)
-            return output.read()
-
-
-def write_test_ttn_workbook(shipment: dict, *, issued_at: float) -> Path:
-    """Сохранить сформированную техническую ТТН атомарно в изолированной папке."""
-    content = build_test_ttn_workbook(shipment, issued_at=issued_at)
-    filename = test_ttn_filename(shipment, issued_at=issued_at)
+def write_test_ttn_workbook(shipment: dict, *, copy_number: int) -> Path:
+    """Сохранить один отдельный экземпляр в изолированную папку экспорта."""
+    content = build_test_ttn_workbook(shipment, copy_number=copy_number)
+    filename = test_ttn_filename(shipment, copy_number=copy_number)
     TEST_DOCUMENT_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     destination = TEST_DOCUMENT_EXPORTS_DIR / filename
     with tempfile.NamedTemporaryFile(dir=TEST_DOCUMENT_EXPORTS_DIR, delete=False) as temporary:

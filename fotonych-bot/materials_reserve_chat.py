@@ -381,15 +381,6 @@ async def _notify_reserve(
             await _bot.send_message(user_id=supply_id, text=text)
         except Exception:
             logger.exception("Не удалось уведомить снабжение о резерве user_id=%s", supply_id)
-    try:
-        from materials_chat import notify_event
-
-        await notify_event(
-            f"🟡 Резерв через MAX · вагон {wagon_number} · {material_name}: "
-            f"+{_format_qty(qty)} {unit} · {master_name}"
-        )
-    except Exception:
-        logger.exception("Не удалось отправить резерв в группу расходников")
 
 
 def materials_supply_ids() -> set[int]:

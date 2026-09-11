@@ -426,6 +426,22 @@ def init_sklad_master_db() -> None:
                 entity_type TEXT NOT NULL, entity_id TEXT NOT NULL DEFAULT '',
                 details_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS sm_access_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                max_id INTEGER NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                assigned_role TEXT,
+                created_at REAL NOT NULL,
+                resolved_at REAL,
+                resolved_by_max_id INTEGER,
+                resolved_by_name TEXT NOT NULL DEFAULT '',
+                notify_messages_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_sm_access_requests_max_status
+                ON sm_access_requests(max_id, status, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_access_requests_one_pending
+                ON sm_access_requests(max_id) WHERE status='pending';
             """
         )
         _add_column(conn, "sm_receipts", "payment_status TEXT NOT NULL DEFAULT 'pending'")
@@ -2699,6 +2715,163 @@ def site_stock(site_id: int) -> list[dict]:
                        "min_level": minimum, "balance": balance,
                        "status": _stock_status(balance, minimum)})
     return result
+
+
+ACCESS_REQUEST_ROLES = frozenset({"master", "supply", "manager"})
+
+
+def _access_request_row(row) -> dict:
+    notify: dict = {}
+    raw = row["notify_messages_json"] if row["notify_messages_json"] else "{}"
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            notify = parsed
+    except json.JSONDecodeError:
+        notify = {}
+    return {
+        "id": int(row["id"]),
+        "max_id": int(row["max_id"]),
+        "display_name": str(row["display_name"] or ""),
+        "status": str(row["status"] or ""),
+        "assigned_role": row["assigned_role"],
+        "created_at": float(row["created_at"]),
+        "resolved_at": row["resolved_at"],
+        "resolved_by_max_id": row["resolved_by_max_id"],
+        "resolved_by_name": str(row["resolved_by_name"] or ""),
+        "notify_messages": notify,
+    }
+
+
+def get_access_request_status(max_id: int) -> dict:
+    if get_access(max_id)["roles"]:
+        return {"status": "granted"}
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT * FROM sm_access_requests
+               WHERE max_id=?
+               ORDER BY id DESC LIMIT 1""",
+            (int(max_id),),
+        ).fetchone()
+    if not row:
+        return {"status": "none"}
+    item = _access_request_row(row)
+    status = str(item.get("status") or "")
+    if status == "pending":
+        return {
+            "status": "pending",
+            "request_id": item["id"],
+            "display_name": item["display_name"],
+        }
+    if status == "rejected":
+        return {"status": "rejected"}
+    if status == "approved":
+        return {
+            "status": "approved",
+            "assigned_role": item.get("assigned_role"),
+        }
+    return {"status": "none"}
+
+
+def submit_access_request(*, max_id: int, display_name: str) -> tuple[bool, str, dict]:
+    if get_access(max_id)["roles"]:
+        return False, "У вас уже есть доступ к Склад Мастер", {}
+    status = get_access_request_status(max_id)
+    if status.get("status") == "pending":
+        return False, "Заявка уже отправлена — ждите решения администратора", status
+    if status.get("status") == "rejected":
+        return False, "Доступ отклонён администратором", status
+    now = time.time()
+    name = (display_name or "Пользователь MAX").strip()[:120]
+    with _connect() as conn:
+        try:
+            cur = conn.execute(
+                """INSERT INTO sm_access_requests
+                   (max_id, display_name, status, created_at, notify_messages_json)
+                   VALUES (?,?,?,?,?)""",
+                (int(max_id), name, "pending", now, "{}"),
+            )
+        except sqlite3.IntegrityError:
+            status = get_access_request_status(max_id)
+            return False, "Заявка уже отправлена — ждите решения администратора", status
+        request_id = int(cur.lastrowid)
+        row = conn.execute(
+            "SELECT * FROM sm_access_requests WHERE id=?", (request_id,)
+        ).fetchone()
+    return True, "Заявка отправлена администратору", _access_request_row(row)
+
+
+def save_access_request_notify_messages(request_id: int, messages: dict[int, str]) -> None:
+    payload = {str(k): str(v) for k, v in messages.items() if v}
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE sm_access_requests SET notify_messages_json=? WHERE id=?",
+            (json.dumps(payload, ensure_ascii=False), int(request_id)),
+        )
+
+
+def get_pending_access_request(max_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT * FROM sm_access_requests
+               WHERE max_id=? AND status='pending'
+               ORDER BY id DESC LIMIT 1""",
+            (int(max_id),),
+        ).fetchone()
+    return _access_request_row(row) if row else None
+
+
+def resolve_access_request(
+    *,
+    max_id: int,
+    action: str,
+    actor_max_id: int,
+    actor_name: str,
+) -> tuple[bool, str, dict | None]:
+    action = (action or "").strip().lower()
+    if action not in ACCESS_REQUEST_ROLES | {"reject"}:
+        return False, "Неизвестное действие", None
+    pending = get_pending_access_request(max_id)
+    if not pending:
+        return False, "already_processed", None
+    now = time.time()
+    actor = (actor_name or "Администратор").strip()[:120]
+    if action == "reject":
+        with _connect() as conn:
+            conn.execute(
+                """UPDATE sm_access_requests
+                   SET status='rejected', resolved_at=?, resolved_by_max_id=?,
+                       resolved_by_name=?, assigned_role=NULL
+                   WHERE id=? AND status='pending'""",
+                (now, int(actor_max_id), actor, int(pending["id"])),
+            )
+        pending["status"] = "rejected"
+        pending["resolved_at"] = now
+        pending["resolved_by_max_id"] = int(actor_max_id)
+        pending["resolved_by_name"] = actor
+        return True, "Отклонено", pending
+    set_role(
+        max_id=int(max_id),
+        role=action,
+        site_ids=None,
+        active=True,
+        actor_max_id=int(actor_max_id),
+        actor_name=actor,
+    )
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE sm_access_requests
+               SET status='approved', assigned_role=?, resolved_at=?,
+                   resolved_by_max_id=?, resolved_by_name=?
+               WHERE id=? AND status='pending'""",
+            (action, now, int(actor_max_id), actor, int(pending["id"])),
+        )
+    pending["status"] = "approved"
+    pending["assigned_role"] = action
+    pending["resolved_at"] = now
+    pending["resolved_by_max_id"] = int(actor_max_id)
+    pending["resolved_by_name"] = actor
+    return True, "approved", pending
 
 
 def dashboard(*, site_id: int | None = None) -> dict:

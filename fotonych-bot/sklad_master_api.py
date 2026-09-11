@@ -9,13 +9,13 @@ from typing import Any, Callable
 from aiohttp import web
 
 from drivers_chat import notify_admin_plain
-from materials_chat import notify_event
+from materials_chat import notify_master_receipt
 from materials_receipt_chat import notify_materials_role_users
 from max_webapp import display_name_from_user, user_id_from_user, validate_init_data
 from sklad_master_store import (
     create_delivery, create_material, create_request, create_supplier, dashboard, edit_receipt,
     cancel_receipt,
-    get_access, get_delivery, get_movement, get_receipt, get_request, get_request_timeline,
+    get_access, get_access_request_status, get_delivery, get_movement, get_receipt, get_request, get_request_timeline,
     get_audit_entry, init_sklad_master_db,
     list_payment_receipts, list_audit_log, list_materials,
     list_movements, list_requests, list_roles, list_sites, list_suppliers,
@@ -26,6 +26,7 @@ from sklad_master_store import (
     set_site_material_minimum, transition_request, update_request_eta,
     update_material, update_site,
 )
+from sklad_master_access_chat import submit_and_notify_access_request
 
 logger = logging.getLogger(__name__)
 
@@ -74,18 +75,12 @@ async def _notify(
     lines: list[str],
     *,
     admin: bool = True,
-    event: bool = True,
     role: str | None = None,
     exclude_user_id: int | None = None,
 ) -> None:
     text = "\n".join(x for x in lines if x).strip()
     if not text:
         return
-    if event:
-        try:
-            await notify_event(text)
-        except Exception:
-            logger.exception("Склад Мастер: уведомление в чат не отправлено")
     if admin:
         try:
             await notify_admin_plain(text)
@@ -305,9 +300,20 @@ def _decorate_request(item: dict, access: dict) -> dict:
 
 
 async def handle_bootstrap(request: web.Request) -> web.Response:
-    auth = _auth(request, "view")
-    if isinstance(auth, web.Response):
-        return auth
+    user, uid = _parse_user(request)
+    if user is None or uid is None:
+        return _json({"error": "open in MAX mini-app"}, 401)
+    name = display_name_from_user(user)
+    access = get_access(uid)
+    if not access["roles"]:
+        return _json(
+            {
+                "guest": True,
+                "user": {"id": uid, "name": name},
+                "access_request": get_access_request_status(uid),
+            }
+        )
+    auth = user, uid, name, access
     _user, uid, name, access = auth
     try:
         raw = request.rel_url.query.get("site_id")
@@ -336,6 +342,21 @@ async def handle_bootstrap(request: web.Request) -> web.Response:
         data["payment_receipts"] = list_payment_receipts(site_id=site_id)
     data["requests"] = [_decorate_request(item, access) for item in data.get("requests", [])]
     return _json(data)
+
+
+async def handle_access_request(request: web.Request) -> web.Response:
+    user, uid = _parse_user(request)
+    if user is None or uid is None:
+        return _json({"error": "open in MAX mini-app"}, 401)
+    name = display_name_from_user(user)
+    ok, message = await submit_and_notify_access_request(max_id=uid, display_name=name)
+    return _json(
+        {
+            "ok": ok,
+            "notification": message,
+            "access_request": get_access_request_status(uid),
+        }
+    )
 
 
 async def handle_materials(request: web.Request) -> web.Response:
@@ -426,8 +447,14 @@ async def handle_receipt(request: web.Request) -> web.Response:
     replay = result.pop("_idempotent_replay", False)
     if not replay:
         receipt = get_receipt(int(result["id"]))
+        lines = _receipt_public_lines(receipt)
+        if "master" in (access.get("roles") or []):
+            try:
+                await notify_master_receipt("\n".join(lines))
+            except Exception:
+                logger.exception("Склад Мастер: приход в чат не отправлен")
         await _notify(
-            _receipt_public_lines(receipt),
+            lines,
             admin=False,
             role="supply",
             exclude_user_id=uid,
@@ -518,7 +545,7 @@ async def handle_receipt_cancel(request: web.Request) -> web.Response:
             f"Причина: {body.get('reason') or '—'}",
             f"Отменил: {name} (id {uid})",
         ]
-        await _notify(lines, event=True, role="supply", exclude_user_id=uid)
+        await _notify(lines, role="supply", exclude_user_id=uid)
         if current.get("payment_status") == "sent":
             await _notify(lines, role="manager", exclude_user_id=uid)
     return _json({"receipt": result})
@@ -1055,6 +1082,7 @@ def register_sklad_master_routes(app: web.Application) -> None:
     init_sklad_master_db()
     prefix = "/api/sklad-master"
     app.router.add_get(f"{prefix}/bootstrap", handle_bootstrap)
+    app.router.add_post(f"{prefix}/access-request", handle_access_request)
     app.router.add_post(f"{prefix}/materials", handle_materials)
     app.router.add_get(
         f"{prefix}/materials/{{material_id}}/open-request",

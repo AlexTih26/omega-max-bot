@@ -37,6 +37,10 @@ from drivers_chat import (
     drivers_reminder_enabled,
 )
 from taksimo_backup import backup_taksimo_db, daily_backup_loop
+from rumex_registry_backup import backup_rumex_registry_db, daily_rumex_registry_backup_loop
+from rumex_registry_store import init_rumex_registry_db
+from sklad_master_access_chat import set_bot as set_sklad_access_bot
+from sklad_master_access_chat import handle_sklad_access_callback
 from sklad_master_backup import backup_sklad_master_db, daily_sklad_backup_loop
 from sklad_master_reminders import sklad_eta_reminder_loop
 from taksimo_notify import daily_report_loop, notify_chat_id, set_bot as set_taksimo_bot
@@ -250,7 +254,7 @@ async def on_taksimo_chat(event: MessageCreated) -> None:
         return
     if is_materials_chat(chat_id):
         await event.message.answer(
-            "Чат расходников:\n\n"
+            "Чат приходов (только приходы от мастера):\n\n"
             f"MATERIALS_CHAT_ID={chat_id}\n\n"
             "Добавьте в .env и перезапустите бота."
         )
@@ -269,7 +273,7 @@ async def on_materials_chat_cmd(event: MessageCreated) -> None:
         await event.message.answer("Команда /materials_chat — в групповом чате MAX.")
         return
     await event.message.answer(
-        "Чат расходников:\n\n"
+        "Чат приходов (только приходы от мастера):\n\n"
         f"MATERIALS_CHAT_ID={chat_id}\n\n"
         "Добавьте в .env и перезапустите бота."
     )
@@ -283,7 +287,7 @@ async def on_drivers_chat_cmd(event: MessageCreated) -> None:
         return
     if is_materials_chat(chat_id):
         await event.message.answer(
-            "Чат расходников:\n\n"
+            "Чат приходов (только приходы от мастера):\n\n"
             f"MATERIALS_CHAT_ID={chat_id}\n\n"
             "Добавьте в .env и перезапустите бота."
         )
@@ -449,6 +453,9 @@ async def on_callback(event: MessageCallback) -> None:
         )
         return
 
+    if await handle_sklad_access_callback(event, bot):
+        return
+
     if await handle_drivers_callback(event, bot):
         return
 
@@ -537,8 +544,11 @@ async def main() -> None:
     set_materials_bot(bot)
     set_materials_receipt_bot(bot)
     set_materials_reserve_bot(bot)
+    set_sklad_access_bot(bot)
     backup_taksimo_db(reason="startup")
     backup_sklad_master_db(reason="startup")
+    init_rumex_registry_db()
+    backup_rumex_registry_db(reason="startup")
     api_runner = await start_comments_api()
     drivers_cid = drivers_chat_id()
     if drivers_cid is not None:
@@ -551,6 +561,7 @@ async def main() -> None:
     report_task = asyncio.create_task(daily_report_loop())
     backup_task = asyncio.create_task(daily_backup_loop())
     sklad_backup_task = asyncio.create_task(daily_sklad_backup_loop())
+    rumex_registry_backup_task = asyncio.create_task(daily_rumex_registry_backup_loop())
     sklad_eta_task = asyncio.create_task(sklad_eta_reminder_loop())
     materials_report_task = asyncio.create_task(materials_report_loop())
     materials_watch_task = asyncio.create_task(materials_watch_loop())
@@ -563,6 +574,7 @@ async def main() -> None:
         report_task.cancel()
         backup_task.cancel()
         sklad_backup_task.cancel()
+        rumex_registry_backup_task.cancel()
         sklad_eta_task.cancel()
         materials_report_task.cancel()
         materials_watch_task.cancel()

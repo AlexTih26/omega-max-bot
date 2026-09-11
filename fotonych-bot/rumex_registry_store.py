@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "rumex_registry.db"
 FLEET_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "data" / "drivers_registry.json"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 PRODUCT_NAME = "Блок 9,7/8,8"
 BLOCK_CODES = ("A", "B", "C", "D", "E", "F", "K")
@@ -596,6 +596,32 @@ def init_rumex_registry_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_rumex_accountant_sessions_expiry
                 ON accountant_sessions(expires_at, revoked_at);
+
+            CREATE TABLE IF NOT EXISTS test_dispatcher_login_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL DEFAULT '',
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                failure_reason TEXT NOT NULL DEFAULT '',
+                remote_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                attempted_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_test_dispatcher_login_attempts
+                ON test_dispatcher_login_attempts(username, attempted_at DESC);
+
+            CREATE TABLE IF NOT EXISTS test_dispatcher_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_hash TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                revoked_at REAL,
+                remote_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_test_dispatcher_sessions_expiry
+                ON test_dispatcher_sessions(expires_at, revoked_at);
             """
         )
         _add_column_if_missing(
@@ -607,6 +633,26 @@ def init_rumex_registry_db() -> None:
             conn,
             "carriers",
             "confirmation_reference TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            conn,
+            "test_shipments",
+            "dispatcher_identity_kind TEXT NOT NULL DEFAULT 'max'",
+        )
+        _add_column_if_missing(
+            conn,
+            "test_shipments",
+            "dispatcher_identity_id TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            conn,
+            "test_shipments",
+            "printed_by_identity_kind TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            conn,
+            "test_shipments",
+            "printed_by_identity_id TEXT NOT NULL DEFAULT ''",
         )
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         _seed_reference_data(conn, now=now)
@@ -1619,6 +1665,35 @@ def _current_confirmed_binding_for_tail(
     return binding
 
 
+def _test_dispatcher_actor(
+    *,
+    dispatcher_max_user_id: Any,
+    dispatcher_name: Any,
+    dispatcher_identity_kind: Any = "max",
+    dispatcher_identity_id: Any = "",
+) -> tuple[int, str, str, str]:
+    """Нормализовать исполнителя из MAX или отдельной парольной сессии."""
+    kind = str(dispatcher_identity_kind or "").strip().lower()
+    dispatcher = _required_carrier_text(dispatcher_name, "имя диспетчера", max_length=200)
+    if kind == "max":
+        try:
+            max_user_id = int(dispatcher_max_user_id)
+        except (TypeError, ValueError):
+            raise ValueError("Не определён диспетчер MAX") from None
+        if max_user_id <= 0:
+            raise ValueError("Не определён диспетчер MAX")
+        identity_id = str(dispatcher_identity_id or max_user_id).strip()
+        if identity_id != str(max_user_id):
+            raise ValueError("Некорректная учётная запись диспетчера MAX")
+        return max_user_id, kind, identity_id, dispatcher
+    if kind == "password":
+        identity_id = _required_carrier_text(
+            dispatcher_identity_id, "учётную запись диспетчера", max_length=200
+        )
+        return 0, kind, identity_id, dispatcher
+    raise ValueError("Неизвестный способ входа диспетчера")
+
+
 def create_test_shipment(
     *,
     plate_tail: Any,
@@ -1627,6 +1702,8 @@ def create_test_shipment(
     dispatcher_max_user_id: int,
     dispatcher_name: str,
     loaded_at: Any,
+    dispatcher_identity_kind: str = "max",
+    dispatcher_identity_id: str = "",
     registry_year: int | None = None,
     created_at: float | None = None,
 ) -> dict[str, Any]:
@@ -1642,13 +1719,12 @@ def create_test_shipment(
         raise ValueError("Укажите число блоков") from None
     if expected_count <= 0 or expected_count > 200:
         raise ValueError("Число блоков должно быть от 1 до 200")
-    try:
-        dispatcher_id = int(dispatcher_max_user_id)
-    except (TypeError, ValueError):
-        raise ValueError("Не определён диспетчер") from None
-    if dispatcher_id <= 0:
-        raise ValueError("Не определён диспетчер")
-    dispatcher = _required_carrier_text(dispatcher_name, "имя диспетчера", max_length=200)
+    dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
+        dispatcher_max_user_id=dispatcher_max_user_id,
+        dispatcher_name=dispatcher_name,
+        dispatcher_identity_kind=dispatcher_identity_kind,
+        dispatcher_identity_id=dispatcher_identity_id,
+    )
     loaded_timestamp = _test_shipment_timestamp(loaded_at, "Фактическое время погрузки")
     now = float(created_at) if created_at is not None else _now()
     year = _check_year(registry_year if registry_year is not None else _current_registry_year())
@@ -1669,8 +1745,9 @@ def create_test_shipment(
                 """INSERT INTO test_shipments (
                        registry_number, registry_year, registry_sequence, status, revision_number,
                        document_vehicle_binding_id, document_snapshot_json,
-                       dispatcher_max_user_id, dispatcher_name, loaded_at, created_at, updated_at
-                   ) VALUES (?, ?, ?, 'awaiting_accountant_review', 1, ?, ?, ?, ?, ?, ?, ?)""",
+                       dispatcher_max_user_id, dispatcher_identity_kind, dispatcher_identity_id,
+                       dispatcher_name, loaded_at, created_at, updated_at
+                   ) VALUES (?, ?, ?, 'awaiting_accountant_review', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     registry_number,
                     year,
@@ -1678,6 +1755,8 @@ def create_test_shipment(
                     int(binding["id"]),
                     _json(document_snapshot),
                     dispatcher_id,
+                    dispatcher_kind,
+                    dispatcher_identity,
                     dispatcher,
                     loaded_timestamp,
                     now,
@@ -1699,8 +1778,8 @@ def create_test_shipment(
                 revision_number=1,
                 revision_kind="submitted",
                 payload=payload,
-                actor_kind="dispatcher",
-                actor_id=str(dispatcher_id),
+                actor_kind="dispatcher_" + dispatcher_kind,
+                actor_id=dispatcher_identity,
                 actor_name=dispatcher,
                 created_at=now,
             )
@@ -1708,8 +1787,8 @@ def create_test_shipment(
                 conn,
                 test_shipment_id=shipment_id,
                 event_type="test_shipment_loaded",
-                actor_kind="dispatcher",
-                actor_id=str(dispatcher_id),
+                actor_kind="dispatcher_" + dispatcher_kind,
+                actor_id=dispatcher_identity,
                 actor_name=dispatcher,
                 payload={
                     "registry_number": registry_number,
@@ -1804,6 +1883,8 @@ def resubmit_test_shipment(
     loaded_at: Any,
     dispatcher_max_user_id: int,
     dispatcher_name: str,
+    dispatcher_identity_kind: str = "max",
+    dispatcher_identity_id: str = "",
     occurred_at: float | None = None,
 ) -> dict[str, Any]:
     """Добавить новую ревизию возвращённой погрузки без изменения старой."""
@@ -1814,13 +1895,12 @@ def resubmit_test_shipment(
         raise ValueError("Укажите число блоков") from None
     if expected_count <= 0 or expected_count > 200:
         raise ValueError("Число блоков должно быть от 1 до 200")
-    try:
-        dispatcher_id = int(dispatcher_max_user_id)
-    except (TypeError, ValueError):
-        raise ValueError("Не определён диспетчер") from None
-    if dispatcher_id <= 0:
-        raise ValueError("Не определён диспетчер")
-    dispatcher = _required_carrier_text(dispatcher_name, "имя диспетчера", max_length=200)
+    dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
+        dispatcher_max_user_id=dispatcher_max_user_id,
+        dispatcher_name=dispatcher_name,
+        dispatcher_identity_kind=dispatcher_identity_kind,
+        dispatcher_identity_id=dispatcher_identity_id,
+    )
     loaded_timestamp = _test_shipment_timestamp(loaded_at, "Фактическое время погрузки")
     now = float(occurred_at) if occurred_at is not None else _now()
     init_rumex_registry_db()
@@ -1838,10 +1918,20 @@ def resubmit_test_shipment(
             conn.execute(
                 """UPDATE test_shipments SET
                        status = 'awaiting_accountant_review', revision_number = ?,
-                       dispatcher_max_user_id = ?, dispatcher_name = ?, loaded_at = ?,
+                       dispatcher_max_user_id = ?, dispatcher_identity_kind = ?,
+                       dispatcher_identity_id = ?, dispatcher_name = ?, loaded_at = ?,
                        correction_reason = '', updated_at = ?
-                   WHERE id = ?""",
-                (revision_number, dispatcher_id, dispatcher, loaded_timestamp, now, shipment_id),
+                    WHERE id = ?""",
+                (
+                    revision_number,
+                    dispatcher_id,
+                    dispatcher_kind,
+                    dispatcher_identity,
+                    dispatcher,
+                    loaded_timestamp,
+                    now,
+                    shipment_id,
+                ),
             )
             _insert_test_shipment_items(
                 conn,
@@ -1856,8 +1946,8 @@ def resubmit_test_shipment(
                 revision_number=revision_number,
                 revision_kind="resubmitted",
                 payload=payload,
-                actor_kind="dispatcher",
-                actor_id=str(dispatcher_id),
+                actor_kind="dispatcher_" + dispatcher_kind,
+                actor_id=dispatcher_identity,
                 actor_name=dispatcher,
                 created_at=now,
             )
@@ -1865,8 +1955,8 @@ def resubmit_test_shipment(
                 conn,
                 test_shipment_id=shipment_id,
                 event_type="test_shipment_resubmitted",
-                actor_kind="dispatcher",
-                actor_id=str(dispatcher_id),
+                actor_kind="dispatcher_" + dispatcher_kind,
+                actor_id=dispatcher_identity,
                 actor_name=dispatcher,
                 payload={
                     "revision_number": revision_number,
@@ -2019,17 +2109,18 @@ def confirm_test_documents_handed_to_driver(
     *,
     dispatcher_max_user_id: int,
     dispatcher_name: str,
+    dispatcher_identity_kind: str = "max",
+    dispatcher_identity_id: str = "",
     occurred_at: float | None = None,
 ) -> dict[str, Any]:
     """Зафиксировать обязательное подтверждение печати и передачи водителю."""
     shipment_id = _test_shipment_id(test_shipment_id)
-    try:
-        dispatcher_id = int(dispatcher_max_user_id)
-    except (TypeError, ValueError):
-        raise ValueError("Не определён диспетчер") from None
-    if dispatcher_id <= 0:
-        raise ValueError("Не определён диспетчер")
-    dispatcher = _required_carrier_text(dispatcher_name, "имя диспетчера", max_length=200)
+    dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
+        dispatcher_max_user_id=dispatcher_max_user_id,
+        dispatcher_name=dispatcher_name,
+        dispatcher_identity_kind=dispatcher_identity_kind,
+        dispatcher_identity_id=dispatcher_identity_id,
+    )
     now = float(occurred_at) if occurred_at is not None else _now()
     init_rumex_registry_db()
     with _connect() as conn:
@@ -2044,9 +2135,18 @@ def confirm_test_documents_handed_to_driver(
                 conn.execute(
                     """UPDATE test_shipments SET
                            status = 'documents_handed_to_driver', printed_by_max_user_id = ?,
+                           printed_by_identity_kind = ?, printed_by_identity_id = ?,
                            printed_by_name = ?, printed_confirmed_at = ?, updated_at = ?
-                       WHERE id = ?""",
-                    (dispatcher_id, dispatcher, now, now, shipment_id),
+                        WHERE id = ?""",
+                    (
+                        dispatcher_id,
+                        dispatcher_kind,
+                        dispatcher_identity,
+                        dispatcher,
+                        now,
+                        now,
+                        shipment_id,
+                    ),
                 )
                 conn.execute(
                     """UPDATE test_shipment_documents SET status = 'issued', updated_at = ?
@@ -2057,8 +2157,8 @@ def confirm_test_documents_handed_to_driver(
                     conn,
                     test_shipment_id=shipment_id,
                     event_type="test_documents_handed_to_driver",
-                    actor_kind="dispatcher",
-                    actor_id=str(dispatcher_id),
+                    actor_kind="dispatcher_" + dispatcher_kind,
+                    actor_id=dispatcher_identity,
                     actor_name=dispatcher,
                     payload={"printed_confirmed_at": now},
                     occurred_at=now,
@@ -2510,6 +2610,107 @@ def revoke_accountant_session(*, token_hash: str, revoked_at: float | None = Non
     with _connect() as conn:
         conn.execute(
             """UPDATE accountant_sessions SET revoked_at = ?
+               WHERE token_hash = ? AND revoked_at IS NULL""",
+            (float(revoked_at) if revoked_at is not None else _now(), token_hash),
+        )
+
+
+def record_test_dispatcher_login_attempt(
+    *,
+    username: str = "",
+    success: bool,
+    failure_reason: str = "",
+    remote_address: str = "",
+    user_agent: str = "",
+    attempted_at: float | None = None,
+) -> None:
+    """Сохранить попытку парольного входа тестового диспетчера без пароля."""
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO test_dispatcher_login_attempts (
+                   username, success, failure_reason, remote_address, user_agent, attempted_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                (username or "").strip()[:80],
+                int(bool(success)),
+                (failure_reason or "").strip()[:160],
+                (remote_address or "").strip()[:120],
+                (user_agent or "").strip()[:400],
+                float(attempted_at) if attempted_at is not None else _now(),
+            ),
+        )
+
+
+def failed_test_dispatcher_login_count(*, remote_address: str, since: float) -> int:
+    """Вернуть число неуспешных парольных попыток с одного адреса."""
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS count FROM test_dispatcher_login_attempts
+               WHERE success = 0 AND remote_address = ? AND attempted_at >= ?""",
+            ((remote_address or "").strip()[:120], float(since)),
+        ).fetchone()
+    return int(row["count"])
+
+
+def create_test_dispatcher_session(
+    *,
+    token_hash: str,
+    username: str,
+    expires_at: float,
+    remote_address: str = "",
+    user_agent: str = "",
+    created_at: float | None = None,
+) -> None:
+    """Сохранить хэш отдельной сессии тестового диспетчера."""
+    if not token_hash or not username:
+        raise ValueError("Для сессии требуется пользователь и хэш токена")
+    init_rumex_registry_db()
+    now = float(created_at) if created_at is not None else _now()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO test_dispatcher_sessions (
+                   token_hash, username, created_at, expires_at, last_seen_at, remote_address, user_agent
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                token_hash,
+                username,
+                now,
+                float(expires_at),
+                now,
+                (remote_address or "").strip()[:120],
+                (user_agent or "").strip()[:400],
+            ),
+        )
+
+
+def test_dispatcher_session_username(*, token_hash: str, now: float | None = None) -> str | None:
+    """Вернуть пользователя действующей отдельной сессии тестового диспетчера."""
+    if not token_hash:
+        return None
+    init_rumex_registry_db()
+    current = float(now) if now is not None else _now()
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT id, username FROM test_dispatcher_sessions
+               WHERE token_hash = ? AND revoked_at IS NULL AND expires_at >= ?""",
+            (token_hash, current),
+        ).fetchone()
+        if row is None:
+            return None
+        conn.execute("UPDATE test_dispatcher_sessions SET last_seen_at = ? WHERE id = ?", (current, row["id"]))
+    return str(row["username"])
+
+
+def revoke_test_dispatcher_session(*, token_hash: str, revoked_at: float | None = None) -> None:
+    """Отозвать сессию тестового диспетчера при явном выходе."""
+    if not token_hash:
+        return
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE test_dispatcher_sessions SET revoked_at = ?
                WHERE token_hash = ? AND revoked_at IS NULL""",
             (float(revoked_at) if revoked_at is not None else _now(), token_hash),
         )

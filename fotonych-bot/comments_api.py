@@ -33,6 +33,7 @@ from rumex_registry_auth import (
     register_rumex_registry_auth_routes,
     rumex_registry_auth_middleware,
 )
+from rumex_test_dispatcher_auth import register_rumex_test_dispatcher_auth_routes
 from taksimo_find_api import register_taksimo_find_routes
 from taksimo_api import register_taksimo_routes
 from taksimo_auth import register_taksimo_auth_routes, taksimo_auth_middleware
@@ -262,6 +263,7 @@ def create_app() -> web.Application:
     register_admin_routes(app)
     register_rumex_routes(app)
     register_rumex_registry_auth_routes(app)
+    register_rumex_test_dispatcher_auth_routes(app)
     register_rumex_registry_routes(app)
     from ipdocs_api import register_ipdocs_routes
 

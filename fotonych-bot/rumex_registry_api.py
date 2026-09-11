@@ -11,6 +11,7 @@ from aiohttp import web
 from max_webapp import display_name_from_user, init_data_from_request, user_id_from_user, validate_init_data
 from rumex_registry_auth import is_registry_admin, user_from_request
 from rumex_registry_documents import build_test_ttn_workbook, test_ttn_filename
+from rumex_test_dispatcher_auth import user_from_request as test_dispatcher_user_from_request
 from rumex_registry_store import (
     confirm_document_vehicle_binding,
     confirm_test_documents_handed_to_driver,
@@ -107,14 +108,22 @@ def _test_dispatcher_ids() -> set[int]:
 
 
 def _test_dispatcher_identity(request: web.Request) -> tuple[dict | None, web.Response | None]:
-    """Проверить подпись MAX и отдельный whitelist тестового диспетчера."""
+    """Проверить парольную сессию либо подпись MAX тестового диспетчера."""
+    password_user = test_dispatcher_user_from_request(request)
+    if password_user:
+        return {
+            "max_user_id": 0,
+            "name": password_user,
+            "identity_kind": "password",
+            "identity_id": password_user,
+        }, None
     configured_ids = _test_dispatcher_ids()
     if not configured_ids:
         return None, _json({"error": "Тестовый доступ диспетчера не настроен"}, 503)
     init_data = init_data_from_request(request)
     parsed = validate_init_data(init_data, (os.getenv("MAX_BOT_TOKEN") or "").strip())
     if parsed is None or not isinstance(parsed.get("user"), dict):
-        return None, _json({"error": "Откройте кабинет из мини-приложения MAX"}, 401)
+        return None, _json({"error": "Откройте кабинет из MAX или войдите по паролю"}, 401)
     user = parsed["user"]
     user_id = user_id_from_user(user)
     if user_id is None or user_id not in configured_ids:
@@ -122,11 +131,13 @@ def _test_dispatcher_identity(request: web.Request) -> tuple[dict | None, web.Re
     return {
         "max_user_id": user_id,
         "name": display_name_from_user(user),
+        "identity_kind": "max",
+        "identity_id": str(user_id),
     }, None
 
 
 def _test_viewer_identity(request: web.Request) -> tuple[dict | None, web.Response | None]:
-    """Разрешить просмотр только бухгалтеру с PIN или тестовому диспетчеру MAX."""
+    """Разрешить просмотр бухгалтеру либо тестовому диспетчеру MAX/по паролю."""
     accountant = user_from_request(request)
     if accountant:
         return {"role": "accountant", "name": accountant}, None
@@ -382,6 +393,8 @@ async def handle_test_shipment_create(request: web.Request) -> web.Response:
             dispatcher_max_user_id=int(dispatcher["max_user_id"]),
             dispatcher_name=str(dispatcher["name"]),
             loaded_at=body.get("loaded_at"),
+            dispatcher_identity_kind=str(dispatcher["identity_kind"]),
+            dispatcher_identity_id=str(dispatcher["identity_id"]),
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
@@ -409,6 +422,8 @@ async def handle_test_shipment_resubmit(request: web.Request) -> web.Response:
             loaded_at=body.get("loaded_at"),
             dispatcher_max_user_id=int(dispatcher["max_user_id"]),
             dispatcher_name=str(dispatcher["name"]),
+            dispatcher_identity_kind=str(dispatcher["identity_kind"]),
+            dispatcher_identity_id=str(dispatcher["identity_id"]),
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
@@ -427,6 +442,8 @@ async def handle_test_shipment_handed_to_driver(request: web.Request) -> web.Res
             shipment_id,
             dispatcher_max_user_id=int(dispatcher["max_user_id"]),
             dispatcher_name=str(dispatcher["name"]),
+            dispatcher_identity_kind=str(dispatcher["identity_kind"]),
+            dispatcher_identity_id=str(dispatcher["identity_id"]),
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)

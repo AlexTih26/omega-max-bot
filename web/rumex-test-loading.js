@@ -12,6 +12,11 @@
   var busy = false;
 
   var accessNotice = document.getElementById("accessNotice");
+  var accessNoticeText = document.getElementById("accessNoticeText");
+  var passwordLoginLink = document.getElementById("passwordLoginLink");
+  var passwordSession = document.getElementById("passwordSession");
+  var passwordSessionUser = document.getElementById("passwordSessionUser");
+  var passwordLogoutButton = document.getElementById("passwordLogoutButton");
   var loadingForm = document.getElementById("loadingForm");
   var plateTail = document.getElementById("plateTail");
   var loadedAt = document.getElementById("loadedAt");
@@ -54,6 +59,22 @@
 
   function request(path, options) {
     return fetch(API + path, Object.assign({ headers: apiHeaders(), credentials: "same-origin" }, options || {}))
+      .then(function (response) {
+        return response.json().catch(function () { return {}; }).then(function (body) {
+          if (!response.ok) throw new Error(body.error || "Не удалось выполнить запрос");
+          return body;
+        });
+      });
+  }
+
+  function showAccessNotice(message, showLogin) {
+    accessNoticeText.textContent = message;
+    passwordLoginLink.hidden = !showLogin;
+    accessNotice.hidden = false;
+  }
+
+  function passwordAuthRequest(path, options) {
+    return fetch("/api/rumex-registry/test/auth" + path, Object.assign({ credentials: "same-origin" }, options || {}))
       .then(function (response) {
         return response.json().catch(function () { return {}; }).then(function (body) {
           if (!response.ok) throw new Error(body.error || "Не удалось выполнить запрос");
@@ -252,19 +273,19 @@
 
   function renderDocuments(shipment, parent) {
     var documents = shipment.documents || [];
-    documents.forEach(function (document) {
+    documents.forEach(function (item) {
       var box = createElement("div", "rtl-document");
-      if (document.document_kind === "TN" && ["ready", "issued"].indexOf(document.status) >= 0) {
+      if (item.document_kind === "TN" && ["ready", "issued"].indexOf(item.status) >= 0) {
         var link = document.createElement("a");
         link.href = documentUrl(shipment.id);
         link.textContent = "Скачать ТТН №" + shipment.registry_number;
         box.appendChild(link);
-      } else if (document.document_kind === "ER") {
-        box.textContent = document.status === "not_required"
+      } else if (item.document_kind === "ER") {
+        box.textContent = item.status === "not_required"
           ? "ЭР не требуется"
           : "ЭР: внешняя расписка Контура (шаблон не утверждён)";
       } else {
-        box.textContent = (document.display_suffix || document.document_kind) + ": " + document.status;
+        box.textContent = (item.display_suffix || item.document_kind) + ": " + item.status;
       }
       parent.appendChild(box);
     });
@@ -360,8 +381,7 @@
         renderRegistry();
       })
       .catch(function (error) {
-        accessNotice.textContent = error.message || "Кабинет недоступен.";
-        accessNotice.hidden = false;
+        showAccessNotice(error.message || "Кабинет недоступен.", !initData);
       })
       .finally(function () { refreshButton.disabled = false; });
   }
@@ -462,10 +482,36 @@
   cancelHandoverButton.addEventListener("click", function () { handoverDialog.hidden = true; handoverShipmentId = null; });
   confirmHandoverButton.addEventListener("click", confirmHandover);
 
+  passwordLogoutButton.addEventListener("click", function () {
+    passwordLogoutButton.disabled = true;
+    passwordAuthRequest("/logout", { method: "POST" })
+      .then(function () { location.replace("/rumex-test-loading-login.html"); })
+      .catch(function (error) { showToast(error.message || "Не удалось выйти"); })
+      .finally(function () { passwordLogoutButton.disabled = false; });
+  });
+
   loadedAt.value = localDatetimeValue();
-  if (!setupBridge()) {
-    accessNotice.textContent = "Откройте кабинет из мини-приложения MAX. В браузере без подписанного MAX-доступа он закрыт.";
-    accessNotice.hidden = false;
+  if (setupBridge()) {
+    loadRegistry();
+    return;
   }
-  loadRegistry();
+  passwordAuthRequest("/check")
+    .then(function (body) {
+      if (body.authenticated) {
+        return passwordAuthRequest("/me").then(function (identity) {
+          passwordSessionUser.textContent = "Вход по паролю: " + identity.user;
+          passwordSession.hidden = false;
+          return loadRegistry();
+        });
+      }
+      if (body.configured) {
+        showAccessNotice("Откройте кабинет через Mini App MAX или войдите по личному паролю.", true);
+      } else {
+        showAccessNotice("Откройте кабинет через Mini App MAX. Парольный вход пока не настроен.", false);
+      }
+      return null;
+    })
+    .catch(function (error) {
+      showAccessNotice(error.message || "Не удалось проверить доступ к кабинету.", true);
+    });
 })();

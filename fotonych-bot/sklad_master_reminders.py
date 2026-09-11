@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from materials_chat import notify_event
 from materials_receipt_chat import notify_materials_role_users
 from sklad_master_store import list_eta_reminders_due, mark_eta_reminder_sent
 
@@ -41,10 +40,6 @@ async def sklad_eta_reminder_loop() -> None:
             continue
         for item in due:
             text = "\n".join(_reminder_lines(item)).strip()
-            try:
-                await notify_event(text)
-            except Exception:
-                logger.exception("Склад Мастер: ETA-напоминание в чат не отправлено")
             try:
                 await notify_materials_role_users(text, role="supply")
             except Exception:

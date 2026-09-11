@@ -293,6 +293,24 @@
       });
   }
 
+  function rumexQueueBadge(row) {
+    if (!row || !row.rumex_in_queue) return "";
+    return (
+      '<span class="adm-fleet-badge adm-fleet-badge--rumex">' +
+      escapeHtml(row.rumex_queue_label || "очередь Румекс") +
+      "</span>"
+    );
+  }
+
+  function rumexResetBtn(tail) {
+    if (!tail) return "";
+    return (
+      '<button type="button" class="adm-fleet-btn adm-fleet-btn--rumex" data-fleet-act="reset_trip" data-tail="' +
+      escapeHtml(tail) +
+      '">↺ Очередь Румекс</button>'
+    );
+  }
+
   function renderVehicles(data) {
     if (!vehiclesList) return;
     var items = (data && data.vehicles) || [];
@@ -318,11 +336,13 @@
       } else {
         badges.push('<span class="adm-fleet-badge adm-fleet-badge--off">без реестра</span>');
       }
+      badges.push(rumexQueueBadge(row));
       var metaParts = [];
       if (reg.plate_tail) metaParts.push("…" + reg.plate_tail);
       if (reg.name && reg.name !== row.driver) metaParts.push(reg.name);
       if (reg.max_user_id) metaParts.push("MAX " + reg.max_user_id);
       else if (row.in_registry) metaParts.push("без MAX id");
+      var tailGuess = (reg.plate_tail || row.plate_tail_guess || guessTailFromPlate(row.plate) || "").trim();
       var actions = "";
       if (row.in_registry && reg.plate_tail) {
         actions +=
@@ -336,6 +356,7 @@
           '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-vehicle-link="' +
           escapeHtml(String(row.id)) + '">В реестр</button>';
       }
+      actions += rumexResetBtn(tailGuess);
       actions +=
         '<button type="button" class="adm-fleet-btn" data-vehicle-active="' +
         escapeHtml(String(row.id)) + '" data-active="' + (row.active ? "0" : "1") + '">' +
@@ -367,6 +388,7 @@
         actions +=
           '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="change" data-tail="' +
           escapeHtml(row.plate_tail) + '">Сменить</button>';
+        actions += rumexResetBtn(row.plate_tail);
       } else if (row.reserve && row.max_user_id) {
         actions +=
           '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="reserve" data-uid="' +
@@ -378,7 +400,8 @@
         '">Удалить</button>';
       li.innerHTML =
         '<div class="adm-fleet-head"><p class="adm-fleet-title">' + escapeHtml(title) + "</p>" +
-        '<span class="adm-fleet-badge adm-fleet-badge--off">без Таксimo</span></div>' +
+        '<span class="adm-fleet-badge adm-fleet-badge--off">без Таксimo</span>' +
+        rumexQueueBadge(row) + "</div>" +
         (row.taksimo_plate ? '<p class="adm-fleet-meta">' + escapeHtml(row.taksimo_plate) + "</p>" : "") +
         (actions ? '<div class="adm-fleet-actions">' + actions + "</div>" : "");
       li.dataset.row = JSON.stringify(row);
@@ -407,6 +430,7 @@
         : row.active
           ? '<span class="adm-fleet-badge">' + escapeHtml(row.phase_label || "—") + "</span>"
           : '<span class="adm-fleet-badge adm-fleet-badge--off">снят</span>';
+      badge += rumexQueueBadge(row);
       var detailParts = [row.vehicle, row.taksimo_plate, row.detail].filter(Boolean);
       var uidWarn =
         row.plate_tail && row.active && !row.max_user_id
@@ -420,10 +444,7 @@
           '<button type="button" class="adm-fleet-btn adm-fleet-btn--primary" data-fleet-form="change" data-tail="' +
           escapeHtml(row.plate_tail) +
           '">Сменить</button>';
-        actions +=
-          '<button type="button" class="adm-fleet-btn" data-fleet-act="reset_trip" data-tail="' +
-          escapeHtml(row.plate_tail) +
-          '">Сброс рейса</button>';
+        actions += rumexResetBtn(row.plate_tail);
         if (row.active) {
           actions +=
             '<button type="button" class="adm-fleet-btn adm-fleet-btn--warn" data-fleet-act="set_active" data-tail="' +
@@ -854,6 +875,17 @@
     }
     if (action === "remove_registry") {
       if (!window.confirm("Удалить запись из реестра водителей?")) return;
+    }
+    if (action === "reset_trip") {
+      if (
+        !window.confirm(
+          "Убрать …" +
+            (tail || "?") +
+            " из очереди Румекс и сбросить активный рейс?"
+        )
+      ) {
+        return;
+      }
     }
     postFleetAction(body);
   }

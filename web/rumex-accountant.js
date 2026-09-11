@@ -140,8 +140,14 @@
     renderList();
   }
 
+  function apiUrl(path) {
+    if (!initData) return path;
+    var sep = path.indexOf("?") >= 0 ? "&" : "?";
+    return path + sep + "initData=" + encodeURIComponent(initData);
+  }
+
   function loadRegistry() {
-    return fetch("/api/rumex/accountant/registry", { headers: apiHeaders() })
+    return fetch(apiUrl("/api/rumex/accountant/registry"), { headers: apiHeaders() })
       .then(function (r) {
         return r.json().then(function (body) {
           if (r.status === 403) {
@@ -190,7 +196,7 @@
 
   function copyForKontur() {
     if (!selected) return;
-    fetch("/api/rumex/accountant/copy/" + encodeURIComponent(selected.id), {
+    fetch(apiUrl("/api/rumex/accountant/copy/" + encodeURIComponent(selected.id)), {
       headers: apiHeaders(),
     })
       .then(function (r) {
@@ -232,7 +238,13 @@
     if (!setupBridge()) {
       setTimeout(function () {
         if (!setupBridge()) {
-          outsideMax.hidden = false;
+          setTimeout(function () {
+            if (!setupBridge()) {
+              outsideMax.hidden = false;
+              return;
+            }
+            loadRegistry().catch(function () {});
+          }, 800);
           return;
         }
         loadRegistry().catch(function () {});

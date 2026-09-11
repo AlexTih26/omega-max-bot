@@ -25,7 +25,11 @@ class SkladMasterApiTests(AioHTTPTestCase):
         self.old_validate = api.validate_init_data
         self.old_user_id = api.user_id_from_user
         api.validate_init_data = lambda raw, token: (
-            {"user": {"user_id": 101, "name": "Мастер"}} if raw == "valid" else None
+            {"user": {"user_id": 101, "name": "Мастер", "first_name": "Мастер"}}
+            if raw == "valid"
+            else {"user": {"user_id": 888, "name": "Гость", "first_name": "Гость"}}
+            if raw == "guest"
+            else None
         )
         api.user_id_from_user = lambda user: int(user["user_id"])
         app = web.Application()
@@ -247,6 +251,73 @@ class SkladMasterApiTests(AioHTTPTestCase):
         body = await bootstrap.json()
         inactive = [item for item in body["admin_materials"] if not item["active"]]
         self.assertEqual(inactive[0]["name"], "Материал переименован")
+
+    async def test_bootstrap_guest_without_roles(self):
+        response = await self.client.get(
+            "/api/sklad-master/bootstrap",
+            headers={"X-Max-Init-Data": "guest"},
+        )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertTrue(body.get("guest"))
+        self.assertEqual(body["user"]["id"], 888)
+        self.assertEqual(body["access_request"]["status"], "none")
+
+    async def test_access_request_creates_pending(self):
+        original = api.submit_and_notify_access_request
+
+        async def fake_submit(*, max_id, display_name):
+            ok, message, row = store.submit_access_request(
+                max_id=max_id,
+                display_name=display_name,
+            )
+            return ok, message
+
+        api.submit_and_notify_access_request = fake_submit
+        try:
+            response = await self.client.post(
+                "/api/sklad-master/access-request",
+                headers={"X-Max-Init-Data": "guest"},
+                json={},
+            )
+            self.assertEqual(response.status, 200)
+            body = await response.json()
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["access_request"]["status"], "pending")
+
+            again = await self.client.post(
+                "/api/sklad-master/access-request",
+                headers={"X-Max-Init-Data": "guest"},
+                json={},
+            )
+            self.assertEqual(again.status, 200)
+            again_body = await again.json()
+            self.assertFalse(again_body["ok"])
+            self.assertEqual(again_body["access_request"]["status"], "pending")
+        finally:
+            api.submit_and_notify_access_request = original
+
+    async def test_resolve_access_request_assigns_role(self):
+        store.submit_access_request(max_id=888, display_name="Гость")
+        ok, _msg, row = store.resolve_access_request(
+            max_id=888,
+            action="master",
+            actor_max_id=101,
+            actor_name="Админ",
+        )
+        self.assertTrue(ok)
+        self.assertEqual(row["status"], "approved")
+        access = store.get_access(888)
+        self.assertIn("master", access["roles"])
+
+        ok2, reason, _row2 = store.resolve_access_request(
+            max_id=888,
+            action="supply",
+            actor_max_id=101,
+            actor_name="Админ",
+        )
+        self.assertFalse(ok2)
+        self.assertEqual(reason, "already_processed")
 
 
 if __name__ == "__main__":

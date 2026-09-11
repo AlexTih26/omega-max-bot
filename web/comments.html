@@ -27,6 +27,7 @@
         if (direct === "taksimo_find" || direct === "find" || direct === "tks") return "find";
         if (direct === "sklad_master" || direct === "sklad" || direct === "sm") return "sklad";
         if (direct === "chat" || direct === "omega_chat" || direct === "omg") return "chat";
+        if (direct === "accountant" || direct === "acc" || direct === "rumex_accountant") return "accountant";
         if (window.location.hash && window.location.hash.length > 1) {
           var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
           var fromHash = hash.get("WebAppStartParam") || hash.get("startapp");
@@ -36,6 +37,7 @@
           if (fromHash === "taksimo_find" || fromHash === "find" || fromHash === "tks") return "find";
           if (fromHash === "sklad_master" || fromHash === "sklad" || fromHash === "sm") return "sklad";
           if (fromHash === "chat" || fromHash === "omega_chat" || fromHash === "omg") return "chat";
+          if (fromHash === "accountant" || fromHash === "acc" || fromHash === "rumex_accountant") return "accountant";
         }
         try {
           var wa = window.WebApp;
@@ -47,6 +49,7 @@
             if (sp === "taksimo_find" || sp === "find" || sp === "tks") return "find";
             if (sp === "sklad_master" || sp === "sklad" || sp === "sm") return "sklad";
             if (sp === "chat" || sp === "omega_chat" || sp === "omg") return "chat";
+            if (sp === "accountant" || sp === "acc" || sp === "rumex_accountant") return "accountant";
           }
         } catch (e) {}
         return null;
@@ -61,6 +64,7 @@
         else if (route === "admin") target = "/admin.html";
         else if (route === "sklad") target = "/sklad-master.html";
         else if (route === "chat") target = "/chat.html";
+        else if (route === "accountant") target = "/rumex-accountant.html";
         window.location.replace(target + q + h);
       }
     })();

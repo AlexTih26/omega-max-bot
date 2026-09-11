@@ -15,6 +15,8 @@
       background: #0f1419;
       color: #8b98a8;
       font: 500 15px/1.4 Inter, system-ui, sans-serif;
+      padding: 24px;
+      text-align: center;
     }
   </style>
 </head>
@@ -24,14 +26,25 @@
     (function () {
       var webApp = window.WebApp || null;
       var msg = document.getElementById("msg");
+      var attempt = 0;
+      var maxAttempts = 5;
+      var delays = [0, 280, 600, 1200, 2000];
 
       function readInitDataFromUrl() {
         var params = new URLSearchParams(window.location.search);
-        var fromQuery = params.get("initData") || params.get("InitData");
+        var fromQuery =
+          params.get("initData") ||
+          params.get("InitData") ||
+          params.get("tgWebAppData");
         if (fromQuery) return fromQuery;
         if (window.location.hash && window.location.hash.length > 1) {
           var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-          return hash.get("initData") || hash.get("InitData") || "";
+          return (
+            hash.get("initData") ||
+            hash.get("InitData") ||
+            hash.get("tgWebAppData") ||
+            ""
+          );
         }
         return "";
       }
@@ -45,10 +58,47 @@
         var params = new URLSearchParams(window.location.search);
         var fromQuery = params.get("WebAppStartParam") || params.get("startapp") || "";
         if (fromQuery) return fromQuery;
+        if (window.location.hash && window.location.hash.length > 1) {
+          var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+          return hash.get("WebAppStartParam") || hash.get("startapp") || "";
+        }
         if (webApp && webApp.initDataUnsafe && webApp.initDataUnsafe.start_param) {
           return webApp.initDataUnsafe.start_param;
         }
         return "";
+      }
+
+      function redirectTo(path) {
+        var q = window.location.search || "";
+        var h = window.location.hash || "";
+        window.location.replace(path + q + h);
+      }
+
+      function failMessage(status, bodyError) {
+        if (status === 401) {
+          return "Откройте панель кнопкой из чата MAX (не из браузера). Закройте и откройте снова.";
+        }
+        if (status === 403) {
+          return "Нет доступа к этой панели.";
+        }
+        if (bodyError) return bodyError;
+        return "Не удалось открыть панель — попробуйте ещё раз.";
+      }
+
+      function fetchRole(initData) {
+        var url = "/api/panel/role?initData=" + encodeURIComponent(initData);
+        return fetch(url, {
+          headers: { "X-Max-Init-Data": initData },
+        }).then(function (r) {
+          return r.json().then(function (body) {
+            if (!r.ok) {
+              var err = new Error(body.error || "role failed");
+              err.status = r.status;
+              throw err;
+            }
+            return body;
+          });
+        });
       }
 
       function boot() {
@@ -58,37 +108,44 @@
             if (webApp.expand) webApp.expand();
           } catch (e) {}
         }
+
+        var sp = startParam();
+        if (sp === "admin" || sp === "adm") {
+          redirectTo("/admin.html");
+          return;
+        }
+        if (sp === "accountant" || sp === "acc" || sp === "rumex_accountant") {
+          redirectTo("/rumex-accountant.html");
+          return;
+        }
+
         var initData = syncInitData();
-        var q = window.location.search || "";
-        var h = window.location.hash || "";
-        if (startParam() === "admin" || startParam() === "adm") {
-          window.location.replace("/admin.html" + q + h);
-          return;
-        }
         if (!initData) {
-          msg.textContent = "Откройте панель из чата MAX ↓";
+          if (attempt < maxAttempts - 1) {
+            attempt += 1;
+            setTimeout(boot, delays[attempt] || 2000);
+            return;
+          }
+          msg.textContent = "Откройте панель кнопкой из чата MAX ↓";
           return;
         }
-        var headers = { "X-Max-Init-Data": initData };
-        fetch("/api/panel/role", { headers: headers })
-          .then(function (r) {
-            return r.json().then(function (body) {
-              if (!r.ok) throw new Error(body.error || "role failed");
-              return body;
-            });
-          })
+
+        fetchRole(initData)
           .then(function (data) {
-            var target = data.redirect || "/drivers.html";
-            var q = window.location.search || "";
-            var h = window.location.hash || "";
-            window.location.replace(target + q + h);
+            redirectTo(data.redirect || "/drivers.html");
           })
-          .catch(function () {
-            msg.textContent = "Не удалось открыть панель — проверьте связь";
+          .catch(function (err) {
+            if (attempt < maxAttempts - 1 && (err.status === 401 || !err.status)) {
+              attempt += 1;
+              msg.textContent = "Подключаем…";
+              setTimeout(boot, delays[attempt] || 2000);
+              return;
+            }
+            msg.textContent = failMessage(err.status, err.message);
           });
       }
 
-      setTimeout(boot, webApp && webApp.initData ? 0 : 280);
+      setTimeout(boot, webApp && webApp.initData ? 0 : 120);
     })();
   </script>
 </body>

@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#17221d">
   <meta name="application-name" content="Завод Румекс · тестовая погрузка">
   <title>Завод Румекс · тестовая погрузка</title>
-  <link rel="stylesheet" href="/rumex-test-loading.css?v=2">
+  <link rel="stylesheet" href="/rumex-test-loading.css?v=3">
   <script src="https://st.max.ru/js/max-web-app.js"></script>
 </head>
 <body>
@@ -15,10 +15,17 @@
       <p class="rtl-kicker">Завод Румекс · тестовая погрузка</p>
       <h1>Документы после загрузки</h1>
       <p class="rtl-subtitle">Изолированный тестовый контур. Не меняет очередь, рейсы, склад, вагоны или Таксимо.</p>
+      <div class="rtl-session" id="passwordSession" hidden>
+        <span id="passwordSessionUser"></span>
+        <button class="rtl-secondary rtl-session-logout" id="passwordLogoutButton" type="button">Выйти</button>
+      </div>
     </header>
 
     <main class="rtl-main">
-      <p class="rtl-notice" id="accessNotice" hidden></p>
+      <div class="rtl-notice" id="accessNotice" hidden>
+        <p id="accessNoticeText"></p>
+        <a class="rtl-access-link" id="passwordLoginLink" href="/rumex-test-loading-login.html" hidden>Войти по паролю</a>
+      </div>
 
       <section class="rtl-panel" id="loadingPanel" aria-labelledby="loadingTitle">
         <div class="rtl-section-heading">
@@ -114,6 +121,6 @@
   </div>
 
   <div class="rtl-toast" id="toast" role="status" aria-live="polite" hidden></div>
-  <script src="/rumex-test-loading.js?v=1"></script>
+  <script src="/rumex-test-loading.js?v=3"></script>
 </body>
 </html>

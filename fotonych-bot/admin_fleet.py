@@ -13,9 +13,11 @@ from drivers_chat import (
     _load_registry_records,
     _load_state,
     _registry_active,
+    _rumex_in_queue,
     _save_state,
     sync_drivers_registry,
 )
+from rumex_loading import cancel_loadings_for_tail, is_tail_in_rumex_queue
 from taksimo_store import (
     list_all_vehicles,
     set_vehicle_active,
@@ -76,6 +78,31 @@ def _registry_by_plate(data: dict) -> dict[str, dict]:
     return indexed
 
 
+def _live_driver_by_tail(state: dict, tail: str) -> dict | None:
+    if not tail:
+        return None
+    for rec in state.get("drivers", {}).values():
+        if isinstance(rec, dict) and str(rec.get("plate_tail") or "").strip() == tail:
+            return rec
+    return None
+
+
+def _rumex_queue_meta(state: dict, tail: str) -> dict:
+    if not tail:
+        return {"rumex_in_queue": False, "rumex_queue_label": ""}
+    live = _live_driver_by_tail(state, tail)
+    in_queue = is_tail_in_rumex_queue(tail, state=state)
+    label = ""
+    if in_queue and isinstance(live, dict):
+        if live.get("awaiting_factory_docs_at") or live.get("left_taksimo_at"):
+            label = "очередь Румекс · после Таксimo"
+        elif _rumex_in_queue(live):
+            label = "очередь Румекс"
+    elif in_queue:
+        label = "очередь Румекс · загрузка"
+    return {"rumex_in_queue": in_queue, "rumex_queue_label": label}
+
+
 def _trip_row(state: dict, rec: dict) -> dict:
     tail = str(rec.get("plate_tail") or "").strip()
     uid = int(rec.get("max_user_id") or 0)
@@ -84,7 +111,10 @@ def _trip_row(state: dict, rec: dict) -> dict:
         live = state.get("drivers", {}).get(str(uid))
     if not isinstance(live, dict) and tail:
         live = state.get("drivers", {}).get(f"plate:{tail}")
+    if not isinstance(live, dict) and tail:
+        live = _live_driver_by_tail(state, tail)
     summary = _driver_status_summary(live) if isinstance(live, dict) else {}
+    rumex = _rumex_queue_meta(state, tail)
     return {
         "phase": summary.get("phase") or "offline",
         "phase_label": summary.get("phase_label") or summary.get("label") or "—",
@@ -98,6 +128,7 @@ def _trip_row(state: dict, rec: dict) -> dict:
                 or live.get("left_taksimo_at")
             )
         ),
+        **rumex,
     }
 
 
@@ -131,6 +162,7 @@ def fleet_list_payload() -> dict:
 
 
 def vehicles_catalog_payload() -> dict:
+    state = _load_state()
     data = _load_registry_file()
     by_plate = _registry_by_plate(data)
     matched_registry: set[int] = set()
@@ -150,11 +182,19 @@ def vehicles_catalog_payload() -> dict:
                 "active": _registry_active(reg),
                 "reserve": bool(reg.get("reserve")),
             }
+        tail = ""
+        if reg_view:
+            tail = str(reg_view.get("plate_tail") or "").strip()
+        if not tail:
+            tail = _guess_plate_tail(str(vehicle.get("plate") or ""))
+        rumex = _rumex_queue_meta(state, tail) if tail else {"rumex_in_queue": False, "rumex_queue_label": ""}
         vehicles.append(
             {
                 **vehicle,
                 "in_registry": reg is not None,
                 "registry": reg_view,
+                "plate_tail_guess": tail,
+                **rumex,
             }
         )
     orphan_registry: list[dict] = []
@@ -171,6 +211,7 @@ def vehicles_catalog_payload() -> dict:
                 "taksimo_plate": item.get("taksimo_plate") or "",
                 "active": _registry_active(item),
                 "reserve": bool(item.get("reserve")),
+                **_rumex_queue_meta(state, tail),
             }
         )
     active_vehicles = sum(1 for item in vehicles if item.get("active"))
@@ -424,11 +465,12 @@ def assign_reserve_to_plate(
 
 
 def reset_fleet_trip(*, plate_tail: str) -> tuple[bool, str]:
-    tail = (plate_tail or "").strip()
-    if not tail or not tail.isdigit():
+    tail = _normalize_tail(plate_tail)
+    if not tail:
         return False, "Укажите хвост номера (например 348)"
 
     state = _load_state()
+    was_in_rumex = is_tail_in_rumex_queue(tail, state=state)
     found = False
     for key, rec in list(state.get("drivers", {}).items()):
         if not isinstance(rec, dict):
@@ -437,11 +479,14 @@ def reset_fleet_trip(*, plate_tail: str) -> tuple[bool, str]:
             _clear_driver_trip(rec)
             state["drivers"][key] = rec
             found = True
-    if not found:
+    loadings_cleared = cancel_loadings_for_tail(tail, state=state)
+    if not found and not was_in_rumex and loadings_cleared <= 0:
         return False, f"…{tail} не найден в активном состоянии"
     _save_state(state)
-    logger.info("Админ: сброс рейса …%s", tail)
-    return True, f"Рейс сброшен для …{tail}"
+    logger.info("Админ: сброс рейса …%s rumex=%s loadings=%s", tail, was_in_rumex, loadings_cleared)
+    if was_in_rumex or loadings_cleared:
+        return True, f"…{tail} · убран из очереди Румекс"
+    return True, f"…{tail} · рейс сброшен"
 
 
 def set_fleet_active(*, plate_tail: str, active: bool) -> tuple[bool, str]:

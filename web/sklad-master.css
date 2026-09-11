@@ -600,6 +600,19 @@ button {
   color: #d7deed;
 }
 
+.sm-btn--wide,
+.sm-guest-meta + .sm-btn {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.sm-guest-meta {
+  margin: 12px 0 4px;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--sm-text);
+}
+
 .sm-submit {
   width: 100%;
   margin-top: 14px;

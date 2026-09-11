@@ -813,27 +813,6 @@ async def _notify_supply(
         except Exception:
             logger.exception("Не удалось уведомить снабжение user_id=%s", supply_id)
 
-    try:
-        from materials_chat import notify_event
-
-        await notify_event(
-            "\n".join(
-                [
-                    "🟢 Приход через MAX",
-                    f"{material_name}: {receipt_label} · {cond}",
-                    _before_after_done_line(
-                        label="Факт",
-                        before=on_hand_before,
-                        after=on_hand_after,
-                        unit=warehouse_unit,
-                    ),
-                    f"Мастер: {master_name}",
-                ]
-            )
-        )
-    except Exception:
-        logger.exception("Не удалось отправить приход в группу расходников")
-
 
 def _confirm_text(state: dict) -> str:
     warehouse_unit = state.get("warehouse_unit") or state.get("unit") or ""

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17221d">
+  <title>РУМЕКС · вход тестового диспетчера</title>
+  <link rel="stylesheet" href="/rumex-test-loading.css?v=3">
+</head>
+<body class="rtl-login-page">
+  <main class="rtl-login-wrap">
+    <section class="rtl-login-card" aria-labelledby="loginTitle">
+      <p class="rtl-kicker">РУМЕКС · тест</p>
+      <h1 id="loginTitle">Вход диспетчера</h1>
+      <p class="rtl-subtitle">Только для изолированного тестового контура. Доступа к Таксимо и кабинету бухгалтера нет.</p>
+      <form id="loginForm">
+        <label class="rtl-field" for="username">Имя пользователя
+          <input id="username" type="text" autocomplete="username" maxlength="80" required autofocus>
+        </label>
+        <label class="rtl-field" for="password">Пароль
+          <input id="password" type="password" autocomplete="current-password" minlength="8" maxlength="256" required>
+        </label>
+        <button class="rtl-primary" id="loginButton" type="submit">Войти в тестовый кабинет</button>
+      </form>
+      <p class="rtl-error" id="loginError" role="alert"></p>
+      <p class="rtl-help">Внутри Mini App MAX пароль не нужен: используется защищённый вход по MAX ID.</p>
+    </section>
+  </main>
+  <script src="/rumex-test-loading-login.js?v=1"></script>
+</body>
+</html>

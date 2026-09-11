@@ -583,6 +583,49 @@ def _find_loading(state: dict, *, loading_id: str = "", plate_tail: str = "") ->
     return None
 
 
+def cancel_loadings_for_tail(plate_tail: str, *, state: dict | None = None) -> int:
+    tail = (plate_tail or "").strip()
+    if not tail:
+        return 0
+    own_state = state is None
+    if own_state:
+        state = _load_state()
+    count = 0
+    for row in _loadings_list(state):
+        if str(row.get("plate_tail") or "").strip() != tail:
+            continue
+        if str(row.get("status") or "") in ACTIVE_STATUSES:
+            row["status"] = STATUS_CANCELLED
+            row["updated_at"] = _now_label()
+            count += 1
+    if own_state and count:
+        _save_state(state)
+    return count
+
+
+def is_tail_in_rumex_queue(plate_tail: str, *, state: dict | None = None) -> bool:
+    from drivers_chat import _rumex_in_queue
+
+    tail = (plate_tail or "").strip()
+    if not tail:
+        return False
+    if state is None:
+        state = _load_state()
+    for rec in state.get("drivers", {}).values():
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("plate_tail") or "").strip() != tail:
+            continue
+        if _rumex_in_queue(rec):
+            return True
+    for row in _loadings_list(state):
+        if str(row.get("plate_tail") or "").strip() != tail:
+            continue
+        if str(row.get("status") or "") in ACTIVE_STATUSES:
+            return True
+    return False
+
+
 def find_loading(*, loading_id: str = "", plate_tail: str = "") -> dict | None:
     return _find_loading(_load_state(), loading_id=loading_id, plate_tail=plate_tail)
 
@@ -613,6 +656,17 @@ async def publish_rumex_loading_result(result: RumexLoadingResult) -> None:
         return
     for uid, text in result.dm_messages:
         try:
-            await bot.send_message(user_id=uid, text=text)
+            from keyboards import accountant_open_app_attachments
+
+            attachments = (
+                accountant_open_app_attachments()
+                if uid in rumex_accountant_ids()
+                else None
+            )
+            await bot.send_message(
+                user_id=uid,
+                text=text,
+                attachments=attachments,
+            )
         except Exception:
             logger.exception("rumex DM failed user_id=%s", uid)

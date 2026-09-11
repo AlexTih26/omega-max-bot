@@ -7,7 +7,7 @@
   <title>Склад Мастер</title>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
   <link rel="stylesheet" href="/style.css">
-  <link rel="stylesheet" href="/sklad-master.css?v=35">
+  <link rel="stylesheet" href="/sklad-master.css?v=38">
 </head>
 <body>
   <div class="sm-app">
@@ -29,6 +29,15 @@
         <p>Эта программа работает только как mini-app через `MAX id`.</p>
       </section>
 
+      <section class="sm-card" id="guestCard" hidden>
+        <h2>Нет доступа</h2>
+        <p class="sm-note">Склад Мастер открывается только после подключения администратором.</p>
+        <p class="sm-guest-meta"><span id="guestMaxName"></span><br>MAX id: <strong id="guestMaxId"></strong></p>
+        <p class="sm-note" id="guestStatusNote"></p>
+        <button type="button" class="sm-btn sm-btn--wide" id="guestRegisterBtn">Зарегистрироваться</button>
+      </section>
+
+      <div id="appPanels" hidden>
       <section class="sm-card" id="siteCard">
         <h2>Площадка</h2>
         <div class="sm-chip-grid" id="siteList"></div>
@@ -262,11 +271,12 @@
         <p class="sm-note" id="paymentPanelNote">Снабжение проставляет цены и отправляет ведомость руководителю в личку. В общий чат суммы не попадают.</p>
         <div class="sm-list" id="paymentList"></div>
       </section>
+      </div>
     </main>
 
     <div class="sm-toast" id="toast" hidden></div>
   </div>
 
-  <script src="/sklad-master.js?v=35"></script>
+  <script src="/sklad-master.js?v=38"></script>
 </body>
 </html>

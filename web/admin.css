@@ -414,9 +414,20 @@ body {
   color: #9ec5ff;
 }
 
+.adm-fleet-badge--rumex {
+  color: #f0c060;
+  border: 1px solid rgba(240, 192, 96, 0.45);
+  background: rgba(240, 192, 96, 0.12);
+}
+
 .adm-fleet-badge--off {
   background: rgba(139, 152, 168, 0.15);
   color: var(--adm-muted);
+}
+
+.adm-fleet-btn--rumex {
+  border-color: rgba(240, 192, 96, 0.45);
+  color: #f0c060;
 }
 
 .adm-fleet-meta {

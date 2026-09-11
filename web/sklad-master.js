@@ -110,7 +110,7 @@
       return response.text().then(function (text) {
         var body = {};
         try { body = text ? JSON.parse(text) : {}; } catch (ignore) { body = {}; }
-        if (!response.ok) throw new Error(body.error || "Ошибка сервера");
+        if (!response.ok) throw new Error(body.notification || body.error || "Ошибка сервера");
         return body;
       });
     });
@@ -223,11 +223,64 @@
     var path = "/bootstrap" + (state.siteId ? "?site_id=" + encodeURIComponent(state.siteId) : "");
     return api(path).then(function (body) {
       data = body || {};
+      if (data.guest) {
+        renderGuest();
+        return;
+      }
+      $("guestCard").hidden = true;
+      $("appPanels").hidden = false;
       if (!state.siteId && data.selected_site_id) state.siteId = String(data.selected_site_id);
       if (!state.siteId && data.default_site_id) state.siteId = String(data.default_site_id);
       applyRoleDefaults();
       render();
     });
+  }
+
+  function renderGuest() {
+    var user = data.user || {};
+    var req = data.access_request || {};
+    $("appPanels").hidden = true;
+    $("guestCard").hidden = false;
+    $("currentUserBox").hidden = true;
+    $("guestMaxName").textContent = user.name || "Пользователь MAX";
+    $("guestMaxId").textContent = user.id != null ? String(user.id) : "—";
+    var btn = $("guestRegisterBtn");
+    var note = $("guestStatusNote");
+    if (req.status === "pending") {
+      note.textContent = "Заявка уже отправлена — ждите решения администратора.";
+      btn.hidden = true;
+    } else if (req.status === "rejected") {
+      note.textContent = "Доступ отклонён администратором.";
+      btn.hidden = true;
+    } else {
+      note.textContent = "Нажмите «Зарегистрироваться» — администратор получит ваш MAX id.";
+      btn.hidden = false;
+      btn.disabled = false;
+    }
+  }
+
+  function submitAccessRequest() {
+    var btn = $("guestRegisterBtn");
+    if (!btn || btn.disabled) return;
+    setBusy(btn, true);
+    return api("/access-request", { method: "POST", body: "{}" })
+      .then(function (body) {
+        if (body && body.access_request) {
+          data.access_request = body.access_request;
+        }
+        renderGuest();
+        if (body && body.notification) {
+          toast(body.notification);
+        } else if (body && body.ok) {
+          toast("Заявка отправлена");
+        }
+      })
+      .catch(function (error) {
+        fail(error, "Не удалось отправить заявку");
+      })
+      .finally(function () {
+        setBusy(btn, false);
+      });
   }
 
   function roleLabel(role) {
@@ -1924,6 +1977,11 @@
       state.showMaterialCreate = !state.showMaterialCreate;
       renderCreateBoxes();
     });
+    if ($("guestRegisterBtn")) {
+      $("guestRegisterBtn").addEventListener("click", function () {
+        submitAccessRequest();
+      });
+    }
   }
 
   function boot() {

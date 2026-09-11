@@ -17,13 +17,13 @@ from maxapi.types import MessageCreated
 logger = logging.getLogger(__name__)
 
 MATERIALS_WELCOME = (
-    "✅ Чат расходников подключён.\n"
-    "Здесь будут остатки, дефицит и сводки по материалам.\n"
+    "✅ Чат приходов подключён.\n"
+    "Сюда приходят только приходы от мастера (Склад Мастер), без сумм.\n"
 )
 
 MATERIALS_USER_WELCOME = (
-    "{name}, добро пожаловать в чат расходников.\n"
-    "Здесь будут остатки, дефицит и сводки по материалам."
+    "{name}, добро пожаловать в чат приходов.\n"
+    "Сюда приходят только приходы от мастера (Склад Мастер), без сумм."
 )
 
 _MAX_MSG_LEN = 3500
@@ -107,6 +107,18 @@ def materials_chat_id() -> int | None:
         return None
 
 
+def materials_reports_chat_id() -> int | None:
+    """Опциональный чат для сводок/служебных событий (не приходы)."""
+    raw = (os.getenv("MATERIALS_REPORTS_CHAT_ID") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("MATERIALS_REPORTS_CHAT_ID не число: %s", raw)
+        return None
+
+
 def is_materials_chat(chat_id: int | None) -> bool:
     cid = materials_chat_id()
     return chat_id is not None and cid is not None and chat_id == cid
@@ -140,10 +152,8 @@ def _split_messages(text: str) -> list[str]:
     return parts
 
 
-async def send_text(text: str) -> bool:
-    chat_id = materials_chat_id()
+async def _send_to_chat(chat_id: int | None, text: str) -> bool:
     if chat_id is None:
-        logger.warning("Материалы: MATERIALS_CHAT_ID не задан")
         return False
     if _bot is None:
         logger.warning("Материалы: бот не инициализирован")
@@ -154,6 +164,24 @@ async def send_text(text: str) -> bool:
     except Exception:
         logger.exception("Материалы: не удалось отправить в chat_id=%s", chat_id)
         return False
+
+
+async def notify_master_receipt(text: str) -> bool:
+    """Приход от мастера → чат MATERIALS_CHAT_ID."""
+    if not text.strip():
+        return False
+    chat_id = materials_chat_id()
+    if chat_id is None:
+        logger.warning("Материалы: MATERIALS_CHAT_ID не задан для прихода")
+        return False
+    return await _send_to_chat(chat_id, text.strip())
+
+
+async def send_text(text: str) -> bool:
+    chat_id = materials_reports_chat_id()
+    if chat_id is None:
+        return False
+    return await _send_to_chat(chat_id, text)
 
 
 async def send_messages(texts: list[str]) -> bool:
@@ -685,8 +713,7 @@ async def notify_event(text: str) -> bool:
 
 
 async def materials_report_loop() -> None:
-    chat_id = materials_chat_id()
-    if chat_id is None:
+    if materials_reports_chat_id() is None:
         return
     schedule = _report_times()
     while True:
@@ -710,8 +737,7 @@ async def materials_report_loop() -> None:
 
 
 async def materials_watch_loop() -> None:
-    chat_id = materials_chat_id()
-    if chat_id is None:
+    if materials_reports_chat_id() is None:
         return
     while True:
         await asyncio.sleep(45)
@@ -744,7 +770,7 @@ async def handle_materials_chat_message(event: MessageCreated) -> None:
         chat_id = event.message.recipient.chat_id
         if chat_id is not None:
             await event.message.answer(
-                "Чат расходников:\n\n"
+                "Чат приходов (только приходы от мастера):\n\n"
                 f"MATERIALS_CHAT_ID={chat_id}\n\n"
                 "Добавьте в .env и перезапустите бота."
             )

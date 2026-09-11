@@ -7,7 +7,7 @@ import os
 
 from aiohttp import web
 
-from max_webapp import user_id_from_user, validate_init_data
+from max_webapp import user_id_from_request
 from rumex_chat import (
     apply_rumex_action,
     is_rumex_dispatcher,
@@ -40,16 +40,7 @@ def _bot_token() -> str:
 
 
 def _parse_user_id(request: web.Request) -> int | None:
-    init_data = request.headers.get("X-Max-Init-Data", "").strip()
-    if not init_data:
-        return None
-    parsed = validate_init_data(init_data, _bot_token())
-    if parsed is None:
-        return None
-    user = parsed.get("user")
-    if not isinstance(user, dict):
-        return None
-    return user_id_from_user(user)
+    return user_id_from_request(request, _bot_token())
 
 
 async def handle_rumex_registry(request: web.Request) -> web.Response:

@@ -6,6 +6,7 @@ from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
 from post_payload import encode_post_id
 from sklad_master_store import get_access
+from rumex_loading import is_rumex_accountant
 from super_admin import is_super_admin
 
 MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "id5406829253_bot")
@@ -16,6 +17,7 @@ CB_MENU = "menu"
 TAKSIMO_FIND_PAYLOAD = "taksimo_find"
 OMEGA_CHAT_PAYLOAD = "chat"
 ADMIN_APP_PAYLOAD = "admin"
+ACCOUNTANT_APP_PAYLOAD = "accountant"
 SKLAD_MASTER_PAYLOAD = "sklad_master"
 
 TAKSIMO_FIND_HINT = (
@@ -32,6 +34,14 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardBuilder:
                 text="📱 Склад Мастер",
                 web_app=MAX_BOT_USERNAME,
                 payload=SKLAD_MASTER_PAYLOAD,
+            )
+        )
+    if user_id is not None and is_rumex_accountant(user_id):
+        kb.row(
+            OpenAppButton(
+                text="📋 Кабинет бухгалтера",
+                web_app=MAX_BOT_USERNAME,
+                payload=ACCOUNTANT_APP_PAYLOAD,
             )
         )
     kb.row(
@@ -79,6 +89,18 @@ def taksimo_find_attachments() -> list:
 
 def taksimo_menu_attachments() -> list:
     return taksimo_find_attachments()
+
+
+def accountant_open_app_attachments() -> list:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        OpenAppButton(
+            text="📋 Кабинет бухгалтера",
+            web_app=MAX_BOT_USERNAME,
+            payload=ACCOUNTANT_APP_PAYLOAD,
+        )
+    )
+    return [kb.as_markup()]
 
 
 def admin_open_app_attachments() -> list:

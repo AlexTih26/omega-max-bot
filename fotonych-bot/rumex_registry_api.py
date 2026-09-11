@@ -372,6 +372,16 @@ async def handle_test_vehicle_lookup(request: web.Request) -> web.Response:
     binding = vehicle.get("document_binding")
     if binding is None:
         return _json({"found": False, "reason": "Нет подтверждённой бухгалтером документной карточки"})
+    if not str(binding.get("driver_license_number") or "").strip():
+        return _json(
+            {
+                "found": False,
+                "reason": (
+                    "В подтверждённой карточке машины нет номера водительского удостоверения. "
+                    "Попросите бухгалтера подтвердить новую карточку машины."
+                ),
+            }
+        )
     return _json({"found": True, "vehicle": vehicle, "document_binding": binding})
 
 

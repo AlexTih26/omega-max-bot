@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -348,6 +349,36 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             )
             self.assertIn("attachment", document.headers.get("Content-Disposition", ""))
             self.assertIn("%E2%84%96", document.headers.get("Content-Disposition", ""))
+
+    async def test_test_vehicle_requires_driver_license_before_creating_shipment(self):
+        self._prepare_test_vehicle()
+        with sqlite3.connect(store.DB_PATH) as conn:
+            conn.execute("DROP TRIGGER document_vehicle_bindings_no_update")
+            conn.execute("UPDATE document_vehicle_bindings SET driver_license_number = ''")
+        headers = self._test_dispatcher_headers()
+
+        vehicle = await self.client.get("/api/rumex-registry/test/vehicles/553", headers=headers)
+        self.assertEqual(vehicle.status, 200)
+        vehicle_body = await vehicle.json()
+        self.assertFalse(vehicle_body["found"])
+        self.assertIn("номера водительского удостоверения", vehicle_body["reason"])
+
+        created = await self.client.post(
+            "/api/rumex-registry/test/shipments",
+            headers={**headers, "Content-Type": "application/json"},
+            json={
+                "plate_tail": "553",
+                "block_count": 3,
+                "items": [
+                    {"letter": "A", "number": "3611"},
+                    {"letter": "K", "number": "7741"},
+                    {"letter": "A", "number": "3612"},
+                ],
+                "loaded_at": 1_767_225_600.0,
+            },
+        )
+        self.assertEqual(created.status, 400)
+        self.assertIn("нет номера водительского удостоверения", (await created.json())["error"])
 
     async def test_test_dispatcher_password_session_is_isolated_from_accountants(self):
         self._prepare_test_vehicle()

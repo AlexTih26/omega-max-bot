@@ -1779,6 +1779,11 @@ def _current_confirmed_binding_for_tail(
     binding = _current_document_vehicle_binding(conn, int(vehicle["id"]))
     if binding is None:
         raise ValueError("Для машины нет подтверждённой бухгалтером документной карточки")
+    if not str(binding["driver_license_number"] or "").strip():
+        raise ValueError(
+            "В подтверждённой карточке машины нет номера водительского удостоверения. "
+            "Бухгалтер должен подтвердить новую карточку машины."
+        )
     return binding
 
 

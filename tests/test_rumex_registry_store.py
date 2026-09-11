@@ -478,6 +478,63 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 loaded_at=1_767_225_600.0,
             )
 
+    def test_test_shipment_requires_driver_license_in_confirmed_vehicle_binding(self) -> None:
+        source_path = Path(self._tmpdir.name) / "drivers_registry.json"
+        source_path.write_text(
+            json.dumps(
+                {
+                    "drivers": [
+                        {
+                            "max_user_id": 42,
+                            "plate_tail": "553",
+                            "name": "Иванов Иван Иванович",
+                            "vehicle": "FAW J6",
+                            "taksimo_plate": "К553НХ 138",
+                            "active": True,
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        carrier = store.save_carrier(
+            name="ООО «Тестовый перевозчик»",
+            inn="1234567890",
+            kpp="123456789",
+            legal_address="г. Иркутск, ул. Тестовая, д. 1",
+            confirmation_source="counterparty_card",
+            confirmation_reference="Карточка от 01.09.2026",
+            actor_name="Бухгалтер 1",
+        )
+        store.import_document_fleet_snapshot(
+            accountant_name="Бухгалтер 1", source_path=source_path
+        )
+        store.confirm_document_vehicle_binding(
+            plate_tail="553",
+            carrier_id=carrier["id"],
+            driver_full_name="Иванов Иван Иванович",
+            driver_license_number="38 12 123456",
+            accountant_name="Бухгалтер 1",
+        )
+        with sqlite3.connect(store.DB_PATH) as conn:
+            conn.execute("DROP TRIGGER document_vehicle_bindings_no_update")
+            conn.execute("UPDATE document_vehicle_bindings SET driver_license_number = ''")
+
+        with self.assertRaisesRegex(ValueError, "нет номера водительского удостоверения"):
+            store.create_test_shipment(
+                plate_tail="553",
+                block_count=3,
+                items=[
+                    {"letter": "A", "number": "1"},
+                    {"letter": "K", "number": "2"},
+                    {"letter": "A", "number": "3"},
+                ],
+                dispatcher_max_user_id=9001,
+                dispatcher_name="Диспетчер теста",
+                loaded_at=1_767_225_600.0,
+            )
+
     def test_registry_number_is_unique(self) -> None:
         shipment = self._create_shipment()
 

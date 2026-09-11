@@ -10,6 +10,7 @@
   var correctionShipment = null;
   var handoverShipmentId = null;
   var busy = false;
+  var vehicleReadyForTtn = false;
 
   var accessNotice = document.getElementById("accessNotice");
   var accessNoticeText = document.getElementById("accessNoticeText");
@@ -227,6 +228,8 @@
   }
 
   function renderVehicleLookup(body) {
+    vehicleReadyForTtn = Boolean(body.found);
+    submitButton.disabled = !vehicleReadyForTtn;
     vehicleCard.hidden = !body.found;
     vehicleDetails.replaceChildren();
     if (!body.found) {
@@ -254,6 +257,8 @@
 
   function lookupVehicle() {
     var tail = plateTail.value.trim();
+    vehicleReadyForTtn = false;
+    submitButton.disabled = true;
     vehicleCard.hidden = true;
     if (!tail) {
       vehicleHelp.textContent = "После ввода хвоста карточка подставится только из подтверждённого бухгалтером снимка.";
@@ -262,6 +267,8 @@
     request("/vehicles/" + encodeURIComponent(tail))
       .then(renderVehicleLookup)
       .catch(function (error) {
+        vehicleReadyForTtn = false;
+        submitButton.disabled = true;
         vehicleHelp.textContent = error.message || "Не удалось проверить машину.";
       });
   }
@@ -276,7 +283,7 @@
     var documents = shipment.documents || [];
     documents.forEach(function (item) {
       var box = createElement("div", "rtl-document");
-      if (item.document_kind === "TN" && ["ready", "issued"].indexOf(item.status) >= 0) {
+      if (item.document_kind === "TN" && shipment.ttn_number && ["ready", "issued"].indexOf(item.status) >= 0) {
         [1, 2, 3, 4].forEach(function (copyNumber) {
           var link = document.createElement("a");
           link.href = documentUrl(shipment.id, copyNumber);
@@ -284,6 +291,9 @@
           box.appendChild(link);
           box.appendChild(document.createElement("br"));
         });
+      } else if (item.document_kind === "TN") {
+        box.textContent = "Старая ТТН " + (item.registry_number || "")
+          + ": утверждённый номер не выдавался, новый XLSX недоступен.";
       } else if (item.document_kind === "ER") {
         box.textContent = item.status === "not_required"
           ? "ЭР не требуется"
@@ -399,6 +409,10 @@
       loadingForm.reportValidity();
       return;
     }
+    if (!vehicleReadyForTtn) {
+      formError.textContent = "Сначала укажите машину с подтверждённой карточкой и номером водительского удостоверения.";
+      return;
+    }
     var timestamp = datetimeTimestamp(loadedAt.value);
     if (!timestamp) {
       formError.textContent = "Укажите фактическую дату и время погрузки.";
@@ -420,6 +434,8 @@
         loadingForm.reset();
         loadedAt.value = localDatetimeValue();
         blockCount.value = 3;
+        vehicleReadyForTtn = false;
+        submitButton.disabled = true;
         vehicleCard.hidden = true;
         vehicleHelp.textContent = "После ввода хвоста карточка подставится только из подтверждённого бухгалтером снимка.";
         renderBlocks("new", [{ letter: "A", number: "" }, { letter: "A", number: "" }, { letter: "A", number: "" }]);
@@ -497,6 +513,7 @@
   });
 
   loadedAt.value = localDatetimeValue();
+  submitButton.disabled = true;
   if (setupBridge()) {
     loadRegistry();
     return;

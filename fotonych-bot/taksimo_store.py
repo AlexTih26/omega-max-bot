@@ -1253,7 +1253,7 @@ def list_wagon_loads_for_daily_report(
     end_hour: int = 16,
     end_minute: int = 0,
 ) -> list[dict]:
-    """Вагоны и блоки, погруженные в тупик за календарный день до end_hour:end_minute (МСК)."""
+    """Текущий состав вагонов, в которые грузили за день до end_hour:end_minute (МСК)."""
     try:
         day = date.fromisoformat(report_date)
     except ValueError:
@@ -1281,15 +1281,12 @@ def list_wagon_loads_for_daily_report(
         ).fetchall()
 
     wagons: dict[tuple[str, str], dict] = {}
+    active_keys: set[tuple[str, str]] = set()
 
     for row in rows:
         zone = (row["platform_zone"] or "").strip()
         wagon_number = str(row["wagon_number"] or "").strip()
         if not zone or not wagon_number:
-            continue
-        loading_raw = (row["loading_date"] or "").strip()
-        loading_dt = _parse_loading_datetime(loading_raw)
-        if loading_dt is None or loading_dt.date() != day or loading_dt > window_end:
             continue
 
         key = (zone, wagon_number)
@@ -1310,20 +1307,26 @@ def list_wagon_loads_for_daily_report(
                 "vehicle_plate": (row["vehicle_plate"] or "").strip(),
             }
         )
+        loading_raw = (row["loading_date"] or "").strip()
+        loading_dt = _parse_loading_datetime(loading_raw)
+        if loading_dt is None or loading_dt.date() != day or loading_dt > window_end:
+            continue
+
+        active_keys.add(key)
         info = wagons[key]
         if info["last_dt"] is None or loading_dt > info["last_dt"]:
             info["last_dt"] = loading_dt
             info["last_loading"] = loading_raw
 
     out: list[dict] = []
-    for key in sorted(wagons.keys(), key=lambda k: (k[0], k[1])):
+    for key in sorted(active_keys, key=lambda k: (k[0], k[1])):
         info = wagons[key]
         load_info = get_wagon_load_info(info["wagon_number"], info["zone"])
         out.append(
             {
                 "wagon_number": info["wagon_number"],
                 "zone": info["zone"],
-                "count": len(info["labels"]),
+                "count": int(load_info.get("count") or len(info["labels"])),
                 "max": int(load_info.get("max") or MAX_WAGON_SLABS),
                 "labels": info["labels"],
                 "blocks": info["blocks"],

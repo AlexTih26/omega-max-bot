@@ -46,11 +46,13 @@ async def notify_new_test_shipment(shipment: dict) -> None:
             await _bot.send_message(
                 user_id=user_id,
                 text=(
-                    "РУМЕКС: новая погрузка " + number + ".\n"
-                    "Откройте кабинет бухгалтера и при необходимости нажмите «Взять в работу». "
-                    "Если статус не будет изменён за 10 минут, ТТН откроется автоматически."
+                    "🚚 РУМЕКС · новая погрузка\n"
+                    "📄 " + number + "\n\n"
+                    "👤 Откройте кабинет бухгалтера и при необходимости нажмите «Взять в работу».\n"
+                    "⏱️ Если статус не изменится за 10 минут, ТТН откроется автоматически."
                 ),
             )
+            logger.info("РУМЕКС: уведомление о погрузке %s доставлено бухгалтеру %s", number, accountant_name)
         except Exception:
             logger.exception("РУМЕКС: не удалось отправить уведомление бухгалтеру")
 
@@ -59,7 +61,11 @@ async def rumex_registry_deadline_loop() -> None:
     """Открывать просроченные ТТН, включая ожидания, пережившие перезапуск."""
     while True:
         try:
-            release_due_test_shipments()
+            released = release_due_test_shipments()
+            if released:
+                from rumex_registry_backup import backup_rumex_registry_db
+
+                backup_rumex_registry_db(reason="overdue_test_shipments_released")
         except Exception:
             logger.exception("РУМЕКС: не удалось обработать срок ожидания бухгалтера")
         await asyncio.sleep(10)

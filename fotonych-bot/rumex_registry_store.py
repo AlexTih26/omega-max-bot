@@ -861,6 +861,29 @@ def init_rumex_registry_db() -> None:
             "test_shipments",
             "ttn_printed_by_name TEXT NOT NULL DEFAULT ''",
         )
+        conn.executescript(
+            """CREATE TABLE IF NOT EXISTS test_ttn_archives (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   test_shipment_id INTEGER NOT NULL,
+                   copy_number INTEGER NOT NULL CHECK (copy_number IN (1, 2, 3, 4)),
+                   filename TEXT NOT NULL,
+                   sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+                   size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+                   archived_at REAL NOT NULL,
+                   UNIQUE (test_shipment_id, copy_number),
+                   FOREIGN KEY (test_shipment_id) REFERENCES test_shipments(id) ON DELETE RESTRICT
+               );
+               CREATE TRIGGER IF NOT EXISTS test_ttn_archives_no_update
+               BEFORE UPDATE ON test_ttn_archives
+               BEGIN
+                   SELECT RAISE(ABORT, 'Архив выданной ТТН нельзя изменять');
+               END;
+               CREATE TRIGGER IF NOT EXISTS test_ttn_archives_no_delete
+               BEFORE DELETE ON test_ttn_archives
+               BEGIN
+                   SELECT RAISE(ABORT, 'Архив выданной ТТН нельзя удалять');
+               END;"""
+        )
         conn.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_rumex_test_shipments_ttn_number
                ON test_shipments(ttn_number) WHERE ttn_number <> ''"""
@@ -1878,6 +1901,14 @@ def _test_shipment_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[
             (shipment_id,),
         )
     ]
+    result["ttn_archives"] = [
+        dict(archive)
+        for archive in conn.execute(
+            """SELECT copy_number, filename, sha256, size_bytes, archived_at
+               FROM test_ttn_archives WHERE test_shipment_id = ? ORDER BY copy_number""",
+            (shipment_id,),
+        )
+    ]
     result["revisions"] = []
     for revision in conn.execute(
         """SELECT * FROM test_shipment_revisions
@@ -2579,6 +2610,7 @@ def confirm_test_documents_handed_to_driver(
     dispatcher_name: str,
     dispatcher_identity_kind: str = "max",
     dispatcher_identity_id: str = "",
+    ttn_archives: Iterable[Mapping[str, Any]] = (),
     occurred_at: float | None = None,
 ) -> dict[str, Any]:
     """Зафиксировать обязательное подтверждение печати и передачи водителю."""
@@ -2600,6 +2632,28 @@ def confirm_test_documents_handed_to_driver(
             elif str(shipment["status"]) != "documents_ready":
                 raise ValueError("Подтвердить передачу можно только после готовности документов")
             else:
+                archives = list(ttn_archives)
+                if {int(item.get("copy_number") or 0) for item in archives} != {1, 2, 3, 4}:
+                    raise ValueError("Перед выдачей нужно сформировать четыре экземпляра архива ТТН")
+                for archive in archives:
+                    copy_number = int(archive.get("copy_number") or 0)
+                    filename = str(archive.get("filename") or "")
+                    digest = str(archive.get("sha256") or "")
+                    size_bytes = int(archive.get("size_bytes") or 0)
+                    if (
+                        copy_number not in {1, 2, 3, 4}
+                        or not filename
+                        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                        or size_bytes <= 0
+                    ):
+                        raise ValueError("Некорректный архивный экземпляр ТТН")
+                    conn.execute(
+                        """INSERT INTO test_ttn_archives (
+                               test_shipment_id, copy_number, filename, sha256, size_bytes, archived_at
+                           ) VALUES (?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(test_shipment_id, copy_number) DO NOTHING""",
+                        (shipment_id, copy_number, filename, digest, size_bytes, now),
+                    )
                 conn.execute(
                     """UPDATE test_shipments SET
                            status = 'documents_handed_to_driver', printed_by_max_user_id = ?,

@@ -36,7 +36,9 @@ def backup_rumex_registry_db(*, reason: str = "manual") -> Path | None:
         return None
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(_tz()).strftime("%Y-%m-%d_%H-%M-%S")
+    # Микросекунды не дают нескольким последовательным сохранениям в одной
+    # секунде перезаписать одну и ту же резервную копию.
+    stamp = datetime.now(_tz()).strftime("%Y-%m-%d_%H-%M-%S_%f")
     destination = BACKUP_DIR / f"rumex-registry-{stamp}.db"
     source: sqlite3.Connection | None = None
     target: sqlite3.Connection | None = None

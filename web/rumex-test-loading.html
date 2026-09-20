@@ -11,7 +11,8 @@
   <title>Завод Румекс · тестовая погрузка</title>
   <link rel="manifest" href="/rumex-test-dispatcher-manifest.json">
   <link rel="apple-touch-icon" href="/rumex-test-dispatcher-icon-192.png">
-  <link rel="stylesheet" href="/rumex-test-loading.css?v=5">
+  <link rel="stylesheet" href="/rumex-test-loading.css?v=10">
+  <script src="/rumex-client-errors.js?v=1"></script>
   <script src="/rumex-pwa.js?v=2" defer></script>
   <script src="https://st.max.ru/js/max-web-app.js"></script>
 </head>
@@ -76,16 +77,17 @@
         </form>
       </section>
 
-      <section class="rtl-panel" id="correctionPanel" hidden aria-labelledby="correctionTitle">
-        <div class="rtl-section-heading">
+      <section class="rtl-panel rtl-correction-panel" id="correctionPanel" hidden aria-labelledby="correctionTitle">
+        <button class="rtl-correction-head" id="correctionToggle" type="button" aria-expanded="true" aria-controls="correctionContent">
           <div>
             <p class="rtl-kicker">Возвращено бухгалтером</p>
             <h2 id="correctionTitle">Исправьте погрузку</h2>
           </div>
-          <button class="rtl-secondary" id="closeCorrectionButton" type="button">Закрыть</button>
-        </div>
-        <p class="rtl-notice rtl-notice--warning" id="correctionReason"></p>
-        <form id="correctionForm" novalidate>
+          <span class="rtl-correction-toggle-label">Открыть</span>
+        </button>
+        <div id="correctionContent" hidden>
+          <p class="rtl-notice rtl-notice--warning" id="correctionReason"></p>
+          <form id="correctionForm" novalidate>
           <div class="rtl-form-grid">
             <label class="rtl-field" for="correctionLoadedAt">Фактическая погрузка *
               <input id="correctionLoadedAt" name="loaded_at" type="datetime-local" required>
@@ -97,8 +99,9 @@
           <div class="rtl-blocks" id="correctionBlocksList"></div>
           <p class="rtl-total" id="correctionTotalWeight">Итого: 0 кг</p>
           <p class="rtl-error" id="correctionError" role="alert"></p>
-          <button class="rtl-primary" id="resubmitButton" type="submit">Отправить исправленную погрузку бухгалтеру</button>
-        </form>
+            <button class="rtl-primary" id="resubmitButton" type="submit">Отправить исправленную погрузку бухгалтеру</button>
+          </form>
+        </div>
       </section>
 
       <section class="rtl-panel" aria-labelledby="registryTitle">
@@ -109,10 +112,24 @@
           </div>
           <p class="rtl-count" id="registryCount">Загрузка…</p>
         </div>
+        <button class="rtl-secondary rtl-export-button" id="registryExportButton" type="button">⬇️ Скачать Excel</button>
+        <div class="rtl-registry-filters" aria-label="Фильтры реестра">
+          <label class="rtl-field" for="registryDateFrom">Дата с
+            <input id="registryDateFrom" type="date">
+          </label>
+          <label class="rtl-field" for="registryDateTo">Дата по
+            <input id="registryDateTo" type="date">
+          </label>
+          <label class="rtl-field rtl-registry-filter-search" for="registrySearch">ТТН или хвост машины
+            <input id="registrySearch" type="search" placeholder="Например: РМ-2026 или 553" autocomplete="off">
+          </label>
+          <button class="rtl-secondary rtl-filter-reset" id="registryFiltersReset" type="button">Сбросить</button>
+        </div>
         <p class="rtl-empty" id="emptyState" hidden>Тестовых погрузок пока нет.</p>
         <div class="rtl-list" id="registryList"></div>
       </section>
     </main>
+    <footer class="rtl-archive-status" id="archiveStatus" aria-live="polite"></footer>
   </div>
 
   <div class="rtl-dialog-backdrop" id="handoverDialog" hidden>
@@ -127,6 +144,6 @@
   </div>
 
   <div class="rtl-toast" id="toast" role="status" aria-live="polite" hidden></div>
-  <script src="/rumex-test-loading.js?v=7"></script>
+  <script src="/rumex-test-loading.js?v=13"></script>
 </body>
 </html>

@@ -64,7 +64,24 @@ class RumexRegistryDocumentsTests(unittest.TestCase):
             self.assertEqual(sheet["A62"].value, 3)
             self.assertEqual(sheet["BE62"].value, "без тары")
             self.assertEqual(sheet["CG43"].value, "38 12 123456")
-            self.assertIn("ООО «Омега-М», ИНН", sheet["A9"].value)
+            self.assertEqual(
+                sheet["A9"].value,
+                "ООО «Омега-М», ИНН 5406829253, КПП 502401001, "
+                "143405, Московская область, г. Красногорск, ул. Почтовая, д. 3",
+            )
+            self.assertEqual(
+                sheet["B92"].value,
+                "ООО «Комсомольская ТК», ИНН 2721252270\n"
+                "664025, Иркутская область, г. Иркутск, ул. Сурикова, д. 6, офис 2",
+            )
+            self.assertEqual(
+                sheet["BF92"].value,
+                "ООО «Омега-М», ИНН 5406829253, КПП 502401001\n"
+                "143405, Московская область, г. Красногорск, ул. Почтовая, д. 3",
+            )
+            self.assertEqual(sheet["BF92"].font.sz, 8)
+            self.assertTrue(sheet["BF92"].alignment.wrap_text)
+            self.assertEqual(sheet.row_dimensions[92].height, 32)
             self.assertIn("ООО «РУМЕКС», ИНН", sheet["BO9"].value)
             self.assertNotIn("ОГРН", sheet["A9"].value)
             self.assertNotIn("ОГРН", sheet["BO9"].value)

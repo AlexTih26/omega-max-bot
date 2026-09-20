@@ -12,7 +12,8 @@
   <title>РУМЕКС · бухгалтерский реестр</title>
   <link rel="manifest" href="/rumex-accountant-manifest.json">
   <link rel="apple-touch-icon" href="/rumex-accountant-icon-192.png">
-  <link rel="stylesheet" href="/rumex-accountant-registry.css?v=8">
+  <link rel="stylesheet" href="/rumex-accountant-registry.css?v=12">
+  <script src="/rumex-client-errors.js?v=1"></script>
   <script src="/rumex-pwa.js?v=2" defer></script>
 </head>
 <body>
@@ -65,6 +66,19 @@
             <h2>Реестр отгрузок</h2>
             <p class="rr-subtitle">Каждая запись начинается с даты погрузки и номера документа.</p>
           </div>
+        </div>
+        <button class="rr-refresh rr-export-button" id="registryExportButton" type="button">⬇️ Скачать Excel</button>
+        <div class="rr-registry-filters" aria-label="Фильтры реестра">
+          <label class="rr-field" for="registryDateFrom">Дата с
+            <input id="registryDateFrom" type="date">
+          </label>
+          <label class="rr-field" for="registryDateTo">Дата по
+            <input id="registryDateTo" type="date">
+          </label>
+          <label class="rr-field rr-registry-filter-search" for="registrySearch">ТТН или хвост машины
+            <input id="registrySearch" type="search" placeholder="Например: РМ-2026 или 553" autocomplete="off">
+          </label>
+          <button class="rr-refresh rr-filter-reset" id="registryFiltersReset" type="button">Сбросить</button>
         </div>
         <p class="rr-empty" id="testEmptyState" hidden>Погрузок в реестре пока нет.</p>
         <section class="rr-test-list" id="testRegistryList" aria-label="Полный реестр погрузок"></section>
@@ -217,9 +231,10 @@
         </section>
       </section>
     </main>
+    <footer class="rr-archive-status" id="archiveStatus" aria-live="polite"></footer>
 
   <div class="rr-toast" id="toast" role="status" aria-live="polite" hidden></div>
   </div>
-  <script src="/rumex-accountant-registry.js?v=7"></script>
+  <script src="/rumex-accountant-registry.js?v=12"></script>
 </body>
 </html>

@@ -39,6 +39,12 @@
   var workRegistryList = document.getElementById("workRegistryList");
   var testEmptyState = document.getElementById("testEmptyState");
   var testRegistryList = document.getElementById("testRegistryList");
+  var registryDateFrom = document.getElementById("registryDateFrom");
+  var registryDateTo = document.getElementById("registryDateTo");
+  var registrySearch = document.getElementById("registrySearch");
+  var registryFiltersReset = document.getElementById("registryFiltersReset");
+  var registryExportButton = document.getElementById("registryExportButton");
+  var archiveStatus = document.getElementById("archiveStatus");
   var configNotice = document.getElementById("configNotice");
   var directoryAccessNotice = document.getElementById("directoryAccessNotice");
   var newCarrierButton = document.getElementById("newCarrierButton");
@@ -101,6 +107,15 @@
       timeZone: "Asia/Irkutsk",
       dateStyle: "short", timeStyle: "short"
     }).format(new Date(Number(timestamp) * 1000));
+  }
+
+  function renderArchiveStatus(status) {
+    if (!status || !status.registry_saved_at) {
+      archiveStatus.textContent = "Состояние архива реестра пока недоступно.";
+      return;
+    }
+    archiveStatus.textContent = "Реестр сохранён: " + formatTime(status.registry_saved_at)
+      + " · Резервная копия: " + (status.backup_saved_at ? formatTime(status.backup_saved_at) : "ещё не создана");
   }
 
   function statusInfo(status) {
@@ -254,12 +269,16 @@
   }
 
   function renderRegistry(draft) {
-    var shipments = (registryData && registryData.shipments) || [];
+    var allShipments = (registryData && registryData.shipments) || [];
+    var shipments = allShipments.filter(shipmentMatchesRegistryFilters);
     if (registryData && registryData.site_label) siteLabel.textContent = registryData.site_label;
-    registryCount.textContent = shipments.length
-      ? "Отгрузок в реестре: " + shipments.length
+    registryCount.textContent = allShipments.length
+      ? "Найдено: " + shipments.length + " из " + allShipments.length
       : "Отгрузок в реестре пока нет";
     emptyState.hidden = shipments.length > 0;
+    emptyState.textContent = allShipments.length
+      ? "По заданным фильтрам отгрузок не найдено."
+      : "В документообороте пока нет отгрузок.";
     clear(registryList);
     shipments.forEach(function (shipment) { renderShipment(shipment, draft && draft.values); });
     restoreDraft(registryList, draft);
@@ -324,13 +343,20 @@
       document.display_suffix || document.document_kind,
       documentStatus(document.status)
     ].filter(Boolean).join(" · ");
-    if (document.document_kind === "TN" && shipment.ttn_number && ["ready", "issued"].indexOf(document.status) >= 0) {
-      var link = element("a", "rr-test-document rr-test-document-link", label);
-      link.href = testDocumentUrl(shipment, 1);
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.title = "Открыть ТТН для проверки, экземпляр №1";
-      return link;
+    var archives = shipment.ttn_archives || [];
+    if (document.document_kind === "TN" && shipment.ttn_number && document.status === "issued" && archives.length === 4) {
+      var archiveLinks = element("div", "rr-test-document-archive");
+      archiveLinks.appendChild(element("strong", "", shipment.ttn_number + " · выдана водителю"));
+      archives.forEach(function (archive) {
+        var copyNumber = Number(archive.copy_number);
+        var link = element("a", "rr-test-document rr-test-document-link", "Открыть экземпляр № " + copyNumber);
+        link.href = testDocumentUrl(shipment, copyNumber);
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.title = "Открыть неизменяемый архив ТТН, экземпляр № " + copyNumber;
+        archiveLinks.appendChild(link);
+      });
+      return archiveLinks;
     }
     return element("span", "rr-test-document", testDocumentText(document));
   }
@@ -515,7 +541,8 @@
     var isOpen = openedTestShipmentId === shipment.id;
     var card = element(
       "article",
-      "rr-test-card rr-test-card--tone-" + (index % 2 ? "b" : "a") + (isNew ? " rr-test-card--new" : "")
+      "rr-test-card rr-test-card--tone-" + (index % 2 ? "b" : "a")
+        + (isNew ? " rr-test-card--new" : "") + (isOpen ? " rr-test-card--open" : "")
     );
     var summary = element("button", "rr-test-summary");
     var detailsId = "test-" + view + "-shipment-details-" + shipment.id;
@@ -581,9 +608,34 @@
     return Number(right.loaded_at || 0) - Number(left.loaded_at || 0) || Number(right.id || 0) - Number(left.id || 0);
   }
 
+  function shipmentMatchesRegistryFilters(shipment) {
+    var date = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Irkutsk", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(new Date(Number(shipment.loaded_at || 0) * 1000));
+    if (registryDateFrom.value && date < registryDateFrom.value) return false;
+    if (registryDateTo.value && date > registryDateTo.value) return false;
+    var query = registrySearch.value.trim().toLowerCase();
+    if (!query) return true;
+    var vehicle = ((shipment.document_snapshot || {}).vehicle || {});
+    return [shipment.ttn_number, shipment.registry_number, vehicle.plate_tail, vehicle.full_plate]
+      .join(" ").toLowerCase().indexOf(query) >= 0;
+  }
+
+  function exportRegistry() {
+    var query = new URLSearchParams();
+    if (registryDateFrom.value) query.set("date_from", registryDateFrom.value);
+    if (registryDateTo.value) query.set("date_to", registryDateTo.value);
+    if (registrySearch.value.trim()) query.set("search", registrySearch.value.trim());
+    window.location.assign(API + "/test/registry/export?" + query.toString());
+  }
+
   function renderTestRegistry(draft) {
-    var shipments = (testRegistryData && testRegistryData.shipments) || [];
+    var allShipments = (testRegistryData && testRegistryData.shipments) || [];
+    var shipments = allShipments.filter(shipmentMatchesRegistryFilters);
     testEmptyState.hidden = shipments.length > 0;
+    testEmptyState.textContent = allShipments.length
+      ? "По заданным фильтрам погрузок не найдено."
+      : "Погрузок в реестре пока нет.";
     clear(testRegistryList);
     shipments.slice().sort(testShipmentOrder).forEach(function (shipment, index) {
       testRegistryList.appendChild(renderTestShipment(shipment, index, draft && draft.values, "registry"));
@@ -775,6 +827,7 @@
       .then(function (body) {
         var draft = captureDraft(registryList);
         registryData = body;
+        renderArchiveStatus(body.archive_status);
         renderRegistry(draft);
       })
       .catch(function (error) {
@@ -813,6 +866,7 @@
           work: captureDraft(workRegistryList)
         };
         testRegistryData = body;
+        renderArchiveStatus(body.archive_status);
         renderTestViews(drafts);
       })
       .catch(function (error) {
@@ -1114,6 +1168,20 @@
         accountantAvailability.disabled = false;
       });
   });
+  [registryDateFrom, registryDateTo, registrySearch].forEach(function (filter) {
+    filter.addEventListener("input", function () {
+      renderRegistry();
+      renderTestRegistry();
+    });
+  });
+  registryFiltersReset.addEventListener("click", function () {
+    registryDateFrom.value = "";
+    registryDateTo.value = "";
+    registrySearch.value = "";
+    renderRegistry();
+    renderTestRegistry();
+  });
+  registryExportButton.addEventListener("click", exportRegistry);
   fleetPanel.appendChild(fleetSection);
 
   loadUser().then(function () {

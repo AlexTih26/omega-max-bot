@@ -2,16 +2,26 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 from urllib.parse import quote
 
 from aiohttp import web
 
+import rumex_registry_backup
 from rumex_registry_auth import is_registry_admin, user_from_request
-from rumex_registry_documents import build_test_ttn_workbook, test_ttn_filename
+from rumex_registry_documents import (
+    archive_test_ttn_workbooks,
+    archived_test_ttn_path,
+    build_test_ttn_workbook,
+    test_ttn_filename,
+)
+from rumex_registry_export import build_test_registry_workbook
 from rumex_registry_notifications import notify_new_test_shipment
 from rumex_test_dispatcher_auth import user_from_request as test_dispatcher_user_from_request
 from rumex_registry_store import (
+    DB_PATH,
     confirm_document_vehicle_binding,
     confirm_test_documents_handed_to_driver,
     claim_test_shipment,
@@ -41,6 +51,12 @@ from rumex_registry_store import (
     set_accountant_availability,
 )
 
+logger = logging.getLogger(__name__)
+
+_CLIENT_ERROR_SECRET_RE = re.compile(
+    r"(?i)\b(cookie|token|authorization|bearer|password|passwd|pin)\b\s*[:=]\s*[^\s,;]+"
+)
+
 REGISTRY_SAMPLES_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry"
 REGISTRY_SAMPLES = {
     "tn-pdf": {
@@ -66,6 +82,47 @@ REGISTRY_SAMPLES = {
 
 def _json(data: dict, status: int = 200) -> web.Response:
     return web.json_response(data, status=status)
+
+
+def _client_error_text(value: object, *, limit: int) -> str:
+    """Оставить в журнале только короткий однострочный технический текст."""
+    text = " ".join(str(value or "").split())
+    return _CLIENT_ERROR_SECRET_RE.sub(r"\1=[скрыто]", text)[:limit]
+
+
+async def handle_client_error(request: web.Request) -> web.Response:
+    """Принять обезличенную ошибку браузерного интерфейса РУМЕКС.
+
+    Маршрут доступен до входа, чтобы фиксировать ошибки страниц авторизации.
+    Клиент намеренно не отправляет cookies, токены, данные форм или stack trace.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return _json({"error": "Некорректный отчёт об ошибке"}, 400)
+    if not isinstance(body, dict):
+        return _json({"error": "Некорректный отчёт об ошибке"}, 400)
+
+    kind = _client_error_text(body.get("kind"), limit=40)
+    message = _client_error_text(body.get("message"), limit=500)
+    source = _client_error_text(body.get("source"), limit=300)
+    try:
+        line = max(0, int(body.get("line") or 0))
+        column = max(0, int(body.get("column") or 0))
+    except (TypeError, ValueError):
+        return _json({"error": "Некорректная позиция ошибки"}, 400)
+    if kind not in {"error", "unhandledrejection", "console-error"} or not message:
+        return _json({"error": "Некорректный отчёт об ошибке"}, 400)
+
+    logger.error(
+        "РУМЕКС клиентская ошибка: kind=%s source=%s line=%s column=%s message=%s",
+        kind,
+        source or "—",
+        line,
+        column,
+        message,
+    )
+    return _json({"ok": True}, 202)
 
 
 def _shipment_id(request: web.Request) -> int | None:
@@ -131,10 +188,21 @@ def _test_ttn_copy_number(request: web.Request) -> int | None:
 def _test_ttn_response(shipment: dict, *, copy_number: int) -> web.Response:
     if not _test_documents_are_open(shipment):
         return _json({"error": "Документы ещё не открыты бухгалтером"}, 409)
-    try:
-        workbook = build_test_ttn_workbook(shipment, copy_number=copy_number)
-    except ValueError as exc:
-        return _json({"error": str(exc)}, 409)
+    archive = next(
+        (item for item in shipment.get("ttn_archives", []) if item.get("copy_number") == copy_number),
+        None,
+    )
+    if archive is not None:
+        path = archived_test_ttn_path(str(archive.get("filename") or ""))
+        if path is None:
+            logger.error("Не найден архив ТТН: shipment_id=%s copy=%s", shipment.get("id"), copy_number)
+            return _json({"error": "Архив выданной ТТН недоступен"}, 409)
+        workbook = path.read_bytes()
+    else:
+        try:
+            workbook = build_test_ttn_workbook(shipment, copy_number=copy_number)
+        except ValueError as exc:
+            return _json({"error": str(exc)}, 409)
     filename = test_ttn_filename(shipment, copy_number=copy_number)
     return web.Response(
         body=workbook,
@@ -145,6 +213,36 @@ def _test_ttn_response(shipment: dict, *, copy_number: int) -> web.Response:
 
 def _sample_path(sample: dict) -> Path:
     return REGISTRY_SAMPLES_DIR / str(sample["filename"])
+
+
+def _registry_archive_status() -> dict[str, float | None]:
+    """Вернуть время последнего сохранения реестра и успешной резервной копии."""
+    try:
+        registry_saved_at = max(
+            path.stat().st_mtime for path in (DB_PATH, DB_PATH.with_name(DB_PATH.name + "-wal"))
+            if path.is_file()
+        )
+    except OSError:
+        registry_saved_at = None
+    backup_paths = list((DB_PATH.parent / "backups").glob("rumex-registry-*.db"))
+    try:
+        backup_saved_at = max((path.stat().st_mtime for path in backup_paths), default=None)
+    except OSError:
+        backup_saved_at = None
+    return {"registry_saved_at": registry_saved_at, "backup_saved_at": backup_saved_at}
+
+
+def _backup_after_registry_write(reason: str) -> None:
+    """Сохранить копию после подтверждённой записи, не отменяя саму запись.
+
+    Изменение уже атомарно зафиксировано в SQLite к моменту этого вызова.
+    Ошибка хранилища резервных копий не должна выдавать пользователю ложную
+    ошибку о сохранении, но обязательно остаётся в журнале для реакции.
+    """
+    try:
+        rumex_registry_backup.backup_rumex_registry_db(reason=reason)
+    except Exception:
+        logger.exception("РУМЕКС реестр: не удалось создать бэкап после %s", reason)
 
 
 def _samples_payload() -> list[dict]:
@@ -180,6 +278,7 @@ async def handle_registry(_request: web.Request) -> web.Response:
             "site_label": "РУМЕКС · бухгалтерский реестр",
             "shipments": list_shipments(),
             "block_types": list_block_types(active_only=True),
+            "archive_status": _registry_archive_status(),
         }
     )
 
@@ -229,6 +328,7 @@ async def _save_carrier(request: web.Request, carrier_id: int | None) -> web.Res
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+    _backup_after_registry_write("carrier_saved")
     return _json({"ok": True, "carrier": carrier}, 201 if carrier_id is None else 200)
 
 
@@ -255,6 +355,7 @@ async def handle_document_fleet_import(request: web.Request) -> web.Response:
         vehicles = import_document_fleet_snapshot(accountant_name=accountant or "")
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
+    _backup_after_registry_write("document_fleet_imported")
     return _json({"ok": True, "vehicles": vehicles})
 
 
@@ -291,6 +392,7 @@ async def handle_document_vehicle_binding(request: web.Request) -> web.Response:
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+    _backup_after_registry_write("document_vehicle_bound")
     return _json({"ok": True, "binding": binding}, 201)
 
 
@@ -298,13 +400,38 @@ async def handle_test_registry(_request: web.Request) -> web.Response:
     _viewer, denied = _test_viewer_identity(_request)
     if denied is not None:
         return denied
-    release_due_test_shipments()
+    released = release_due_test_shipments()
+    if released:
+        _backup_after_registry_write("overdue_test_shipments_released")
     return _json(
         {
             "site_label": "Завод Румекс · тестовая погрузка",
             "shipments": list_test_shipments(),
             "block_types": list_block_types(active_only=True),
+            "archive_status": _registry_archive_status(),
         }
+    )
+
+
+async def handle_test_registry_export(request: web.Request) -> web.Response:
+    _viewer, denied = _test_viewer_identity(request)
+    if denied is not None:
+        return denied
+    date_from = str(request.query.get("date_from") or "")
+    date_to = str(request.query.get("date_to") or "")
+    search = str(request.query.get("search") or "").strip()
+    if (date_from and not date_from.isascii()) or (date_to and not date_to.isascii()) or len(search) > 100:
+        return _json({"error": "Некорректные фильтры экспорта"}, 400)
+    try:
+        workbook = build_test_registry_workbook(
+            list_test_shipments(), date_from=date_from, date_to=date_to, search=search
+        )
+    except (TypeError, ValueError):
+        return _json({"error": "Некорректные фильтры экспорта"}, 400)
+    return web.Response(
+        body=workbook,
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''rumex-registry.xlsx"},
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 
@@ -315,7 +442,9 @@ async def handle_test_shipment(request: web.Request) -> web.Response:
     shipment_id = _test_shipment_id(request)
     if shipment_id is None:
         return _json({"error": "Некорректный номер тестовой погрузки"}, 400)
-    release_due_test_shipments()
+    released = release_due_test_shipments()
+    if released:
+        _backup_after_registry_write("overdue_test_shipments_released")
     shipment = get_test_shipment(shipment_id)
     if shipment is None:
         return _json({"error": "Тестовая погрузка не найдена"}, 404)
@@ -385,6 +514,7 @@ async def handle_test_shipment_create(request: web.Request) -> web.Response:
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+    _backup_after_registry_write("test_shipment_created")
     request.app.loop.create_task(notify_new_test_shipment(shipment))
     return _json({"ok": True, "shipment": shipment}, 201)
 
@@ -415,6 +545,7 @@ async def handle_test_shipment_resubmit(request: web.Request) -> web.Response:
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
+    _backup_after_registry_write("test_shipment_resubmitted")
     return _json({"ok": True, "shipment": shipment})
 
 
@@ -426,15 +557,21 @@ async def handle_test_shipment_handed_to_driver(request: web.Request) -> web.Res
     if denied is not None:
         return denied
     try:
+        current_shipment = get_test_shipment(shipment_id)
+        if current_shipment is None:
+            return _json({"error": "Тестовая погрузка не найдена"}, 404)
+        archived = [] if current_shipment.get("status") == "documents_handed_to_driver" else archive_test_ttn_workbooks(current_shipment)
         shipment = confirm_test_documents_handed_to_driver(
             shipment_id,
             dispatcher_max_user_id=int(dispatcher["max_user_id"]),
             dispatcher_name=str(dispatcher["name"]),
             dispatcher_identity_kind=str(dispatcher["identity_kind"]),
             dispatcher_identity_id=str(dispatcher["identity_id"]),
+            ttn_archives=archived,
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
+    _backup_after_registry_write("test_documents_handed_to_driver")
     return _json({"ok": True, "shipment": shipment})
 
 
@@ -463,6 +600,7 @@ async def handle_test_ttn_download(request: web.Request) -> web.Response:
             )
         except ValueError as exc:
             return _json({"error": str(exc)}, 409)
+        _backup_after_registry_write("test_ttn_downloaded")
     return _test_ttn_response(shipment, copy_number=copy_number)
 
 
@@ -502,6 +640,7 @@ async def _test_accountant_action(request: web.Request, action: str) -> web.Resp
             message = "Расписка отмечена как отправленная в ЭДО Контур. Документы открыты диспетчеру."
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
+    _backup_after_registry_write(f"test_shipment_{action}")
     return _json({"ok": True, "message": message, "shipment": shipment})
 
 
@@ -517,6 +656,7 @@ async def handle_test_shipment_claim(request: web.Request) -> web.Response:
         shipment = claim_test_shipment(shipment_id, accountant_name=accountant)
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
+    _backup_after_registry_write("test_shipment_claimed")
     return _json({"ok": True, "message": "Погрузка взята в работу.", "shipment": shipment})
 
 
@@ -531,6 +671,7 @@ async def handle_accountant_availability(request: web.Request) -> web.Response:
         availability = set_accountant_availability(accountant, body.get("availability"))
     except (ValueError, AttributeError) as exc:
         return _json({"error": str(exc) or "Некорректный запрос"}, 400)
+    _backup_after_registry_write("accountant_availability_changed")
     return _json({"ok": True, "availability": availability})
 
 
@@ -596,6 +737,7 @@ async def _apply_er_action(request: web.Request, action: str) -> web.Response:
             message = "ЭР подтверждена. ТТН доступна диспетчеру."
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
+    _backup_after_registry_write(f"shipment_er_{action}")
     return _json({"ok": True, "message": message, "shipment": shipment})
 
 
@@ -609,6 +751,7 @@ async def handle_er_confirmed(request: web.Request) -> web.Response:
 
 def register_rumex_registry_routes(app: web.Application) -> None:
     init_rumex_registry_db()
+    app.router.add_post("/api/rumex-registry/client-errors", handle_client_error)
     app.router.add_get("/api/rumex-registry/registry", handle_registry)
     app.router.add_get("/api/rumex-registry/shipments/{shipment_id}", handle_shipment)
     app.router.add_post("/api/rumex-registry/shipments/{shipment_id}/er-sent", handle_er_sent)
@@ -624,6 +767,7 @@ def register_rumex_registry_routes(app: web.Application) -> None:
         handle_document_vehicle_binding,
     )
     app.router.add_get("/api/rumex-registry/test/registry", handle_test_registry)
+    app.router.add_get("/api/rumex-registry/test/registry/export", handle_test_registry_export)
     app.router.add_get("/api/rumex-registry/accountant/availability", handle_accountant_availability)
     app.router.add_put("/api/rumex-registry/accountant/availability", handle_accountant_availability)
     app.router.add_get("/api/rumex-registry/test/shipments/{shipment_id}", handle_test_shipment)

@@ -4,6 +4,7 @@
   var API = "/api/rumex-registry/test";
   var blockTypes = [];
   var registry = [];
+  var openedShipmentId = null;
   var lookupTimer = null;
   var correctionShipment = null;
   var handoverShipmentId = null;
@@ -36,6 +37,12 @@
   var registryCount = document.getElementById("registryCount");
   var registryList = document.getElementById("registryList");
   var emptyState = document.getElementById("emptyState");
+  var registryDateFrom = document.getElementById("registryDateFrom");
+  var registryDateTo = document.getElementById("registryDateTo");
+  var registrySearch = document.getElementById("registrySearch");
+  var registryFiltersReset = document.getElementById("registryFiltersReset");
+  var registryExportButton = document.getElementById("registryExportButton");
+  var archiveStatus = document.getElementById("archiveStatus");
   var correctionPanel = document.getElementById("correctionPanel");
   var correctionReason = document.getElementById("correctionReason");
   var correctionForm = document.getElementById("correctionForm");
@@ -45,7 +52,9 @@
   var correctionTotalWeight = document.getElementById("correctionTotalWeight");
   var correctionError = document.getElementById("correctionError");
   var resubmitButton = document.getElementById("resubmitButton");
-  var closeCorrectionButton = document.getElementById("closeCorrectionButton");
+  var correctionToggle = document.getElementById("correctionToggle");
+  var correctionContent = document.getElementById("correctionContent");
+  var correctionToggleLabel = correctionToggle.querySelector(".rtl-correction-toggle-label");
   var handoverDialog = document.getElementById("handoverDialog");
   var confirmHandoverButton = document.getElementById("confirmHandoverButton");
   var cancelHandoverButton = document.getElementById("cancelHandoverButton");
@@ -134,6 +143,23 @@
     });
   }
 
+  function renderArchiveStatus(status) {
+    if (!status || !status.registry_saved_at) {
+      archiveStatus.textContent = "Состояние архива реестра пока недоступно.";
+      return;
+    }
+    archiveStatus.textContent = "Реестр сохранён: " + formatTime(status.registry_saved_at)
+      + " · Резервная копия: " + (status.backup_saved_at ? formatTime(status.backup_saved_at) : "ещё не создана");
+  }
+
+  function formatDate(timestamp) {
+    if (!timestamp) return "—";
+    return new Date(Number(timestamp) * 1000).toLocaleDateString("ru-RU", {
+      timeZone: RUMEX_TIME_ZONE,
+      day: "2-digit", month: "2-digit", year: "numeric"
+    });
+  }
+
   function statusInfo(status) {
     var values = {
       awaiting_accountant_review: ["Ждёт проверки бухгалтера", ""],
@@ -188,7 +214,7 @@
       var option = document.createElement("option");
       option.value = type.code;
       option.textContent = type.code;
-      option.selected = type.code === (item.letter || item.block_type_code || "A");
+      option.selected = type.code === (item.letter || item.block_type_code || defaultBlockLetter(index));
       select.appendChild(option);
     });
     row.appendChild(select);
@@ -220,6 +246,11 @@
       : { list: blocksList, count: blockCount, total: totalWeight };
   }
 
+  function defaultBlockLetter(index) {
+    var letters = ["A", "B", "C", "D", "E", "F", "K"];
+    return letters[index] || "A";
+  }
+
   function renderBlocks(scope, items) {
     var target = scopeElements(scope);
     var count = Math.max(3, Math.min(6, Number(target.count.value) || 3));
@@ -227,7 +258,7 @@
     var previous = items || collectBlocks(scope);
     target.list.replaceChildren();
     for (var index = 0; index < count; index += 1) {
-      target.list.appendChild(blockRow(index, previous[index] || { letter: "A", number: "" }, scope));
+      target.list.appendChild(blockRow(index, previous[index] || { letter: defaultBlockLetter(index), number: "" }, scope));
     }
     updateTotal(scope);
   }
@@ -342,23 +373,76 @@
     renderBlocks("correction", shipment.items || []);
     correctionError.textContent = "";
     correctionPanel.hidden = false;
+    setCorrectionOpen(true);
     correctionPanel.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  function setCorrectionOpen(isOpen) {
+    correctionContent.hidden = !isOpen;
+    correctionToggle.setAttribute("aria-expanded", String(isOpen));
+    correctionToggleLabel.textContent = isOpen ? "Свернуть" : "Открыть";
+  }
+
+  function shipmentDate(shipment) {
+    var parts = timeParts(shipment.loaded_at);
+    return parts.year + "-" + parts.month + "-" + parts.day;
+  }
+
+  function filteredRegistry() {
+    var from = registryDateFrom.value;
+    var to = registryDateTo.value;
+    var query = registrySearch.value.trim().toLowerCase();
+    return registry.filter(function (shipment) {
+      var date = shipmentDate(shipment);
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (!query) return true;
+      var vehicle = ((shipment.document_snapshot || {}).vehicle || {});
+      var searchable = [shipment.ttn_number, shipment.registry_number, vehicle.plate_tail, vehicle.full_plate]
+        .join(" ").toLowerCase();
+      return searchable.indexOf(query) >= 0;
+    });
+  }
+
+  function exportRegistry() {
+    var query = new URLSearchParams();
+    if (registryDateFrom.value) query.set("date_from", registryDateFrom.value);
+    if (registryDateTo.value) query.set("date_to", registryDateTo.value);
+    if (registrySearch.value.trim()) query.set("search", registrySearch.value.trim());
+    window.location.assign(API + "/registry/export?" + query.toString());
+  }
+
   function renderRegistry() {
-    registryCount.textContent = registry.length ? "Записей: " + registry.length : "Записей пока нет";
-    emptyState.hidden = registry.length > 0;
+    var shipments = filteredRegistry();
+    registryCount.textContent = registry.length
+      ? "Найдено: " + shipments.length + " из " + registry.length
+      : "Записей пока нет";
+    emptyState.hidden = shipments.length > 0;
+    emptyState.textContent = registry.length
+      ? "По заданным фильтрам погрузок не найдено."
+      : "Тестовых погрузок пока нет.";
     registryList.replaceChildren();
-    registry.forEach(function (shipment) {
-      var card = createElement("article", "rtl-card");
-      var head = createElement("div", "rtl-card-head");
+    shipments.forEach(function (shipment, index) {
+      var isOpen = openedShipmentId === shipment.id;
+      var card = createElement(
+        "article",
+        "rtl-card rtl-card--tone-" + (index % 2 ? "b" : "a") + (isOpen ? " rtl-card--open" : "")
+      );
+      var head = createElement("button", "rtl-card-head");
+      var detailsId = "shipment-details-" + shipment.id;
+      head.type = "button";
+      head.setAttribute("aria-expanded", String(isOpen));
+      head.setAttribute("aria-controls", detailsId);
       var heading = document.createElement("div");
-      heading.appendChild(createElement("h3", "", shipment.ttn_number || shipment.registry_number));
-      if (shipment.ttn_number) heading.appendChild(createElement("p", "", "Внутренняя запись: " + shipment.registry_number));
+      heading.appendChild(createElement(
+        "h3",
+        "",
+        formatDate(shipment.loaded_at) + " · " + (shipment.ttn_number || shipment.registry_number) +
+          " · Блоков: " + (shipment.items || []).length
+      ));
       var snapshot = shipment.document_snapshot || {};
       var vehicle = snapshot.vehicle || {};
-      heading.appendChild(createElement("p", "", "…" + (vehicle.plate_tail || "—") + " · " + ((snapshot.driver || {}).full_name || "Водитель не указан")));
-      heading.appendChild(createElement("p", "", "Погрузка: " + formatTime(shipment.loaded_at) + " · " + shipment.total_weight_kg.toLocaleString("ru-RU") + " кг"));
+      heading.appendChild(createElement("p", "rtl-card-summary", "…" + (vehicle.plate_tail || "—") + " · " + formatTime(shipment.loaded_at)));
       head.appendChild(heading);
       var status = statusInfo(
         shipment.status,
@@ -366,16 +450,26 @@
         shipment.kontur_sent_at
       );
       head.appendChild(createElement("span", "rtl-status " + status[1], status[0]));
-      if (shipment.ttn_printed_at) {
-        head.appendChild(createElement(
-          "span",
-          "rtl-ttn-printed",
-          "✓ ТТН скачана для печати · " + formatTime(shipment.ttn_printed_at)
-        ));
-      }
+      head.addEventListener("click", function () {
+        openedShipmentId = isOpen ? null : shipment.id;
+        renderRegistry();
+      });
       card.appendChild(head);
+      if (!isOpen) {
+        registryList.appendChild(card);
+        return;
+      }
 
       var details = createElement("div", "rtl-card-details");
+      details.id = detailsId;
+      details.setAttribute("role", "region");
+      if (shipment.ttn_number) details.appendChild(createElement("p", "", "Внутренняя запись: " + shipment.registry_number));
+      details.appendChild(createElement("p", "", "Погрузка: " + formatTime(shipment.loaded_at) + " · " + shipment.total_weight_kg.toLocaleString("ru-RU") + " кг"));
+      if (shipment.ttn_printed_at) {
+        details.appendChild(createElement(
+          "span", "rtl-ttn-printed", "✓ ТТН скачана для печати · " + formatTime(shipment.ttn_printed_at)
+        ));
+      }
       var list = document.createElement("dl");
       [
         ["Автомобиль", [vehicle.full_plate, vehicle.model].filter(Boolean).join(" · ") || "—"],
@@ -410,7 +504,7 @@
         actions.appendChild(correct);
       }
       if (shipment.status === "documents_ready") {
-        var handed = createElement("button", "rtl-link-button", "Подтвердить печать и передачу водителю");
+        var handed = createElement("button", "rtl-link-button rtl-handover-button", "Подтвердить печать и передачу водителю");
         handed.type = "button";
         handed.addEventListener("click", function () {
           handoverShipmentId = shipment.id;
@@ -421,7 +515,8 @@
       if (actions.children.length) details.appendChild(actions);
       if ((shipment.events || []).length) {
         var timeline = createElement("ul", "rtl-timeline");
-        shipment.events.forEach(function (event) {
+        var timelineWrap = createElement("div", "rtl-timeline-wrap");
+        shipment.events.slice().reverse().forEach(function (event) {
           var item = document.createElement("li");
           item.appendChild(createElement("time", "", formatTime(event.occurred_at)));
           item.appendChild(document.createTextNode(
@@ -429,7 +524,8 @@
           ));
           timeline.appendChild(item);
         });
-        details.appendChild(timeline);
+        timelineWrap.appendChild(timeline);
+        details.appendChild(timelineWrap);
       }
       card.appendChild(details);
       registryList.appendChild(card);
@@ -445,6 +541,7 @@
       .then(function (body) {
         blockTypes = body.block_types || [];
         registry = body.shipments || [];
+        renderArchiveStatus(body.archive_status);
         if (!blocksList.children.length) renderBlocks("new");
         else updateTotal("new");
         if (!correctionPanel.hidden) updateTotal("correction");
@@ -530,7 +627,7 @@
         submitButton.disabled = true;
         vehicleCard.hidden = true;
         vehicleHelp.textContent = "После ввода хвоста карточка подставится только из подтверждённого бухгалтером снимка.";
-        renderBlocks("new", [{ letter: "A", number: "" }, { letter: "A", number: "" }, { letter: "A", number: "" }]);
+        renderBlocks("new", []);
         return loadRegistry();
       })
       .catch(function (error) { formError.textContent = error.message || "Не удалось сохранить погрузку."; })
@@ -591,7 +688,19 @@
   correctionBlockCount.addEventListener("change", function () { renderBlocks("correction"); });
   loadingForm.addEventListener("submit", createShipment);
   correctionForm.addEventListener("submit", resubmitShipment);
-  closeCorrectionButton.addEventListener("click", function () { correctionPanel.hidden = true; correctionShipment = null; });
+  correctionToggle.addEventListener("click", function () {
+    setCorrectionOpen(correctionContent.hidden);
+  });
+  [registryDateFrom, registryDateTo, registrySearch].forEach(function (filter) {
+    filter.addEventListener("input", renderRegistry);
+  });
+  registryFiltersReset.addEventListener("click", function () {
+    registryDateFrom.value = "";
+    registryDateTo.value = "";
+    registrySearch.value = "";
+    renderRegistry();
+  });
+  registryExportButton.addEventListener("click", exportRegistry);
   cancelHandoverButton.addEventListener("click", function () { handoverDialog.hidden = true; handoverShipmentId = null; });
   confirmHandoverButton.addEventListener("click", confirmHandover);
 

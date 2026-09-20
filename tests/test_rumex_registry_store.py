@@ -414,6 +414,15 @@ class RumexRegistryStoreTests(unittest.TestCase):
             shipment["id"],
             dispatcher_max_user_id=9001,
             dispatcher_name="Диспетчер теста",
+            ttn_archives=[
+                {
+                    "copy_number": copy_number,
+                    "filename": f"test-shipment-{shipment['id']}-ttn-copy-{copy_number}.xlsx",
+                    "sha256": "a" * 64,
+                    "size_bytes": 100,
+                }
+                for copy_number in (1, 2, 3, 4)
+            ],
             occurred_at=1_767_228_400.0,
         )
         self.assertEqual(handed["status"], "documents_handed_to_driver")
@@ -422,6 +431,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
             {document["document_kind"]: document["status"] for document in handed["documents"]},
             {"ER": "issued", "TN": "issued"},
         )
+        self.assertEqual([archive["copy_number"] for archive in handed["ttn_archives"]], [1, 2, 3, 4])
         self.assertEqual(
             [(revision["revision_number"], revision["revision_kind"]) for revision in handed["revisions"]],
             [(1, "submitted"), (1, "returned_for_correction"), (2, "resubmitted")],
@@ -475,6 +485,15 @@ class RumexRegistryStoreTests(unittest.TestCase):
             overnight["id"],
             dispatcher_max_user_id=9001,
             dispatcher_name="Диспетчер теста",
+            ttn_archives=[
+                {
+                    "copy_number": copy_number,
+                    "filename": f"test-shipment-{overnight['id']}-ttn-copy-{copy_number}.xlsx",
+                    "sha256": "b" * 64,
+                    "size_bytes": 100,
+                }
+                for copy_number in (1, 2, 3, 4)
+            ],
             occurred_at=1_767_225_800.0,
         )
         self.assertEqual(released_overnight["status"], "documents_handed_to_driver")

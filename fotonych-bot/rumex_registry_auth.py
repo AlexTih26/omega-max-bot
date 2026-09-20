@@ -139,6 +139,8 @@ async def rumex_registry_auth_middleware(request: web.Request, handler):
     path = request.path
     if not path.startswith("/api/rumex-registry"):
         return await handler(request)
+    if path == "/api/rumex-registry/client-errors" and request.method == "POST":
+        return await handler(request)
     # Тестовый кабинет диспетчера проверяет подписанный initData MAX в своих
     # обработчиках. Нельзя требовать PIN бухгалтера от отдельной роли, но и
     # нельзя оставлять маршруты без их собственной серверной проверки.

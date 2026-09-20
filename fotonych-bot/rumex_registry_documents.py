@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from copy import copy
+from hashlib import sha256
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -21,10 +23,11 @@ APPROVED_TTN_TEMPLATE_PATH = (
     Path(__file__).resolve().parent / "rumex_templates" / "ТТН РУМЕКС — утверждённый шаблон.xlsx"
 )
 TEST_DOCUMENT_EXPORTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry" / "exports"
+TEST_TTN_ARCHIVE_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry" / "ttn-archive"
 
 OMEGA_DETAILS = (
     "ООО «Омега-М», ИНН 5406829253, КПП 502401001, "
-    "143405, Московская область, г.о. Красногорск, г. Красногорск, ул. Почтовая, д. 3"
+    "143405, Московская область, г. Красногорск, ул. Почтовая, д. 3"
 )
 RUMEX_DETAILS = (
     "ООО «РУМЕКС», ИНН 9728126848, КПП 201001001, "
@@ -34,6 +37,14 @@ RUMEX_DETAILS = (
 CARRIER_DETAILS = (
     "ООО «Комсомольская ТК», ИНН 2721252270, "
     "664025, Иркутская область, г. Иркутск, ул. Сурикова, д. 6, офис 2"
+)
+CARRIER_DETAILS_SECOND_PAGE = (
+    "ООО «Комсомольская ТК», ИНН 2721252270\n"
+    "664025, Иркутская область, г. Иркутск, ул. Сурикова, д. 6, офис 2"
+)
+OMEGA_DETAILS_SECOND_PAGE = (
+    "ООО «Омега-М», ИНН 5406829253, КПП 502401001\n"
+    "143405, Московская область, г. Красногорск, ул. Почтовая, д. 3"
 )
 PICKUP_LOCATION = (
     "Завод по производству тоннельной обделки на восточном\n"
@@ -211,13 +222,24 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
     )
 
     # Реквизиты составителей, но не подписи, основания, расчёты или оплату.
-    sheet["B92"] = CARRIER_DETAILS
-    sheet["BF92"] = OMEGA_DETAILS
-    sheet["BF96"] = OMEGA_DETAILS
+    for reference, value in (
+        ("B92", CARRIER_DETAILS_SECOND_PAGE),
+        ("BF92", OMEGA_DETAILS_SECOND_PAGE),
+        ("BF96", OMEGA_DETAILS_SECOND_PAGE),
+    ):
+        cell = sheet[reference]
+        cell.value = value
+        font = copy(cell.font)
+        font.sz = 8
+        cell.font = font
+        alignment = copy(cell.alignment)
+        alignment.wrap_text = True
+        alignment.vertical = "center"
+        cell.alignment = alignment
 
     # Компактные однострочные реквизиты: оставляем в форме ИНН, КПП и адрес,
     # но не выводим ОГРН. Полный реквизит сохраняется в карточке контрагента.
-    for row_number, height in ((9, 30), (54, 18), (92, 24), (96, 24)):
+    for row_number, height in ((9, 30), (54, 18), (92, 32), (96, 32)):
         sheet.row_dimensions[row_number].height = height
 
     calculation = workbook.calculation
@@ -243,3 +265,44 @@ def write_test_ttn_workbook(shipment: dict, *, copy_number: int) -> Path:
     finally:
         temp_path.unlink(missing_ok=True)
     return destination
+
+
+def archive_test_ttn_workbooks(shipment: dict) -> list[dict[str, Any]]:
+    """Сохранить неизменяемые экземпляры ТТН до их выдачи водителю."""
+    shipment_id = int(shipment.get("id") or 0)
+    if shipment_id <= 0:
+        raise ValueError("Не указан номер погрузки для архива ТТН")
+    TEST_TTN_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    archived: list[dict[str, Any]] = []
+    for copy_number in COPY_NUMBERS:
+        content = build_test_ttn_workbook(shipment, copy_number=copy_number)
+        digest = sha256(content).hexdigest()
+        filename = f"test-shipment-{shipment_id}-ttn-copy-{copy_number}.xlsx"
+        destination = TEST_TTN_ARCHIVE_DIR / filename
+        if destination.exists():
+            if sha256(destination.read_bytes()).hexdigest() != digest:
+                raise ValueError("Архивный экземпляр ТТН не совпадает с выданным документом")
+        else:
+            with tempfile.NamedTemporaryFile(dir=TEST_TTN_ARCHIVE_DIR, delete=False) as temporary:
+                temporary.write(content)
+                temp_path = Path(temporary.name)
+            try:
+                temp_path.replace(destination)
+            finally:
+                temp_path.unlink(missing_ok=True)
+        archived.append({
+            "copy_number": copy_number,
+            "filename": filename,
+            "sha256": digest,
+            "size_bytes": len(content),
+        })
+    return archived
+
+
+def archived_test_ttn_path(filename: str) -> Path | None:
+    """Вернуть файл архива только по безопасному имени из учётной записи."""
+    name = Path(str(filename or "")).name
+    if not re.fullmatch(r"test-shipment-\d+-ttn-copy-[1-4]\.xlsx", name):
+        return None
+    path = TEST_TTN_ARCHIVE_DIR / name
+    return path if path.is_file() else None

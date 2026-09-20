@@ -30,6 +30,8 @@ import rumex_registry_store as store  # noqa: E402
 if AIOHTTP_AVAILABLE:
     import rumex_registry_api as api  # noqa: E402
     import rumex_registry_auth as auth  # noqa: E402
+    import rumex_registry_backup as backup  # noqa: E402
+    import rumex_registry_documents as documents  # noqa: E402
     import rumex_test_dispatcher_auth as test_dispatcher_auth  # noqa: E402
 
 
@@ -38,14 +40,20 @@ class RumexRegistryApiTests(AioHTTPTestCase):
     async def get_application(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self._old_db_path = store.DB_PATH
+        self._old_backup_db_path = backup.DB_PATH
+        self._old_backup_dir = backup.BACKUP_DIR
         self._old_samples_dir = api.REGISTRY_SAMPLES_DIR
+        self._old_ttn_archive_dir = documents.TEST_TTN_ARCHIVE_DIR
         self._old_users = os.environ.get("RUMEX_ACCOUNTANT_USERS")
         self._old_secret = os.environ.get("RUMEX_ACCOUNTANT_AUTH_SECRET")
         self._old_test_dispatcher_users = os.environ.get("RUMEX_TEST_DISPATCHER_USERS")
         self._old_test_dispatcher_secret = os.environ.get("RUMEX_TEST_DISPATCHER_AUTH_SECRET")
         store.DB_PATH = Path(self._tmpdir.name) / "rumex_registry.db"
+        backup.DB_PATH = store.DB_PATH
+        backup.BACKUP_DIR = Path(self._tmpdir.name) / "backups"
         api.REGISTRY_SAMPLES_DIR = Path(self._tmpdir.name) / "registry_samples"
         api.REGISTRY_SAMPLES_DIR.mkdir()
+        documents.TEST_TTN_ARCHIVE_DIR = Path(self._tmpdir.name) / "ttn_archive"
         (api.REGISTRY_SAMPLES_DIR / "8102 образец.pdf").write_bytes(b"%PDF-test-sample")
         (api.REGISTRY_SAMPLES_DIR / "8102 образец ТТН.xls").write_bytes(b"test-xls-sample")
         os.environ["RUMEX_ACCOUNTANT_USERS"] = (
@@ -74,7 +82,10 @@ class RumexRegistryApiTests(AioHTTPTestCase):
     async def asyncTearDown(self) -> None:
         await super().asyncTearDown()
         store.DB_PATH = self._old_db_path
+        backup.DB_PATH = self._old_backup_db_path
+        backup.BACKUP_DIR = self._old_backup_dir
         api.REGISTRY_SAMPLES_DIR = self._old_samples_dir
+        documents.TEST_TTN_ARCHIVE_DIR = self._old_ttn_archive_dir
         if self._old_users is None:
             os.environ.pop("RUMEX_ACCOUNTANT_USERS", None)
         else:
@@ -150,6 +161,42 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         body = await response.json()
         self.assertEqual(body["shipments"][0]["registry_number"], "РМ-2026-000001")
         self.assertEqual(len(body["block_types"]), 7)
+
+    async def test_client_error_report_is_available_before_login_and_validated(self):
+        reported = await self.client.post(
+            "/api/rumex-registry/client-errors",
+            json={
+                "kind": "error",
+                "message": "Unexpected interface error",
+                "source": "/rumex-test-loading.js",
+                "line": 123,
+                "column": 4,
+            },
+        )
+        self.assertEqual(reported.status, 202)
+        self.assertTrue((await reported.json())["ok"])
+
+        invalid = await self.client.post(
+            "/api/rumex-registry/client-errors",
+            json={"kind": "error", "message": ""},
+        )
+        self.assertEqual(invalid.status, 400)
+
+    async def test_test_registry_export_requires_login_and_returns_excel(self):
+        denied = await self.client.get("/api/rumex-registry/test/registry/export")
+        self.assertEqual(denied.status, 401)
+
+        token = await self._test_password_login()
+        exported = await self.client.get(
+            "/api/rumex-registry/test/registry/export?search=%D0%A0%D0%9C-2026",
+            headers={"Cookie": f"{test_dispatcher_auth.COOKIE_NAME}={token}"},
+        )
+        self.assertEqual(exported.status, 200)
+        self.assertEqual(
+            exported.content_type,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertTrue((await exported.read()).startswith(b"PK"))
 
     async def test_active_accountant_session_renews_database_and_cookie(self):
         token = "accountant-renewal-token"
@@ -372,6 +419,9 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         )
         self.assertEqual(created.status, 201)
         shipment = (await created.json())["shipment"]
+        backups = list(backup.BACKUP_DIR.glob("rumex-registry-*.db"))
+        self.assertEqual(len(backups), 1)
+        self.assertIn("reason=test_shipment_created", backups[0].with_suffix(".meta.txt").read_text(encoding="utf-8"))
         self.assertEqual(shipment["status"], "awaiting_accountant_review")
         self.assertTrue(shipment["is_new_for_accountant"])
         shipment_url = "/api/rumex-registry/test/shipments/" + str(shipment["id"])
@@ -434,6 +484,17 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         dispatcher_body = await dispatcher_shipment.json()
         self.assertTrue(dispatcher_body["shipment"]["ttn_printed_at"])
         self.assertEqual(dispatcher_body["shipment"]["ttn_downloaded_copies"], [1, 2, 3, 4])
+
+        handed = await self.client.post(shipment_url + "/handed-to-driver", headers=headers)
+        self.assertEqual(handed.status, 200)
+        handed_shipment = (await handed.json())["shipment"]
+        self.assertEqual(handed_shipment["status"], "documents_handed_to_driver")
+        self.assertEqual([item["copy_number"] for item in handed_shipment["ttn_archives"]], [1, 2, 3, 4])
+        archived_document = await self.client.get(shipment_url + "/documents/tn?copy=1", headers=accountant_headers)
+        self.assertEqual(archived_document.status, 200)
+        archive_path = documents.TEST_TTN_ARCHIVE_DIR / handed_shipment["ttn_archives"][0]["filename"]
+        self.assertTrue(archive_path.is_file())
+        self.assertEqual(await archived_document.read(), archive_path.read_bytes())
 
     async def test_test_vehicle_requires_driver_license_before_creating_shipment(self):
         self._prepare_test_vehicle()

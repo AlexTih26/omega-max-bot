@@ -324,7 +324,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
             dispatcher_name="Диспетчер теста",
             loaded_at=1_767_225_600.0,
             registry_year=2026,
-            created_at=1_767_225_700.0,
+            created_at=1_767_166_900.0,
         )
         self.assertEqual(existing["registry_number"], "РМ-2026-000001")
         self.assertEqual(shipment["registry_number"], "РМ-2026-000002")
@@ -436,6 +436,48 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 "test_documents_handed_to_driver",
             ],
         )
+
+        overnight = store.create_test_shipment(
+            plate_tail="553",
+            block_count=3,
+            items=[
+                {"letter": "A", "number": "8111"},
+                {"letter": "K", "number": "8741"},
+                {"letter": "A", "number": "8112"},
+            ],
+            dispatcher_max_user_id=9001,
+            dispatcher_name="Диспетчер теста",
+            loaded_at=1_767_225_600.0,
+            created_at=1_767_225_700.0,
+        )
+        self.assertEqual(overnight["status"], "documents_ready")
+        self.assertTrue(overnight["ttn_number"])
+        self.assertEqual(
+            {document["document_kind"]: document["status"] for document in overnight["documents"]},
+            {"ER": "draft", "TN": "ready"},
+        )
+        self.assertEqual(overnight["events"][-1]["event_type"], "test_documents_opened_automatically")
+
+        released_overnight = store.confirm_test_documents_handed_to_driver(
+            overnight["id"],
+            dispatcher_max_user_id=9001,
+            dispatcher_name="Диспетчер теста",
+            occurred_at=1_767_225_800.0,
+        )
+        self.assertEqual(released_overnight["status"], "documents_handed_to_driver")
+        checked_overnight = store.review_test_shipment(
+            overnight["id"], accountant_name="Бухгалтер 2", er_required=True,
+            occurred_at=1_767_243_800.0,
+        )
+        self.assertEqual(checked_overnight["status"], "awaiting_er_sent")
+        self.assertEqual(checked_overnight["ttn_number"], overnight["ttn_number"])
+        finalized_overnight = store.mark_test_er_sent_to_kontur(
+            overnight["id"], accountant_name="Бухгалтер 2", external_reference="Контур-ночь",
+            occurred_at=1_767_243_900.0,
+        )
+        self.assertEqual(finalized_overnight["status"], "documents_ready")
+        self.assertTrue(finalized_overnight["kontur_sent_at"])
+
         with sqlite3.connect(store.DB_PATH) as conn:
             revision_id = handed["revisions"][0]["id"]
             item_id = store.list_test_block_history("A", "3611")[0]["id"]
@@ -504,7 +546,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 dispatcher_name="Диспетчер теста",
                 loaded_at=loaded_at,
                 registry_year=2026,
-                created_at=loaded_at + 100.0,
+                created_at=1_767_166_900.0,
             )
             return store.review_test_shipment(
                 shipment["id"],

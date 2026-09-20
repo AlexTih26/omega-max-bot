@@ -97,6 +97,7 @@
   function formatTime(timestamp) {
     if (!timestamp) return "—";
     return new Intl.DateTimeFormat("ru-RU", {
+      timeZone: "Asia/Irkutsk",
       dateStyle: "short", timeStyle: "short"
     }).format(new Date(Number(timestamp) * 1000));
   }
@@ -271,6 +272,9 @@
       documents_ready: ["Документы открыты диспетчеру", "ready"],
       documents_handed_to_driver: ["Документы переданы водителю", "done"]
     };
+    if (status === "documents_handed_to_driver" && !arguments[1]) {
+      return ["Выпущена до проверки", "wait"];
+    }
     return values[status] || [status || "Неизвестный статус", "wait"];
   }
 
@@ -280,6 +284,7 @@
       test_shipment_loaded: "Диспетчер зафиксировал фактическую погрузку.",
       test_shipment_returned_for_correction: "Бухгалтер вернул на исправление: " + (payload.reason || "—"),
       test_shipment_resubmitted: "Диспетчер отправил ревизию №" + (payload.revision_number || ""),
+      test_documents_opened_automatically: "Система открыла ТТН: бухгалтер вне рабочей смены по Москве.",
       test_shipment_reviewed: "Бухгалтер проверил погрузку; ожидается отметка расписки в Контуре.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
       test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
@@ -411,10 +416,14 @@
   }
 
   function testActions(shipment, parent, draftValues, idSuffix) {
-    if (shipment.status === "awaiting_accountant_review") {
+    if (shipment.status === "awaiting_accountant_review" || (
+      shipment.status === "documents_handed_to_driver" && !shipment.accountant_reviewed_at
+    )) {
       var reviewSection = element("section", "rr-test-action");
       reviewSection.appendChild(element("h3", "rr-section-title", "Проверка бухгалтера"));
-      reviewSection.appendChild(element("p", "rr-test-detail", "После проверки потребуется ручная отметка об отправке расписки в ЭДО Контур."));
+      reviewSection.appendChild(element("p", "rr-test-detail", shipment.status === "documents_handed_to_driver"
+        ? "Машина уже выпущена. Проверьте документы и затем отметьте отправку расписки в ЭДО Контур."
+        : "После проверки потребуется ручная отметка об отправке расписки в ЭДО Контур."));
       var reviewButton = element("button", "rr-primary-button", "Проверить и ожидать отметку ЭДО");
       reviewButton.type = "button";
       reviewButton.addEventListener("click", function () {
@@ -501,7 +510,7 @@
     summary.appendChild(summaryMain);
     var summaryStates = element("span", "rr-test-summary-states");
     if (isNew) summaryStates.appendChild(element("span", "rr-test-new-badge", "Новая"));
-    var status = testStatusInfo(shipment.status);
+    var status = testStatusInfo(shipment.status, shipment.accountant_reviewed_at);
     summaryStates.appendChild(element("span", "rr-test-status rr-test-status--" + status[1], status[0]));
     summary.appendChild(summaryStates);
     summary.addEventListener("click", function () {
@@ -557,7 +566,9 @@
 
   function renderWorkQueue(draft) {
     var shipments = ((testRegistryData && testRegistryData.shipments) || []).filter(function (shipment) {
-      return shipment.status === "awaiting_accountant_review" || shipment.status === "awaiting_er_sent";
+      return shipment.status === "awaiting_accountant_review" || shipment.status === "awaiting_er_sent" || (
+        shipment.status === "documents_handed_to_driver" && !shipment.accountant_reviewed_at
+      );
     });
     workEmptyState.hidden = shipments.length > 0;
     clear(workRegistryList);

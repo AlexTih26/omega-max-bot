@@ -89,6 +89,12 @@ def _current_registry_year() -> int:
     return datetime.now(_timezone()).year
 
 
+def _accountant_is_on_duty(timestamp: float) -> bool:
+    """Рабочая смена бухгалтерии: с 08:00 до 20:00 по московскому времени."""
+    moscow_time = datetime.fromtimestamp(timestamp, ZoneInfo("Europe/Moscow"))
+    return 8 <= moscow_time.hour < 20
+
+
 def _check_year(year: int) -> int:
     try:
         parsed = int(year)
@@ -1962,17 +1968,19 @@ def create_test_shipment(
             sequence, registry_number = _reserve_number_in_transaction(
                 conn, registry_year=year, now=now
             )
+            opened_automatically = not _accountant_is_on_duty(now)
             cursor = conn.execute(
                 """INSERT INTO test_shipments (
                        registry_number, registry_year, registry_sequence, status, revision_number,
                        document_vehicle_binding_id, document_snapshot_json,
                        dispatcher_max_user_id, dispatcher_identity_kind, dispatcher_identity_id,
                        dispatcher_name, loaded_at, created_at, updated_at
-                   ) VALUES (?, ?, ?, 'awaiting_accountant_review', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     registry_number,
                     year,
                     sequence,
+                    "documents_ready" if opened_automatically else "awaiting_accountant_review",
                     int(binding["id"]),
                     _json(document_snapshot),
                     dispatcher_id,
@@ -2022,6 +2030,36 @@ def create_test_shipment(
                 },
                 occurred_at=now,
             )
+            if opened_automatically:
+                ttn_year = _test_ttn_year_for_loaded_at(loaded_timestamp)
+                ttn_sequence, ttn_number = _reserve_test_ttn_number_in_transaction(
+                    conn, ttn_year=ttn_year, now=now
+                )
+                conn.execute(
+                    """UPDATE test_shipments SET ttn_number = ?, ttn_year = ?, ttn_sequence = ?,
+                           ttn_assigned_at = ?, documents_ready_at = ?, updated_at = ? WHERE id = ?""",
+                    (ttn_number, ttn_year, ttn_sequence, now, now, now, shipment_id),
+                )
+                conn.executemany(
+                    """INSERT INTO test_shipment_documents (
+                           test_shipment_id, document_kind, registry_number, display_suffix,
+                           status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        (shipment_id, "ER", registry_number, "ЭР", "draft", now, now),
+                        (shipment_id, "TN", ttn_number, "ТТН", "ready", now, now),
+                    ),
+                )
+                _append_test_shipment_event(
+                    conn,
+                    test_shipment_id=shipment_id,
+                    event_type="test_documents_opened_automatically",
+                    actor_kind="system",
+                    actor_id="",
+                    actor_name="Система",
+                    payload={"ttn_number": ttn_number, "reason": "outside_accountant_hours"},
+                    occurred_at=now,
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -2056,7 +2094,9 @@ def return_test_shipment_for_correction(
         conn.execute("BEGIN IMMEDIATE")
         try:
             shipment = _test_shipment_for_update(conn, shipment_id)
-            if str(shipment["status"]) != "awaiting_accountant_review":
+            if str(shipment["status"]) not in {
+                "awaiting_accountant_review", "documents_handed_to_driver"
+            } or shipment["accountant_reviewed_at"] is not None:
                 raise ValueError("Вернуть на исправление можно только погрузку, ожидающую проверки")
             revision_number = int(shipment["revision_number"])
             conn.execute(
@@ -2215,10 +2255,9 @@ def review_test_shipment(
         conn.execute("BEGIN IMMEDIATE")
         try:
             shipment = _test_shipment_for_update(conn, shipment_id)
-            if str(shipment["status"]) != "awaiting_accountant_review":
+            status = str(shipment["status"])
+            if status not in {"awaiting_accountant_review", "documents_handed_to_driver"}:
                 raise ValueError("Проверить можно только погрузку, ожидающую бухгалтера")
-            if str(shipment["ttn_number"] or ""):
-                raise ValueError("Для этой погрузки уже выдан неизменяемый номер ТТН")
             snapshot = json.loads(str(shipment["document_snapshot_json"]))
             license_number = str((snapshot.get("driver") or {}).get("license_number") or "").strip()
             if not license_number:
@@ -2235,42 +2274,71 @@ def review_test_shipment(
             )
             if items_count not in TEST_SHIPMENT_BLOCK_COUNTS:
                 raise ValueError("Утверждённая ТТН доступна только для погрузки от 3 до 6 блоков")
-            ttn_year = _test_ttn_year_for_loaded_at(float(shipment["loaded_at"]))
-            ttn_sequence, ttn_number = _reserve_test_ttn_number_in_transaction(
-                conn, ttn_year=ttn_year, now=now
-            )
+            ttn_number = str(shipment["ttn_number"] or "")
+            if ttn_number:
+                ttn_year = int(shipment["ttn_year"])
+                ttn_sequence = int(shipment["ttn_sequence"])
+            else:
+                ttn_year = _test_ttn_year_for_loaded_at(float(shipment["loaded_at"]))
+                ttn_sequence, ttn_number = _reserve_test_ttn_number_in_transaction(
+                    conn, ttn_year=ttn_year, now=now
+                )
             next_status = "awaiting_er_sent" if er_required else "documents_ready"
-            conn.execute(
-                """UPDATE test_shipments SET
-                       status = ?, accountant_name = ?, accountant_reviewed_at = ?,
-                       er_required = ?, documents_ready_at = ?, ttn_number = ?, ttn_year = ?,
-                       ttn_sequence = ?, ttn_assigned_at = ?, updated_at = ?
-                    WHERE id = ?""",
-                (
-                    next_status,
-                    actor,
-                    now,
-                    int(er_required),
-                    None if er_required else now,
-                    ttn_number,
-                    ttn_year,
-                    ttn_sequence,
-                    now,
-                    now,
-                    shipment_id,
-                ),
-            )
-            documents = (
-                (shipment_id, "ER", str(shipment["registry_number"]), "ЭР", "draft" if er_required else "not_required", now, now),
-                (shipment_id, "TN", ttn_number, "ТТН", "draft" if er_required else "ready", now, now),
-            )
-            conn.executemany(
-                """INSERT INTO test_shipment_documents (
-                       test_shipment_id, document_kind, registry_number, display_suffix,
-                       status, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                documents,
-            )
+            if str(shipment["ttn_number"] or ""):
+                conn.execute(
+                    """UPDATE test_shipments SET
+                           status = ?, accountant_name = ?, accountant_reviewed_at = ?,
+                           er_required = ?, documents_ready_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        next_status,
+                        actor,
+                        now,
+                        int(er_required),
+                        None if er_required else now,
+                        now,
+                        shipment_id,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """UPDATE test_shipments SET
+                           status = ?, accountant_name = ?, accountant_reviewed_at = ?,
+                           er_required = ?, documents_ready_at = ?, ttn_number = ?, ttn_year = ?,
+                           ttn_sequence = ?, ttn_assigned_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (
+                        next_status,
+                        actor,
+                        now,
+                        int(er_required),
+                        None if er_required else now,
+                        ttn_number,
+                        ttn_year,
+                        ttn_sequence,
+                        now,
+                        now,
+                        shipment_id,
+                    ),
+                )
+            if not str(shipment["ttn_number"] or ""):
+                documents = (
+                    (shipment_id, "ER", str(shipment["registry_number"]), "ЭР", "draft" if er_required else "not_required", now, now),
+                    (shipment_id, "TN", ttn_number, "ТТН", "draft" if er_required else "ready", now, now),
+                )
+                conn.executemany(
+                    """INSERT INTO test_shipment_documents (
+                           test_shipment_id, document_kind, registry_number, display_suffix,
+                           status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    documents,
+                )
+            elif er_required:
+                conn.execute(
+                    """UPDATE test_shipment_documents SET status = 'draft', updated_at = ?
+                       WHERE test_shipment_id = ? AND document_kind = 'ER'""",
+                    (now, shipment_id),
+                )
             _append_test_shipment_event(
                 conn,
                 test_shipment_id=shipment_id,

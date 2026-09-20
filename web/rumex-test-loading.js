@@ -14,6 +14,7 @@
   var refreshTimer = null;
   var autoRefreshStarted = false;
   var REFRESH_INTERVAL_MS = 5000;
+  var RUMEX_TIME_ZONE = "Asia/Irkutsk";
 
   var accessNotice = document.getElementById("accessNotice");
   var accessNoticeText = document.getElementById("accessNoticeText");
@@ -90,19 +91,45 @@
 
   function pad(value) { return String(value).padStart(2, "0"); }
 
+  function timeParts(timestamp) {
+    var parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: RUMEX_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23"
+    }).formatToParts(new Date(Number(timestamp) * 1000));
+    return parts.reduce(function (result, part) {
+      if (part.type !== "literal") result[part.type] = part.value;
+      return result;
+    }, {});
+  }
+
   function localDatetimeValue(timestamp) {
-    var date = timestamp ? new Date(Number(timestamp) * 1000) : new Date();
-    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
+    var parts = timeParts(timestamp || Math.floor(Date.now() / 1000));
+    return parts.year + "-" + parts.month + "-" + parts.day + "T" + parts.hour + ":" + parts.minute;
   }
 
   function datetimeTimestamp(value) {
-    var date = new Date(value);
-    return Number.isNaN(date.getTime()) ? 0 : Math.floor(date.getTime() / 1000);
+    var match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value || "");
+    if (!match) return 0;
+    var utcTimestamp = Date.UTC(
+      Number(match[1]), Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5])
+    );
+    var utcParts = timeParts(Math.floor(utcTimestamp / 1000));
+    var offset = Date.UTC(
+      Number(utcParts.year), Number(utcParts.month) - 1, Number(utcParts.day),
+      Number(utcParts.hour), Number(utcParts.minute)
+    ) - utcTimestamp;
+    return Math.floor((utcTimestamp - offset) / 1000);
   }
 
   function formatTime(timestamp) {
     if (!timestamp) return "—";
     return new Date(Number(timestamp) * 1000).toLocaleString("ru-RU", {
+      timeZone: RUMEX_TIME_ZONE,
       day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"
     });
   }
@@ -115,6 +142,12 @@
       documents_ready: ["Документы готовы", "rtl-status--ready"],
       documents_handed_to_driver: ["Документы готовы и переданы водителю", "rtl-status--done"]
     };
+    if (status === "documents_handed_to_driver" && !arguments[1]) {
+      return ["Машина выпущена · ждёт проверки бухгалтера", "rtl-status--ready"];
+    }
+    if (status === "documents_ready" && arguments[1] && arguments[2]) {
+      return ["Проверено бухгалтером · расписка отправлена в ЭДО", "rtl-status--done"];
+    }
     return values[status] || [status || "—", ""];
   }
 
@@ -124,6 +157,7 @@
       test_shipment_loaded: "Диспетчер зафиксировал фактическую погрузку.",
       test_shipment_returned_for_correction: "Бухгалтер вернул на исправление: " + (payload.reason || "—"),
       test_shipment_resubmitted: "Диспетчер отправил исправленную ревизию №" + (payload.revision_number || ""),
+      test_documents_opened_automatically: "Система открыла ТТН: бухгалтер вне рабочей смены по Москве.",
       test_shipment_reviewed: payload.er_required ? "Бухгалтер проверил погрузку: нужна ЭР." : "Бухгалтер проверил погрузку: ЭР не требуется.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
       test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
@@ -322,7 +356,11 @@
       heading.appendChild(createElement("p", "", "…" + (vehicle.plate_tail || "—") + " · " + ((snapshot.driver || {}).full_name || "Водитель не указан")));
       heading.appendChild(createElement("p", "", "Погрузка: " + formatTime(shipment.loaded_at) + " · " + shipment.total_weight_kg.toLocaleString("ru-RU") + " кг"));
       head.appendChild(heading);
-      var status = statusInfo(shipment.status);
+      var status = statusInfo(
+        shipment.status,
+        shipment.accountant_reviewed_at,
+        shipment.kontur_sent_at
+      );
       head.appendChild(createElement("span", "rtl-status " + status[1], status[0]));
       if (shipment.ttn_printed_at) {
         head.appendChild(createElement(
@@ -469,7 +507,9 @@
       })
     })
       .then(function (body) {
-        showToast("Погрузка " + body.shipment.registry_number + " сохранена и ждёт бухгалтера.");
+        showToast(body.shipment.ttn_number
+          ? "Погрузка сохранена. ТТН открыта автоматически до начала смены бухгалтера."
+          : "Погрузка " + body.shipment.registry_number + " сохранена и ждёт бухгалтера.");
         loadingForm.reset();
         loadedAt.value = localDatetimeValue();
         blockCount.value = 3;

@@ -19,6 +19,8 @@ h3 { font-size: 1rem; }
 .rtl-subtitle, .rtl-help { margin: 8px 0 0; color: #aec0b3; font-size: .91rem; line-height: 1.45; }
 .rtl-session { display: flex; align-items: center; gap: 10px; margin-top: 14px; color: #cde2d1; font-size: .86rem; }
 .rtl-session-logout { padding: 6px 9px; font-size: .8rem; }
+.rtl-install-button { margin-top: 14px; }
+.rtl-install-button[hidden] { display: none; }
 .rtl-main { display: grid; gap: 16px; }
 .rtl-panel { display: grid; gap: 16px; padding: 17px; border: 1px solid #33483a; border-radius: 15px; background: #1e2c22; }
 .rtl-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
@@ -57,6 +59,7 @@ h3 { font-size: 1rem; }
 .rtl-status { display: inline-block; max-width: 170px; padding: 5px 8px; border-radius: 99px; background: #4b3e22; color: #f3d58b; font-size: .72rem; font-weight: 750; line-height: 1.25; text-align: center; }
 .rtl-status--ready { background: #244c5a; color: #b8e6f1; }
 .rtl-status--done { background: #3f465e; color: #d4daf7; }
+.rtl-ttn-printed { display: inline-block; max-width: 210px; padding: 5px 8px; border: 1px solid #629b70; border-radius: 99px; background: #24452b; color: #c6edcf; font-size: .72rem; font-weight: 750; line-height: 1.25; text-align: center; }
 .rtl-card-details { display: grid; gap: 12px; padding: 0 14px 14px; }
 .rtl-card-details dl { display: grid; grid-template-columns: minmax(110px, .5fr) 1fr; gap: 5px 10px; margin: 0; font-size: .84rem; }
 .rtl-card-details dt { color: #9eb0a2; }
@@ -92,6 +95,6 @@ h3 { font-size: 1rem; }
   .rtl-block { grid-template-columns: 32px 1fr 1fr; }
   .rtl-block-weight { grid-column: 2 / -1; text-align: left; }
   .rtl-card-head { flex-direction: column; }
-  .rtl-status { max-width: none; }
+  .rtl-status, .rtl-ttn-printed { max-width: none; }
   .rtl-card-details dl { grid-template-columns: 1fr; gap: 2px; }
 }

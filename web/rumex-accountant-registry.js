@@ -10,24 +10,33 @@
   var fleetBindingHistory = {};
   var currentAccountant = null;
   var openedShipmentId = null;
+  var openedTestShipmentId = null;
   var editingCarrierId = null;
   var bindingVehicle = null;
   var busy = false;
+  var registryLoadPromise = null;
+  var testRegistryLoadPromise = null;
+  var directoryLoadPromise = null;
+  var refreshTimer = null;
+  var autoRefreshStarted = false;
+  var REFRESH_INTERVAL_MS = 5000;
 
   var siteLabel = document.getElementById("siteLabel");
   var currentUser = document.getElementById("currentUser");
   var logoutButton = document.getElementById("logoutButton");
+  var workTab = document.getElementById("workTab");
   var registryTab = document.getElementById("registryTab");
-  var testTab = document.getElementById("testTab");
+  var fleetTab = document.getElementById("fleetTab");
   var directoryTab = document.getElementById("directoryTab");
+  var workPanel = document.getElementById("workPanel");
   var registryPanel = document.getElementById("registryPanel");
-  var testPanel = document.getElementById("testPanel");
+  var fleetPanel = document.getElementById("fleetPanel");
   var directoryPanel = document.getElementById("directoryPanel");
   var registryCount = document.getElementById("registryCount");
-  var refreshButton = document.getElementById("refreshButton");
   var registryList = document.getElementById("registryList");
   var emptyState = document.getElementById("emptyState");
-  var testRefreshButton = document.getElementById("testRefreshButton");
+  var workEmptyState = document.getElementById("workEmptyState");
+  var workRegistryList = document.getElementById("workRegistryList");
   var testEmptyState = document.getElementById("testEmptyState");
   var testRegistryList = document.getElementById("testRegistryList");
   var configNotice = document.getElementById("configNotice");
@@ -57,6 +66,7 @@
   var saveFleetBindingButton = document.getElementById("saveFleetBindingButton");
   var cancelFleetBindingButton = document.getElementById("cancelFleetBindingButton");
   var cancelFleetBindingButtonBottom = document.getElementById("cancelFleetBindingButtonBottom");
+  var fleetSection = document.getElementById("fleetSection");
   var toast = document.getElementById("toast");
 
   function request(path, options) {
@@ -149,7 +159,7 @@
     parent.appendChild(section);
   }
 
-  function renderErAction(shipment, parent) {
+  function renderErAction(shipment, parent, draftValues) {
     if (shipment.status !== "awaiting_er" && shipment.status !== "er_sent") return;
     var section = element("section", "rr-section rr-action");
     var action = shipment.status === "awaiting_er" ? "sent" : "confirmed";
@@ -167,6 +177,9 @@
     })[0] || {}).external_reference || "";
     label.htmlFor = "reference-" + shipment.id;
     reference.id = label.htmlFor;
+    if (draftValues && Object.prototype.hasOwnProperty.call(draftValues, reference.id)) {
+      reference.value = draftValues[reference.id];
+    }
     var button = element(
       "button", "rr-primary-button",
       action === "sent" ? "Отметить: ЭР отправлена в Контур" : "Подтвердить ЭР и открыть ТТН"
@@ -198,7 +211,7 @@
     parent.appendChild(section);
   }
 
-  function renderDetails(shipment, card) {
+  function renderDetails(shipment, card, draftValues) {
     var details = element("div", "rr-details");
     var cargo = element("section", "rr-section");
     cargo.appendChild(element("h2", "rr-section-title", "Груз"));
@@ -212,20 +225,20 @@
     cargo.appendChild(items);
     details.appendChild(cargo);
     renderDocuments(shipment, details);
-    renderErAction(shipment, details);
+    renderErAction(shipment, details, draftValues);
     renderTimeline(shipment, details);
     card.appendChild(details);
   }
 
-  function renderShipment(shipment) {
+  function renderShipment(shipment, draftValues) {
     var card = element("article", "rr-card");
     var summary = element("button", "rr-summary");
     summary.type = "button";
     summary.setAttribute("aria-expanded", String(openedShipmentId === shipment.id));
     var summaryLeft = element("div");
+    summaryLeft.appendChild(element("p", "rr-summary-meta rr-summary-date", "Погрузка: " + formatTime(shipment.loaded_at)));
     summaryLeft.appendChild(element("p", "rr-number", shipment.registry_number));
     summaryLeft.appendChild(element("p", "rr-summary-meta", shipmentItems(shipment)));
-    summaryLeft.appendChild(element("p", "rr-summary-meta", "Загрузка: " + formatTime(shipment.loaded_at)));
     var state = statusInfo(shipment.status);
     summary.appendChild(summaryLeft);
     summary.appendChild(element("span", "rr-status rr-status--" + state[1], state[0]));
@@ -234,11 +247,11 @@
       renderRegistry();
     });
     card.appendChild(summary);
-    if (openedShipmentId === shipment.id) renderDetails(shipment, card);
+    if (openedShipmentId === shipment.id) renderDetails(shipment, card, draftValues);
     registryList.appendChild(card);
   }
 
-  function renderRegistry() {
+  function renderRegistry(draft) {
     var shipments = (registryData && registryData.shipments) || [];
     if (registryData && registryData.site_label) siteLabel.textContent = registryData.site_label;
     registryCount.textContent = shipments.length
@@ -246,7 +259,8 @@
       : "Отгрузок в реестре пока нет";
     emptyState.hidden = shipments.length > 0;
     clear(registryList);
-    shipments.forEach(renderShipment);
+    shipments.forEach(function (shipment) { renderShipment(shipment, draft && draft.values); });
+    restoreDraft(registryList, draft);
   }
 
   function testStatusInfo(status) {
@@ -268,9 +282,19 @@
       test_shipment_resubmitted: "Диспетчер отправил ревизию №" + (payload.revision_number || ""),
       test_shipment_reviewed: "Бухгалтер проверил погрузку; ожидается отметка расписки в Контуре.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
+      test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
       test_documents_handed_to_driver: "Диспетчер подтвердил печать и передачу документов водителю."
     };
     return labels[event.event_type] || event.event_type;
+  }
+
+  function testRevisionText(kind) {
+    var labels = {
+      submitted: "Первичная подача диспетчером",
+      returned_for_correction: "Возврат бухгалтером на исправление",
+      resubmitted: "Повторная подача после исправления"
+    };
+    return labels[kind] || kind || "Изменение данных погрузки";
   }
 
   function testDocumentText(document) {
@@ -282,6 +306,27 @@
       return "ЭР: внешняя расписка Контура, юридический файл не формируется";
     }
     return (document.display_number || document.registry_number || "ТТН") + " · " + documentStatus(document.status);
+  }
+
+  function testDocumentUrl(shipment, copyNumber) {
+    return API + "/test/shipments/" + encodeURIComponent(shipment.id) + "/documents/tn?copy=" + encodeURIComponent(copyNumber);
+  }
+
+  function renderTestDocument(shipment, document) {
+    var label = [
+      document.display_number || document.registry_number || shipment.ttn_number || "ТТН",
+      document.display_suffix || document.document_kind,
+      documentStatus(document.status)
+    ].filter(Boolean).join(" · ");
+    if (document.document_kind === "TN" && shipment.ttn_number && ["ready", "issued"].indexOf(document.status) >= 0) {
+      var link = element("a", "rr-test-document rr-test-document-link", label);
+      link.href = testDocumentUrl(shipment, 1);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.title = "Открыть ТТН для проверки, экземпляр №1";
+      return link;
+    }
+    return element("span", "rr-test-document", testDocumentText(document));
   }
 
   function testSnapshot(shipment, parent) {
@@ -315,11 +360,12 @@
     var events = shipment.events || [];
     if (!revisions.length && !events.length) return;
     var section = element("section", "rr-test-revisions");
-    section.appendChild(element("h3", "rr-section-title", "Неизменяемая история"));
+    section.appendChild(element("h3", "rr-section-title", "История изменений"));
+    section.appendChild(element("p", "rr-test-detail", "Здесь хранится, кто и когда подал данные, вернул на исправление или отправил исправленную версию. Эти записи нельзя удалить или переписать."));
     revisions.forEach(function (revision) {
       section.appendChild(element(
         "p", "rr-test-detail",
-        "Ревизия №" + revision.revision_number + " · " + revision.revision_kind + " · " + formatTime(revision.created_at) + (revision.actor_name ? " · " + revision.actor_name : "")
+        "Ревизия №" + revision.revision_number + " · " + testRevisionText(revision.revision_kind) + " · " + formatTime(revision.created_at) + (revision.actor_name ? " · " + revision.actor_name : "")
       ));
     });
     events.forEach(function (event) {
@@ -340,7 +386,7 @@
       return shipment;
     });
     if (!found) testRegistryData.shipments.unshift(shipment);
-    renderTestRegistry();
+    renderTestViews();
   }
 
   function applyTestAction(shipmentId, action, payload, button) {
@@ -353,6 +399,7 @@
       body: JSON.stringify(payload || {})
     })
       .then(function (body) {
+        openedTestShipmentId = body.shipment.id;
         replaceTestShipment(body.shipment);
         showToast(body.message || "Изменение сохранено");
       })
@@ -363,7 +410,7 @@
       });
   }
 
-  function testActions(shipment, parent) {
+  function testActions(shipment, parent, draftValues, idSuffix) {
     if (shipment.status === "awaiting_accountant_review") {
       var reviewSection = element("section", "rr-test-action");
       reviewSection.appendChild(element("h3", "rr-section-title", "Проверка бухгалтера"));
@@ -380,8 +427,11 @@
       returnReason.rows = 2;
       returnReason.maxLength = 1000;
       returnReason.placeholder = "Опишите, что нужно исправить";
-      returnLabel.htmlFor = "test-return-reason-" + shipment.id;
+      returnLabel.htmlFor = "test-return-reason-" + shipment.id + "-" + idSuffix;
       returnReason.id = returnLabel.htmlFor;
+      if (draftValues && Object.prototype.hasOwnProperty.call(draftValues, returnReason.id)) {
+        returnReason.value = draftValues[returnReason.id];
+      }
       var returnButton = element("button", "rr-refresh", "Вернуть диспетчеру на исправление");
       returnButton.type = "button";
       returnButton.addEventListener("click", function () {
@@ -407,8 +457,11 @@
       reference.type = "text";
       reference.maxLength = 500;
       reference.placeholder = "Например: Контур-12345";
-      konturLabel.htmlFor = "test-kontur-reference-" + shipment.id;
+      konturLabel.htmlFor = "test-kontur-reference-" + shipment.id + "-" + idSuffix;
       reference.id = konturLabel.htmlFor;
+      if (draftValues && Object.prototype.hasOwnProperty.call(draftValues, reference.id)) {
+        reference.value = draftValues[reference.id];
+      }
       var konturButton = element("button", "rr-primary-button", "Расписка отправлена в ЭДО Контур");
       konturButton.type = "button";
       konturButton.addEventListener("click", function () {
@@ -421,38 +474,102 @@
     }
   }
 
-  function renderTestShipment(shipment) {
-    var card = element("article", "rr-test-card");
+  function renderTestShipment(shipment, index, draftValues, view) {
+    var isNew = shipment.is_new_for_accountant === true;
+    var isOpen = openedTestShipmentId === shipment.id;
+    var card = element(
+      "article",
+      "rr-test-card rr-test-card--tone-" + (index % 2 ? "b" : "a") + (isNew ? " rr-test-card--new" : "")
+    );
+    var summary = element("button", "rr-test-summary");
+    var detailsId = "test-" + view + "-shipment-details-" + shipment.id;
+    summary.type = "button";
+    summary.id = "test-" + view + "-shipment-summary-" + shipment.id;
+    summary.setAttribute("aria-expanded", String(isOpen));
+    summary.setAttribute("aria-controls", detailsId);
+    var summaryMain = element("div", "rr-test-summary-main");
+    summaryMain.appendChild(element("strong", "rr-test-date", formatTime(shipment.loaded_at)));
+    summaryMain.appendChild(element("strong", "rr-test-number", shipment.ttn_number || shipment.registry_number));
+    var snapshot = shipment.document_snapshot || {};
+    var vehicle = snapshot.vehicle || {};
+    var vehicleLabel = [vehicle.full_plate, vehicle.model].filter(Boolean).join(" · ") || "Машина не указана";
+    summaryMain.appendChild(element(
+      "span",
+      "rr-test-summary-meta",
+      vehicleLabel + " · " + (shipment.items || []).length + " поз."
+    ));
+    summary.appendChild(summaryMain);
+    var summaryStates = element("span", "rr-test-summary-states");
+    if (isNew) summaryStates.appendChild(element("span", "rr-test-new-badge", "Новая"));
+    var status = testStatusInfo(shipment.status);
+    summaryStates.appendChild(element("span", "rr-test-status rr-test-status--" + status[1], status[0]));
+    summary.appendChild(summaryStates);
+    summary.addEventListener("click", function () {
+      openedTestShipmentId = isOpen ? null : shipment.id;
+      renderTestViews();
+    });
     var heading = element("div", "rr-test-heading");
     var title = element("div");
+    title.appendChild(element("p", "rr-test-meta", "Погрузка: " + formatTime(shipment.loaded_at)));
     title.appendChild(element("h3", "", shipment.ttn_number || shipment.registry_number));
     if (shipment.ttn_number) title.appendChild(element("p", "rr-test-meta", "Внутренняя запись: " + shipment.registry_number));
-    title.appendChild(element("p", "rr-test-meta", "Погрузка: " + formatTime(shipment.loaded_at) + " · ревизия №" + (shipment.revision_number || 1)));
+    title.appendChild(element("p", "rr-test-meta", "Ревизия №" + (shipment.revision_number || 1)));
     title.appendChild(element("p", "rr-test-meta", "Масса: " + Number(shipment.total_weight_kg || 0).toLocaleString("ru-RU") + " кг"));
     heading.appendChild(title);
-    var status = testStatusInfo(shipment.status);
     heading.appendChild(element("span", "rr-test-status rr-test-status--" + status[1], status[0]));
-    card.appendChild(heading);
-    testSnapshot(shipment, card);
-    testItems(shipment, card);
-    var documents = shipment.documents || [];
-    if (documents.length) {
-      var documentList = element("div", "rr-test-documents");
-      documents.forEach(function (document) {
-        documentList.appendChild(element("span", "rr-test-document", testDocumentText(document)));
-      });
-      card.appendChild(documentList);
+    card.appendChild(summary);
+    if (isOpen) {
+      var details = element("div", "rr-test-details");
+      details.id = detailsId;
+      details.setAttribute("role", "region");
+      details.setAttribute("aria-labelledby", summary.id);
+      details.appendChild(heading);
+      testSnapshot(shipment, details);
+      testItems(shipment, details);
+      var documents = shipment.documents || [];
+      if (documents.length) {
+        var documentList = element("div", "rr-test-documents");
+        documents.forEach(function (document) {
+          documentList.appendChild(renderTestDocument(shipment, document));
+        });
+        details.appendChild(documentList);
+      }
+      testActions(shipment, details, draftValues, view);
+      testHistory(shipment, details);
+      card.appendChild(details);
     }
-    testActions(shipment, card);
-    testHistory(shipment, card);
-    testRegistryList.appendChild(card);
+    return card;
   }
 
-  function renderTestRegistry() {
+  function testShipmentOrder(left, right) {
+    return Number(right.loaded_at || 0) - Number(left.loaded_at || 0) || Number(right.id || 0) - Number(left.id || 0);
+  }
+
+  function renderTestRegistry(draft) {
     var shipments = (testRegistryData && testRegistryData.shipments) || [];
     testEmptyState.hidden = shipments.length > 0;
     clear(testRegistryList);
-    shipments.forEach(renderTestShipment);
+    shipments.slice().sort(testShipmentOrder).forEach(function (shipment, index) {
+      testRegistryList.appendChild(renderTestShipment(shipment, index, draft && draft.values, "registry"));
+    });
+    restoreDraft(testRegistryList, draft);
+  }
+
+  function renderWorkQueue(draft) {
+    var shipments = ((testRegistryData && testRegistryData.shipments) || []).filter(function (shipment) {
+      return shipment.status === "awaiting_accountant_review" || shipment.status === "awaiting_er_sent";
+    });
+    workEmptyState.hidden = shipments.length > 0;
+    clear(workRegistryList);
+    shipments.slice().sort(testShipmentOrder).forEach(function (shipment, index) {
+      workRegistryList.appendChild(renderTestShipment(shipment, index, draft && draft.values, "work"));
+    });
+    restoreDraft(workRegistryList, draft);
+  }
+
+  function renderTestViews(drafts) {
+    renderTestRegistry(drafts && drafts.registry);
+    renderWorkQueue(drafts && drafts.work);
   }
 
   function confirmationSourceLabel(source) {
@@ -565,11 +682,13 @@
   }
 
   function setActiveTab(tab) {
+    workPanel.hidden = tab !== "work";
     registryPanel.hidden = tab !== "registry";
-    testPanel.hidden = tab !== "test";
+    fleetPanel.hidden = tab !== "fleet";
     directoryPanel.hidden = tab !== "directory";
+    workTab.setAttribute("aria-selected", String(tab === "work"));
     registryTab.setAttribute("aria-selected", String(tab === "registry"));
-    testTab.setAttribute("aria-selected", String(tab === "test"));
+    fleetTab.setAttribute("aria-selected", String(tab === "fleet"));
     directoryTab.setAttribute("aria-selected", String(tab === "directory"));
   }
 
@@ -584,22 +703,54 @@
     configNotice.hidden = false;
   }
 
+  function captureDraft(node) {
+    var draft = { values: {}, activeId: "", selectionStart: null, selectionEnd: null };
+    Array.prototype.forEach.call(node.querySelectorAll("input, textarea, select"), function (field) {
+      if (field.id) draft.values[field.id] = field.value;
+    });
+    var active = document.activeElement;
+    if (active && node.contains(active) && active.id) {
+      draft.activeId = active.id;
+      if (typeof active.selectionStart === "number") draft.selectionStart = active.selectionStart;
+      if (typeof active.selectionEnd === "number") draft.selectionEnd = active.selectionEnd;
+    }
+    return draft;
+  }
+
+  function restoreDraft(node, draft) {
+    if (!draft || !draft.activeId) return;
+    var active = document.getElementById(draft.activeId);
+    if (!active || !node.contains(active)) return;
+    active.focus();
+    if (typeof active.setSelectionRange === "function" && draft.selectionStart !== null) {
+      active.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+    }
+  }
+
+  function hasDirectoryDraft() {
+    return !carrierForm.hidden || !fleetBindingForm.hidden;
+  }
+
   function loadRegistry() {
-    refreshButton.disabled = true;
-    return request("/registry")
+    if (registryLoadPromise) return registryLoadPromise;
+    registryLoadPromise = request("/registry")
       .then(function (body) {
+        var draft = captureDraft(registryList);
         registryData = body;
-        renderRegistry();
+        renderRegistry(draft);
       })
       .catch(function (error) {
         showConfigError(error.message || "Не удалось загрузить реестр");
         registryCount.textContent = "Реестр недоступен";
       })
-      .finally(function () { refreshButton.disabled = false; });
+      .finally(function () { registryLoadPromise = null; });
+    return registryLoadPromise;
   }
 
   function loadDirectory() {
-    return Promise.all([request("/carriers"), request("/samples"), request("/document-fleet")])
+    if (hasDirectoryDraft()) return Promise.resolve();
+    if (directoryLoadPromise) return directoryLoadPromise;
+    directoryLoadPromise = Promise.all([request("/carriers"), request("/samples"), request("/document-fleet")])
       .then(function (results) {
         carriers = results[0].carriers || [];
         samples = results[1].samples || [];
@@ -610,22 +761,55 @@
       .catch(function (error) {
         showConfigError(error.message || "Не удалось загрузить справочники");
         carrierCount.textContent = "Справочник недоступен";
-      });
+      })
+      .finally(function () { directoryLoadPromise = null; });
+    return directoryLoadPromise;
   }
 
   function loadTestRegistry() {
-    testRefreshButton.disabled = true;
-    return request("/test/registry")
+    if (testRegistryLoadPromise) return testRegistryLoadPromise;
+    testRegistryLoadPromise = request("/test/registry")
       .then(function (body) {
+        var drafts = {
+          registry: captureDraft(testRegistryList),
+          work: captureDraft(workRegistryList)
+        };
         testRegistryData = body;
-        renderTestRegistry();
+        renderTestViews(drafts);
       })
       .catch(function (error) {
         showConfigError(error.message || "Не удалось загрузить тестовые погрузки");
         testEmptyState.hidden = false;
         testEmptyState.textContent = "Тестовые погрузки недоступны.";
       })
-      .finally(function () { testRefreshButton.disabled = false; });
+      .finally(function () { testRegistryLoadPromise = null; });
+    return testRegistryLoadPromise;
+  }
+
+  function refreshData() {
+    if (busy || document.hidden) return Promise.resolve();
+    return Promise.all([loadRegistry(), loadTestRegistry(), loadDirectory()]);
+  }
+
+  function scheduleAutoRefresh() {
+    clearTimeout(refreshTimer);
+    if (!autoRefreshStarted || document.hidden) return;
+    refreshTimer = setTimeout(function () {
+      refreshData().finally(scheduleAutoRefresh);
+    }, REFRESH_INTERVAL_MS);
+  }
+
+  function startAutoRefresh() {
+    if (autoRefreshStarted) return;
+    autoRefreshStarted = true;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        clearTimeout(refreshTimer);
+        return;
+      }
+      refreshData().finally(scheduleAutoRefresh);
+    });
+    scheduleAutoRefresh();
   }
 
   function currentBinding(vehicle) {
@@ -853,15 +1037,10 @@
     request("/auth/logout", { method: "POST" })
       .finally(function () { location.replace("/rumex-accountant-login.html"); });
   });
+  workTab.addEventListener("click", function () { setActiveTab("work"); });
   registryTab.addEventListener("click", function () { setActiveTab("registry"); });
-  testTab.addEventListener("click", function () { setActiveTab("test"); });
+  fleetTab.addEventListener("click", function () { setActiveTab("fleet"); });
   directoryTab.addEventListener("click", function () { setActiveTab("directory"); });
-  refreshButton.addEventListener("click", function () {
-    loadRegistry();
-    loadTestRegistry();
-    loadDirectory();
-  });
-  testRefreshButton.addEventListener("click", loadTestRegistry);
   newCarrierButton.addEventListener("click", function () { showCarrierForm(null); });
   cancelCarrierButton.addEventListener("click", hideCarrierForm);
   cancelCarrierButtonBottom.addEventListener("click", hideCarrierForm);
@@ -870,9 +1049,11 @@
   cancelFleetBindingButton.addEventListener("click", hideFleetBindingForm);
   cancelFleetBindingButtonBottom.addEventListener("click", hideFleetBindingForm);
   fleetBindingForm.addEventListener("submit", saveFleetBinding);
+  fleetPanel.appendChild(fleetSection);
 
-  loadUser();
-  loadRegistry();
-  loadTestRegistry();
-  loadDirectory();
+  loadUser().then(function () {
+    return refreshData();
+  }).then(function () {
+    if (currentAccountant) startAutoRefresh();
+  });
 })();

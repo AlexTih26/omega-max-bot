@@ -12,6 +12,7 @@ from maxapi.types.updates.message_edited import MessageEdited
 from maxapi.types.command import BotCommand
 from maxapi.types.updates.message_callback import MessageCallback
 
+from access_roles import has_private_menu_access
 from ai import ask, clear_history
 from omega_assistant import AI_HELP, WORK_BOT_REPLY, try_builtin_answer
 from channel_posts import attach_comments_button
@@ -105,6 +106,7 @@ HELP_TEXT = (
 )
 
 MENU_WORDS = frozenset({"меню", "menu", "старт"})
+ACCESS_DENIED_TEXT = "Доступ к служебному боту не выдан. Обратитесь к администратору."
 
 
 def menu_attachments(user_id: int | None = None):
@@ -117,6 +119,13 @@ async def send_menu_message(
     user_id: int | None = None,
     text: str = MENU_TEXT,
 ) -> None:
+    if not has_private_menu_access(user_id):
+        await bot.send_message(
+            chat_id=chat_id,
+            user_id=user_id,
+            text=ACCESS_DENIED_TEXT,
+        )
+        return
     await bot.send_message(
         chat_id=chat_id,
         user_id=user_id,
@@ -156,10 +165,6 @@ async def on_bot_added(event: BotAdded) -> None:
         except Exception:
             logger.exception("bot_added: приветствие материалов chat_id=%s", event.chat_id)
         return
-    try:
-        await send_menu_message(chat_id=event.chat_id)
-    except Exception:
-        logger.exception("bot_added: не удалось отправить меню в chat_id=%s", event.chat_id)
 
 
 @dp.user_added()
@@ -198,14 +203,16 @@ async def on_start(event: MessageCreated) -> None:
         return
     sender = event.message.sender
     uid = sender.user_id if sender else None
+    if not has_private_menu_access(uid):
+        await event.message.answer(ACCESS_DENIED_TEXT)
+        return
     extra = master_private_attachments(uid)
-    attachments = menu_attachments(user_id=uid)
+    await event.message.answer(MENU_TEXT, attachments=menu_attachments(user_id=uid))
     if extra:
-        attachments = attachments + extra
-        text = MENU_TEXT + "\n\n📦 Материалы — приход, остатки и дефицит (кнопки ниже)."
-    else:
-        text = MENU_TEXT
-    await event.message.answer(text, attachments=attachments)
+        await event.message.answer(
+            "📦 Материалы — приход, остатки и дефицит.",
+            attachments=extra,
+        )
 
 
 @dp.message_created(Command("admin"))
@@ -375,6 +382,11 @@ async def on_ai(event: MessageCreated) -> None:
     ) or is_materials_chat(event.message.recipient.chat_id):
         return
 
+    sender = event.message.sender
+    if sender is None or not has_private_menu_access(sender.user_id):
+        await event.message.answer(ACCESS_DENIED_TEXT)
+        return
+
     question = _ai_question_from_message(event)
     if not question:
         await event.message.answer(AI_HELP)
@@ -385,8 +397,7 @@ async def on_ai(event: MessageCreated) -> None:
         await event.message.answer(builtin)
         return
 
-    sender = event.message.sender
-    user_id = str(sender.user_id) if sender else "unknown"
+    user_id = str(sender.user_id)
     try:
         async with event.message.typing():
             reply = await ask(user_id, question)
@@ -403,6 +414,9 @@ async def on_clear(event: MessageCreated) -> None:
     ) or is_materials_chat(event.message.recipient.chat_id):
         return
     sender = event.message.sender
+    if sender and not has_private_menu_access(sender.user_id):
+        await event.message.answer(ACCESS_DENIED_TEXT)
+        return
     if sender:
         clear_history(str(sender.user_id))
         await event.message.answer("🧹 Память очищена. Начинаем с чистого листа!")
@@ -429,9 +443,12 @@ async def on_callback(event: MessageCallback) -> None:
         return
 
     if payload == CB_CLEAR:
+        uid = event.callback.user.user_id if event.callback and event.callback.user else None
+        if not has_private_menu_access(uid):
+            await event.answer(notification="Нет доступа")
+            return
         clear_history(user_id)
         await event.answer(notification="Память очищена")
-        uid = event.callback.user.user_id if event.callback and event.callback.user else None
         await event.edit(
             text="🧹 История диалога очищена.\nЗадайте новый вопрос или откройте меню.",
             attachments=[main_menu_keyboard(user_id=uid).as_markup()],
@@ -447,6 +464,9 @@ async def on_callback(event: MessageCallback) -> None:
 
     if payload == CB_MENU:
         uid = event.callback.user.user_id if event.callback and event.callback.user else None
+        if not has_private_menu_access(uid):
+            await event.answer(notification="Нет доступа")
+            return
         await event.edit(
             text="Главное меню OMEGA:",
             attachments=[main_menu_keyboard(user_id=uid).as_markup()],
@@ -505,14 +525,20 @@ async def on_message(event: MessageCreated) -> None:
 
     if text.lower() in MENU_WORDS:
         uid = sender.user_id if sender else None
+        if not has_private_menu_access(uid):
+            await event.message.answer(ACCESS_DENIED_TEXT)
+            return
         extra = master_private_attachments(uid)
-        attachments = menu_attachments(user_id=uid)
+        await event.message.answer(MENU_TEXT, attachments=menu_attachments(user_id=uid))
         if extra:
-            attachments = attachments + extra
-            menu_text = MENU_TEXT + "\n\n📦 Материалы — приход, остатки и дефицит (кнопки ниже)."
-        else:
-            menu_text = MENU_TEXT
-        await event.message.answer(menu_text, attachments=attachments)
+            await event.message.answer(
+                "📦 Материалы — приход, остатки и дефицит.",
+                attachments=extra,
+            )
+        return
+
+    if not has_private_menu_access(sender.user_id if sender else None):
+        await event.message.answer(ACCESS_DENIED_TEXT)
         return
 
     await event.message.answer(WORK_BOT_REPLY)

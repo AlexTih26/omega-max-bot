@@ -75,6 +75,45 @@ class RumexRegistryStoreTests(unittest.TestCase):
             }.issubset(tables)
         )
 
+    def test_active_sessions_extend_expiration(self) -> None:
+        store.create_accountant_session(
+            token_hash="accountant-token",
+            username="Бухгалтер 1",
+            expires_at=200.0,
+            created_at=100.0,
+        )
+        store.create_test_dispatcher_session(
+            token_hash="dispatcher-token",
+            username="Тестовый диспетчер",
+            expires_at=200.0,
+            created_at=100.0,
+        )
+
+        self.assertEqual(
+            store.accountant_session_username(
+                token_hash="accountant-token", now=150.0, renewal_seconds=604800
+            ),
+            "Бухгалтер 1",
+        )
+        self.assertEqual(
+            store.test_dispatcher_session_username(
+                token_hash="dispatcher-token", now=150.0, renewal_seconds=43200
+            ),
+            "Тестовый диспетчер",
+        )
+        with sqlite3.connect(store.DB_PATH) as conn:
+            accountant = conn.execute(
+                "SELECT expires_at, last_seen_at FROM accountant_sessions WHERE token_hash = ?",
+                ("accountant-token",),
+            ).fetchone()
+            dispatcher = conn.execute(
+                "SELECT expires_at, last_seen_at FROM test_dispatcher_sessions WHERE token_hash = ?",
+                ("dispatcher-token",),
+            ).fetchone()
+
+        self.assertEqual(accountant, (604950.0, 150.0))
+        self.assertEqual(dispatcher, (43350.0, 150.0))
+
     def test_block_catalog_is_created_and_can_be_confirmed(self) -> None:
         blocks = {item["code"]: item for item in store.list_block_types(active_only=True)}
 
@@ -295,6 +334,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
         self.assertEqual(shipment["document_snapshot"]["driver"]["full_name"], "Иванов Иван Иванович")
         self.assertEqual(shipment["document_snapshot"]["driver"]["license_number"], "38 12 123456")
         self.assertEqual(shipment["documents"], [])
+        self.assertTrue(shipment["is_new_for_accountant"])
         history = store.list_test_block_history("A", "3611")
         self.assertEqual(history[0]["registry_number"], shipment["registry_number"])
 
@@ -306,6 +346,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
         )
         self.assertEqual(returned["status"], "requires_correction")
         self.assertEqual(returned["correction_reason"], "Исправьте номер блока и фактическое время погрузки")
+        self.assertFalse(returned["is_new_for_accountant"])
 
         corrected = store.resubmit_test_shipment(
             shipment["id"],
@@ -322,6 +363,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
         )
         self.assertEqual(corrected["revision_number"], 2)
         self.assertEqual(corrected["status"], "awaiting_accountant_review")
+        self.assertFalse(corrected["is_new_for_accountant"])
         self.assertEqual([item["block_number"] for item in corrected["items"]], ["51151", "7741", "3612"])
         self.assertEqual(store.list_test_block_history("A", "3611")[0]["revision_number"], 1)
 
@@ -330,6 +372,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
             occurred_at=1_767_228_200.0,
         )
         self.assertEqual(reviewed["status"], "awaiting_er_sent")
+        self.assertFalse(reviewed["is_new_for_accountant"])
         self.assertEqual(reviewed["ttn_number"], "ТТН №РМ-2026-000001")
         self.assertEqual(reviewed["ttn_year"], 2026)
         self.assertEqual(reviewed["ttn_sequence"], 1)
@@ -349,10 +392,21 @@ class RumexRegistryStoreTests(unittest.TestCase):
             occurred_at=1_767_228_300.0,
         )
         self.assertEqual(ready["status"], "documents_ready")
+        self.assertFalse(ready["is_new_for_accountant"])
         self.assertEqual(
             {document["document_kind"]: document["status"] for document in ready["documents"]},
             {"ER": "sent_to_kontur", "TN": "ready"},
         )
+
+        downloaded = store.mark_test_ttn_downloaded(
+            shipment["id"],
+            dispatcher_max_user_id=9001,
+            dispatcher_name="Диспетчер теста",
+            occurred_at=1_767_228_350.0,
+        )
+        self.assertEqual(downloaded["status"], "documents_ready")
+        self.assertEqual(downloaded["ttn_printed_by_name"], "Диспетчер теста")
+        self.assertEqual(downloaded["ttn_printed_at"], 1_767_228_350.0)
 
         handed = store.confirm_test_documents_handed_to_driver(
             shipment["id"],
@@ -378,6 +432,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 "test_shipment_resubmitted",
                 "test_shipment_reviewed",
                 "test_er_sent_to_kontur_documents_opened",
+                "test_ttn_downloaded",
                 "test_documents_handed_to_driver",
             ],
         )
@@ -622,6 +677,36 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 conn.execute("UPDATE rumex_audit_events SET event_type = 'changed' WHERE id = ?", (event_id,))
             with self.assertRaisesRegex(sqlite3.DatabaseError, "нельзя удалять"):
                 conn.execute("DELETE FROM rumex_audit_events WHERE id = ?", (event_id,))
+
+    def test_managed_dispatcher_and_rumex_only_vehicle_block(self) -> None:
+        account = store.create_rumex_dispatcher_account(
+            username="dispatcher-1",
+            full_name="Диспетчер Первый",
+            max_user_id=123,
+            password_hash="salt$hash",
+            actor_name="Администратор",
+        )
+        self.assertNotIn("password_hash", account)
+        self.assertTrue(account["active"])
+        store.create_test_dispatcher_session(
+            token_hash="managed-dispatcher", username="dispatcher-1", expires_at=300, created_at=100
+        )
+        store.update_rumex_dispatcher_account(
+            username="dispatcher-1", full_name="Диспетчер Первый", max_user_id=123,
+            active=False, actor_name="Администратор",
+        )
+        self.assertIsNone(store.test_dispatcher_session_username(token_hash="managed-dispatcher", now=150))
+
+        store.set_rumex_vehicle_shipment_block(
+            plate_tail="553", blocked=True, reason="Документы на проверке", actor_name="Администратор"
+        )
+        block = store.rumex_vehicle_shipment_block("553")
+        self.assertEqual(block["reason"], "Документы на проверке")
+        store.set_rumex_vehicle_shipment_block(
+            plate_tail="553", blocked=False, reason="", actor_name="Администратор"
+        )
+        self.assertIsNone(store.rumex_vehicle_shipment_block("553"))
+        self.assertGreaterEqual(len(store.list_rumex_management_audit_events()), 3)
 
 
 if __name__ == "__main__":

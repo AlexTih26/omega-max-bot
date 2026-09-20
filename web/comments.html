@@ -28,6 +28,8 @@
         if (direct === "sklad_master" || direct === "sklad" || direct === "sm") return "sklad";
         if (direct === "chat" || direct === "omega_chat" || direct === "omg") return "chat";
         if (direct === "accountant" || direct === "acc" || direct === "rumex_accountant") return "accountant";
+        if (direct === "rumex_dispatcher" || direct === "rumex_dispatch") return "rumex_dispatcher";
+        if (direct === "rumex_management" || direct === "rumex_admin") return "rumex_management";
         if (window.location.hash && window.location.hash.length > 1) {
           var hash = new URLSearchParams(window.location.hash.replace(/^#/, ""));
           var fromHash = hash.get("WebAppStartParam") || hash.get("startapp");
@@ -38,6 +40,8 @@
           if (fromHash === "sklad_master" || fromHash === "sklad" || fromHash === "sm") return "sklad";
           if (fromHash === "chat" || fromHash === "omega_chat" || fromHash === "omg") return "chat";
           if (fromHash === "accountant" || fromHash === "acc" || fromHash === "rumex_accountant") return "accountant";
+          if (fromHash === "rumex_dispatcher" || fromHash === "rumex_dispatch") return "rumex_dispatcher";
+          if (fromHash === "rumex_management" || fromHash === "rumex_admin") return "rumex_management";
         }
         try {
           var wa = window.WebApp;
@@ -50,6 +54,8 @@
             if (sp === "sklad_master" || sp === "sklad" || sp === "sm") return "sklad";
             if (sp === "chat" || sp === "omega_chat" || sp === "omg") return "chat";
             if (sp === "accountant" || sp === "acc" || sp === "rumex_accountant") return "accountant";
+            if (sp === "rumex_dispatcher" || sp === "rumex_dispatch") return "rumex_dispatcher";
+            if (sp === "rumex_management" || sp === "rumex_admin") return "rumex_management";
           }
         } catch (e) {}
         return null;
@@ -65,6 +71,8 @@
         else if (route === "sklad") target = "/sklad-master.html";
         else if (route === "chat") target = "/chat.html";
         else if (route === "accountant") target = "/rumex-accountant.html";
+        else if (route === "rumex_dispatcher") target = "/rumex-test-loading.html";
+        else if (route === "rumex_management") target = "/rumex-management.html";
         window.location.replace(target + q + h);
       }
     })();

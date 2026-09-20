@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from urllib.parse import quote
 
 from aiohttp import web
 
-from max_webapp import display_name_from_user, init_data_from_request, user_id_from_user, validate_init_data
 from rumex_registry_auth import is_registry_admin, user_from_request
 from rumex_registry_documents import build_test_ttn_workbook, test_ttn_filename
 from rumex_test_dispatcher_auth import user_from_request as test_dispatcher_user_from_request
@@ -28,6 +26,7 @@ from rumex_registry_store import (
     list_shipments,
     list_test_block_history,
     list_test_shipments,
+    mark_test_ttn_downloaded,
     mark_test_er_sent_to_kontur,
     mark_er_confirmed,
     mark_er_sent,
@@ -88,21 +87,8 @@ def _test_shipment_id(request: web.Request) -> int | None:
     return value if value > 0 else None
 
 
-def _test_dispatcher_ids() -> set[int]:
-    """Отдельный whitelist, чтобы тестовый кабинет не унаследовал боевые права."""
-    result: set[int] = set()
-    for value in (os.getenv("RUMEX_TEST_DISPATCHER_MAX_IDS") or "").split(","):
-        try:
-            user_id = int(value.strip())
-        except (TypeError, ValueError):
-            continue
-        if user_id > 0:
-            result.add(user_id)
-    return result
-
-
 def _test_dispatcher_identity(request: web.Request) -> tuple[dict | None, web.Response | None]:
-    """Проверить парольную сессию либо подпись MAX тестового диспетчера."""
+    """Проверить отдельную парольную сессию диспетчера тестового кабинета."""
     password_user = test_dispatcher_user_from_request(request)
     if password_user:
         return {
@@ -111,27 +97,11 @@ def _test_dispatcher_identity(request: web.Request) -> tuple[dict | None, web.Re
             "identity_kind": "password",
             "identity_id": password_user,
         }, None
-    configured_ids = _test_dispatcher_ids()
-    if not configured_ids:
-        return None, _json({"error": "Тестовый доступ диспетчера не настроен"}, 503)
-    init_data = init_data_from_request(request)
-    parsed = validate_init_data(init_data, (os.getenv("MAX_BOT_TOKEN") or "").strip())
-    if parsed is None or not isinstance(parsed.get("user"), dict):
-        return None, _json({"error": "Откройте кабинет из MAX или войдите по паролю"}, 401)
-    user = parsed["user"]
-    user_id = user_id_from_user(user)
-    if user_id is None or user_id not in configured_ids:
-        return None, _json({"error": "Нет доступа к тестовому кабинету диспетчера"}, 403)
-    return {
-        "max_user_id": user_id,
-        "name": display_name_from_user(user),
-        "identity_kind": "max",
-        "identity_id": str(user_id),
-    }, None
+    return None, _json({"error": "Требуется вход по паролю"}, 401)
 
 
 def _test_viewer_identity(request: web.Request) -> tuple[dict | None, web.Response | None]:
-    """Разрешить просмотр бухгалтеру либо тестовому диспетчеру MAX/по паролю."""
+    """Разрешить просмотр бухгалтеру либо диспетчеру с парольной сессией."""
     accountant = user_from_request(request)
     if accountant:
         return {"role": "accountant", "name": accountant}, None
@@ -464,16 +434,26 @@ async def handle_test_ttn_download(request: web.Request) -> web.Response:
     shipment_id = _test_shipment_id(request)
     if shipment_id is None:
         return _json({"error": "Некорректный номер тестовой погрузки"}, 400)
-    dispatcher, denied = _test_dispatcher_identity(request)
+    viewer, denied = _test_viewer_identity(request)
     if denied is not None:
         return denied
-    del dispatcher
     shipment = get_test_shipment(shipment_id)
     if shipment is None:
         return _json({"error": "Тестовая погрузка не найдена"}, 404)
     copy_number = _test_ttn_copy_number(request)
     if copy_number is None:
         return _json({"error": "Укажите экземпляр ТТН: copy=1, 2, 3 или 4"}, 400)
+    if viewer and viewer.get("role") == "dispatcher":
+        try:
+            shipment = mark_test_ttn_downloaded(
+                shipment_id,
+                dispatcher_max_user_id=int(viewer["max_user_id"]),
+                dispatcher_name=str(viewer["name"]),
+                dispatcher_identity_kind=str(viewer["identity_kind"]),
+                dispatcher_identity_id=str(viewer["identity_id"]),
+            )
+        except ValueError as exc:
+            return _json({"error": str(exc)}, 409)
     return _test_ttn_response(shipment, copy_number=copy_number)
 
 

@@ -2,8 +2,6 @@
   "use strict";
 
   var API = "/api/rumex-registry/test";
-  var webApp = window.WebApp || null;
-  var initData = "";
   var blockTypes = [];
   var registry = [];
   var lookupTimer = null;
@@ -11,6 +9,11 @@
   var handoverShipmentId = null;
   var busy = false;
   var vehicleReadyForTtn = false;
+  var registryLoadPromise = null;
+  var registryReloadRequested = false;
+  var refreshTimer = null;
+  var autoRefreshStarted = false;
+  var REFRESH_INTERVAL_MS = 5000;
 
   var accessNotice = document.getElementById("accessNotice");
   var accessNoticeText = document.getElementById("accessNoticeText");
@@ -29,7 +32,6 @@
   var vehicleHelp = document.getElementById("vehicleHelp");
   var formError = document.getElementById("formError");
   var submitButton = document.getElementById("submitButton");
-  var refreshButton = document.getElementById("refreshButton");
   var registryCount = document.getElementById("registryCount");
   var registryList = document.getElementById("registryList");
   var emptyState = document.getElementById("emptyState");
@@ -52,11 +54,7 @@
     return String(value || "");
   }
 
-  function apiHeaders() {
-    var headers = { "Content-Type": "application/json" };
-    if (initData) headers["X-Max-Init-Data"] = initData;
-    return headers;
-  }
+  function apiHeaders() { return { "Content-Type": "application/json" }; }
 
   function request(path, options) {
     return fetch(API + path, Object.assign({ headers: apiHeaders(), credentials: "same-origin" }, options || {}))
@@ -82,16 +80,6 @@
           return body;
         });
       });
-  }
-
-  function setupBridge() {
-    if (!webApp) return false;
-    initData = webApp.initData || "";
-    try {
-      if (webApp.ready) webApp.ready();
-      if (webApp.expand) webApp.expand();
-    } catch (error) {}
-    return Boolean(initData);
   }
 
   function showToast(message) {
@@ -138,6 +126,7 @@
       test_shipment_resubmitted: "Диспетчер отправил исправленную ревизию №" + (payload.revision_number || ""),
       test_shipment_reviewed: payload.er_required ? "Бухгалтер проверил погрузку: нужна ЭР." : "Бухгалтер проверил погрузку: ЭР не требуется.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
+      test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
       test_documents_handed_to_driver: "Диспетчер подтвердил печать и передачу документов водителю."
     };
     return texts[event.event_type] || event.event_type;
@@ -275,8 +264,7 @@
 
   function documentUrl(shipmentId, copyNumber) {
     var url = API + "/shipments/" + encodeURIComponent(shipmentId) + "/documents/tn";
-    var query = "?copy=" + encodeURIComponent(copyNumber);
-    return initData ? url + query + "&initData=" + encodeURIComponent(initData) : url + query;
+    return url + "?copy=" + encodeURIComponent(copyNumber);
   }
 
   function renderDocuments(shipment, parent) {
@@ -288,6 +276,9 @@
           var link = document.createElement("a");
           link.href = documentUrl(shipment.id, copyNumber);
           link.textContent = "Скачать " + (shipment.ttn_number || "ТТН") + " · экземпляр № " + copyNumber;
+          link.addEventListener("click", function () {
+            setTimeout(loadRegistry, 350);
+          });
           box.appendChild(link);
           box.appendChild(document.createElement("br"));
         });
@@ -333,6 +324,13 @@
       head.appendChild(heading);
       var status = statusInfo(shipment.status);
       head.appendChild(createElement("span", "rtl-status " + status[1], status[0]));
+      if (shipment.ttn_printed_at) {
+        head.appendChild(createElement(
+          "span",
+          "rtl-ttn-printed",
+          "✓ ТТН скачана для печати · " + formatTime(shipment.ttn_printed_at)
+        ));
+      }
       card.appendChild(head);
 
       var details = createElement("div", "rtl-card-details");
@@ -388,18 +386,59 @@
   }
 
   function loadRegistry() {
-    refreshButton.disabled = true;
-    return request("/registry")
+    if (registryLoadPromise) {
+      registryReloadRequested = true;
+      return registryLoadPromise.then(function () { return registryLoadPromise || loadRegistry(); });
+    }
+    registryLoadPromise = request("/registry")
       .then(function (body) {
         blockTypes = body.block_types || [];
         registry = body.shipments || [];
-        renderBlocks("new");
+        if (!blocksList.children.length) renderBlocks("new");
+        else updateTotal("new");
+        if (!correctionPanel.hidden) updateTotal("correction");
         renderRegistry();
       })
       .catch(function (error) {
-        showAccessNotice(error.message || "Кабинет недоступен.", !initData);
+        showAccessNotice(error.message || "Кабинет недоступен.", true);
       })
-      .finally(function () { refreshButton.disabled = false; });
+      .finally(function () {
+        registryLoadPromise = null;
+        if (registryReloadRequested) {
+          registryReloadRequested = false;
+          loadRegistry();
+        }
+      });
+    return registryLoadPromise;
+  }
+
+  function scheduleAutoRefresh() {
+    clearTimeout(refreshTimer);
+    if (!autoRefreshStarted || document.hidden) return;
+    refreshTimer = setTimeout(function () {
+      if (busy || document.hidden) {
+        scheduleAutoRefresh();
+        return;
+      }
+      loadRegistry().finally(scheduleAutoRefresh);
+    }, REFRESH_INTERVAL_MS);
+  }
+
+  function startAutoRefresh() {
+    if (autoRefreshStarted) return;
+    autoRefreshStarted = true;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) {
+        clearTimeout(refreshTimer);
+        return;
+      }
+      if (busy) {
+        scheduleAutoRefresh();
+        return;
+      }
+      loadRegistry().finally(scheduleAutoRefresh);
+    });
+    scheduleAutoRefresh();
   }
 
   function createShipment(event) {
@@ -499,7 +538,6 @@
   correctionBlockCount.addEventListener("change", function () { renderBlocks("correction"); });
   loadingForm.addEventListener("submit", createShipment);
   correctionForm.addEventListener("submit", resubmitShipment);
-  refreshButton.addEventListener("click", loadRegistry);
   closeCorrectionButton.addEventListener("click", function () { correctionPanel.hidden = true; correctionShipment = null; });
   cancelHandoverButton.addEventListener("click", function () { handoverDialog.hidden = true; handoverShipmentId = null; });
   confirmHandoverButton.addEventListener("click", confirmHandover);
@@ -514,23 +552,19 @@
 
   loadedAt.value = localDatetimeValue();
   submitButton.disabled = true;
-  if (setupBridge()) {
-    loadRegistry();
-    return;
-  }
   passwordAuthRequest("/check")
     .then(function (body) {
       if (body.authenticated) {
         return passwordAuthRequest("/me").then(function (identity) {
           passwordSessionUser.textContent = "Вход по паролю: " + identity.user;
           passwordSession.hidden = false;
-          return loadRegistry();
+          return loadRegistry().then(startAutoRefresh);
         });
       }
       if (body.configured) {
-        showAccessNotice("Откройте кабинет через Mini App MAX или войдите по личному паролю.", true);
+        showAccessNotice("Войдите по личному паролю диспетчера.", true);
       } else {
-        showAccessNotice("Откройте кабинет через Mini App MAX. Парольный вход пока не настроен.", false);
+        showAccessNotice("Парольный вход диспетчера пока не настроен.", false);
       }
       return null;
     })

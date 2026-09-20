@@ -4,8 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#17221d">
+  <meta name="application-name" content="РУМЕКС · диспетчер">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="РУМЕКС диспетчер">
   <title>РУМЕКС · вход тестового диспетчера</title>
-  <link rel="stylesheet" href="/rumex-test-loading.css?v=3">
+  <link rel="manifest" href="/rumex-test-dispatcher-manifest.json">
+  <link rel="apple-touch-icon" href="/rumex-test-dispatcher-icon-192.png">
+  <link rel="stylesheet" href="/rumex-test-loading.css?v=5">
+  <script src="/rumex-pwa.js?v=2" defer></script>
 </head>
 <body class="rtl-login-page">
   <main class="rtl-login-wrap">
@@ -23,7 +30,7 @@
         <button class="rtl-primary" id="loginButton" type="submit">Войти в тестовый кабинет</button>
       </form>
       <p class="rtl-error" id="loginError" role="alert"></p>
-      <p class="rtl-help">Внутри Mini App MAX пароль не нужен: используется защищённый вход по MAX ID.</p>
+      <p class="rtl-help">MAX ID открывает пункт меню. Для входа в кабинет требуется отдельный пароль диспетчера.</p>
     </section>
   </main>
   <script src="/rumex-test-loading-login.js?v=1"></script>

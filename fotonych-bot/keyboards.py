@@ -4,10 +4,8 @@ from maxapi.types.attachments.buttons.callback_button import CallbackButton
 from maxapi.types.attachments.buttons.open_app_button import OpenAppButton
 from maxapi.utils.inline_keyboard import InlineKeyboardBuilder
 
+from access_roles import has_private_menu_access, has_stock_access, roles_for_max_user
 from post_payload import encode_post_id
-from sklad_master_store import get_access
-from rumex_loading import is_rumex_accountant
-from super_admin import is_super_admin
 
 MAX_BOT_USERNAME = os.getenv("MAX_BOT_USERNAME", "id5406829253_bot")
 
@@ -18,6 +16,8 @@ TAKSIMO_FIND_PAYLOAD = "taksimo_find"
 OMEGA_CHAT_PAYLOAD = "chat"
 ADMIN_APP_PAYLOAD = "admin"
 ACCOUNTANT_APP_PAYLOAD = "accountant"
+RUMEX_DISPATCHER_APP_PAYLOAD = "rumex_dispatcher"
+RUMEX_MANAGEMENT_APP_PAYLOAD = "rumex_management"
 SKLAD_MASTER_PAYLOAD = "sklad_master"
 
 TAKSIMO_FIND_HINT = (
@@ -28,7 +28,8 @@ TAKSIMO_FIND_HINT = (
 
 def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    if user_id is not None and get_access(user_id).get("roles"):
+    roles = roles_for_max_user(user_id)
+    if has_stock_access(roles):
         kb.row(
             OpenAppButton(
                 text="📱 Склад Мастер",
@@ -36,7 +37,15 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardBuilder:
                 payload=SKLAD_MASTER_PAYLOAD,
             )
         )
-    if user_id is not None and is_rumex_accountant(user_id):
+    if "rumex_dispatcher" in roles:
+        kb.row(
+            OpenAppButton(
+                text="🚚 Кабинет диспетчера РУМЕКС",
+                web_app=MAX_BOT_USERNAME,
+                payload=RUMEX_DISPATCHER_APP_PAYLOAD,
+            )
+        )
+    if "rumex_accountant" in roles:
         kb.row(
             OpenAppButton(
                 text="📋 Кабинет бухгалтера",
@@ -44,15 +53,23 @@ def main_menu_keyboard(user_id: int | None = None) -> InlineKeyboardBuilder:
                 payload=ACCOUNTANT_APP_PAYLOAD,
             )
         )
-    kb.row(
-        OpenAppButton(
-            text="💬 OMEGA Chat",
-            web_app=MAX_BOT_USERNAME,
-            payload=OMEGA_CHAT_PAYLOAD,
+    if has_private_menu_access(user_id):
+        kb.row(
+            OpenAppButton(
+                text="💬 OMEGA Chat",
+                web_app=MAX_BOT_USERNAME,
+                payload=OMEGA_CHAT_PAYLOAD,
+            )
         )
-    )
-    kb.row(CallbackButton(text="Очистить память", payload=CB_CLEAR))
-    if user_id is not None and is_super_admin(user_id):
+        kb.row(CallbackButton(text="Очистить память", payload=CB_CLEAR))
+    if "omega_admin" in roles:
+        kb.row(
+            OpenAppButton(
+                text="🛡️ РУМЕКС · управление",
+                web_app=MAX_BOT_USERNAME,
+                payload=RUMEX_MANAGEMENT_APP_PAYLOAD,
+            )
+        )
         kb.row(
             OpenAppButton(
                 text="⚙️ Админ",

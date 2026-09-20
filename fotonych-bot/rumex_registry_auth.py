@@ -102,7 +102,9 @@ def user_from_request(request: web.Request) -> str | None:
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         return None
-    username = accountant_session_username(token_hash=_token_hash(token))
+    username = accountant_session_username(
+        token_hash=_token_hash(token), renewal_seconds=SESSION_DAYS * 86400
+    )
     if username:
         request[USER_KEY] = username
     return username
@@ -110,6 +112,22 @@ def user_from_request(request: web.Request) -> str | None:
 
 def _json(data: dict, status: int = 200) -> web.Response:
     return web.json_response(data, status=status)
+
+
+def _renew_session_cookie(request: web.Request, response: web.StreamResponse) -> web.StreamResponse:
+    """Продлить cookie только после подтверждённого сервером PIN-входа."""
+    token = request.cookies.get(COOKIE_NAME)
+    if token and isinstance(request.get(USER_KEY), str):
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            max_age=SESSION_DAYS * 86400,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/",
+        )
+    return response
 
 
 @web.middleware
@@ -125,18 +143,22 @@ async def rumex_registry_auth_middleware(request: web.Request, handler):
     # обработчиках. Нельзя требовать PIN бухгалтера от отдельной роли, но и
     # нельзя оставлять маршруты без их собственной серверной проверки.
     if path.startswith("/api/rumex-registry/test/"):
-        return await handler(request)
+        if path == "/api/rumex-registry/test/auth/logout":
+            return await handler(request)
+        return _renew_session_cookie(request, await handler(request))
     if path in {
         "/api/rumex-registry/auth/check",
         "/api/rumex-registry/auth/me",
     }:
-        return await handler(request)
+        return _renew_session_cookie(request, await handler(request))
     if path == "/api/rumex-registry/auth" and request.method == "POST":
+        return await handler(request)
+    if path == "/api/rumex-registry/auth/logout":
         return await handler(request)
     if not auth_enabled():
         return _json({"error": "PIN-доступ бухгалтеров не настроен"}, 503)
     if user_from_request(request):
-        return await handler(request)
+        return _renew_session_cookie(request, await handler(request))
     return _json({"error": "Требуется вход", "login": "/rumex-accountant-login.html"}, 401)
 
 

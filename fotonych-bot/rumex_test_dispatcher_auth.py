@@ -14,9 +14,12 @@ from aiohttp import web
 from rumex_registry_store import (
     create_test_dispatcher_session,
     failed_test_dispatcher_login_count,
+    get_rumex_dispatcher_account,
     record_test_dispatcher_login_attempt,
+    rumex_dispatcher_account_count,
     revoke_test_dispatcher_session,
     test_dispatcher_session_username,
+    touch_rumex_dispatcher_activity,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,7 +58,7 @@ def load_users() -> dict[str, str]:
 
 def auth_enabled() -> bool:
     """Парольный вход доступен лишь с отдельным секретом и хотя бы одной учётной записью."""
-    return bool(_secret()) and bool(load_users())
+    return bool(_secret()) and bool(load_users() or rumex_dispatcher_account_count())
 
 
 def verify_credentials(username: str, password: str) -> str | None:
@@ -64,6 +67,19 @@ def verify_credentials(username: str, password: str) -> str | None:
         return None
     candidate_name = (username or "").strip()
     candidate_password = (password or "").strip()
+    account = get_rumex_dispatcher_account(candidate_name, include_hash=True)
+    if account is not None:
+        expected_hash = str(account.get("password_hash") or "")
+        try:
+            salt, expected = expected_hash.split("$", 1)
+            actual = hashlib.scrypt(candidate_password.encode("utf-8"), salt=salt.encode("ascii"), n=2**14, r=8, p=1).hex()
+        except (ValueError, UnicodeEncodeError):
+            return None
+        if not account.get("active") or not hmac.compare_digest(actual, expected):
+            return None
+        return str(account["username"])
+    if rumex_dispatcher_account_count():
+        return None
     expected = load_users().get(candidate_name)
     if not expected or not hmac.compare_digest(candidate_password, expected):
         return None
@@ -92,14 +108,47 @@ def user_from_request(request: web.Request) -> str | None:
     token = request.cookies.get(COOKIE_NAME)
     if not token or not auth_enabled():
         return None
-    username = test_dispatcher_session_username(token_hash=_token_hash(token))
+    username = test_dispatcher_session_username(
+        token_hash=_token_hash(token), renewal_seconds=SESSION_HOURS * 3600
+    )
+    account = get_rumex_dispatcher_account(username) if username else None
+    if account is not None and not account.get("active"):
+        revoke_test_dispatcher_session(token_hash=_token_hash(token))
+        return None
     if username:
+        touch_rumex_dispatcher_activity(username)
         request[USER_KEY] = username
     return username
 
 
 def _json(data: dict, status: int = 200) -> web.Response:
     return web.json_response(data, status=status)
+
+
+def _renew_session_cookie(request: web.Request, response: web.StreamResponse) -> web.StreamResponse:
+    """Продлить cookie только для действующей парольной сессии диспетчера."""
+    token = request.cookies.get(COOKIE_NAME)
+    if token and isinstance(request.get(USER_KEY), str):
+        response.set_cookie(
+            COOKIE_NAME,
+            token,
+            max_age=SESSION_HOURS * 3600,
+            httponly=True,
+            secure=True,
+            samesite="Lax",
+            path="/",
+        )
+    return response
+
+
+@web.middleware
+async def rumex_test_dispatcher_auth_middleware(request: web.Request, handler):
+    """Обновить срок парольной сессии на успешных запросах тестового диспетчера."""
+    if not request.path.startswith("/api/rumex-registry/test/"):
+        return await handler(request)
+    if request.path == "/api/rumex-registry/test/auth/logout":
+        return await handler(request)
+    return _renew_session_cookie(request, await handler(request))
 
 
 async def handle_auth_check(request: web.Request) -> web.Response:
@@ -200,4 +249,4 @@ def register_rumex_test_dispatcher_auth_routes(app: web.Application) -> None:
     if auth_enabled():
         logger.info("РУМЕКС тест: парольный доступ диспетчера настроен")
     else:
-        logger.info("РУМЕКС тест: парольный доступ диспетчера не настроен; доступен вход через MAX")
+        logger.warning("РУМЕКС тест: парольный доступ диспетчера не настроен; кабинет закрыт")

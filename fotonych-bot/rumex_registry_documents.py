@@ -23,25 +23,17 @@ APPROVED_TTN_TEMPLATE_PATH = (
 TEST_DOCUMENT_EXPORTS_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry" / "exports"
 
 OMEGA_DETAILS = (
-    "ООО «Омега-М»\n"
-    "ИНН 5406829253\n"
-    "КПП 502401001\n"
-    "ОГРН 1235400005301\n"
-    "143405, Московская область, г.о. Красногорск,\n"
-    "г. Красногорск, ул. Почтовая, д. 3"
+    "ООО «Омега-М», ИНН 5406829253, КПП 502401001, "
+    "143405, Московская область, г.о. Красногорск, г. Красногорск, ул. Почтовая, д. 3"
 )
 RUMEX_DETAILS = (
-    "ООО «РУМЕКС»\n"
-    "364030, Чеченская Республика, г.о. город Грозный,\n"
-    "г. Грозный, р-н Байсангуровский, ул. Сайханова, двлд. 222\n"
-    "ОГРН 1247700186029\n"
-    "ИНН 9728126848\n"
-    "КПП 201001001"
+    "ООО «РУМЕКС», ИНН 9728126848, КПП 201001001, "
+    "364030, Чеченская Республика, г.о. город Грозный, "
+    "г. Грозный, р-н Байсангуровский, ул. Сайханова, двлд. 222"
 )
 CARRIER_DETAILS = (
-    "ООО «Комсомольская ТК», ИНН 2721252270,\n"
-    "Юридический адрес 664025, Иркутская область,\n"
-    "г. Иркутск, ул. Сурикова, д. 6, офис 2"
+    "ООО «Комсомольская ТК», ИНН 2721252270, "
+    "664025, Иркутская область, г. Иркутск, ул. Сурикова, д. 6, офис 2"
 )
 PICKUP_LOCATION = (
     "Завод по производству тоннельной обделки на восточном\n"
@@ -150,6 +142,10 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
     if "ТТН" not in workbook.sheetnames:
         raise ValueError("Утверждённый шаблон ТТН имеет неверную структуру")
     sheet = workbook["ТТН"]
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 2
+    sheet.page_setup.scale = None
 
     # Шапка и стороны перевозки.
     sheet["G5"] = loaded_at.date()
@@ -162,15 +158,17 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
     sheet["A14"] = OMEGA_DETAILS
     sheet["A16"] = DELIVERY_LOCATION
 
-    # Ровно семь строк формы: фактические блоки в порядке ввода, остальные -- 0.
+    # Печатаем только фактические блоки. Неиспользованные строки утверждённого
+    # бланка очищаем и скрываем, чтобы они не создавали третью страницу.
     for row_number, item in zip(range(20, 27), items, strict=False):
         code = _required_snapshot_text(item.get("block_type_code"), "тип блока")
         block_number = _required_snapshot_text(item.get("block_number"), "номер блока")
         sheet[f"A{row_number}"] = PRODUCT_NAME
         sheet[f"BF{row_number}"] = f"{code} {block_number}"
+        sheet.row_dimensions[row_number].hidden = False
     for row_number in range(20 + len(items), 27):
-        sheet[f"A{row_number}"] = PRODUCT_NAME
-        sheet[f"BF{row_number}"] = "0"
+        _clear_cells(sheet, f"A{row_number}", f"BF{row_number}")
+        sheet.row_dimensions[row_number].hidden = True
     sheet["A28"] = f"{total_weight_kg:,} кг".replace(",", " ")
     _clear_cells(sheet, "A30", "BE30", "A33", "A35")
     sheet["B38"] = "-"
@@ -216,6 +214,11 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
     sheet["B92"] = CARRIER_DETAILS
     sheet["BF92"] = OMEGA_DETAILS
     sheet["BF96"] = OMEGA_DETAILS
+
+    # Компактные однострочные реквизиты: оставляем в форме ИНН, КПП и адрес,
+    # но не выводим ОГРН. Полный реквизит сохраняется в карточке контрагента.
+    for row_number, height in ((9, 30), (54, 18), (92, 24), (96, 24)):
+        sheet.row_dimensions[row_number].height = height
 
     calculation = workbook.calculation
     calculation.fullCalcOnLoad = True

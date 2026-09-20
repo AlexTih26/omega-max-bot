@@ -108,9 +108,11 @@ comments.html + comments.js  ←→  nginx /api/*  ←→  comments_api.py
 | `SITE_URL` | `https://max.avtmsk.ru` |
 | `COMMENTS_PORT` | Порт API (по умолчанию `8765`) |
 | `MAX_BOT_USERNAME` | Username бота для `open_app` (например `id5406829253_bot`) |
-| `RUMEX_TEST_DISPATCHER_MAX_IDS` | Белый список MAX ID изолированного тестового кабинета РУМЕКС |
-| `RUMEX_TEST_DISPATCHER_USERS` | Учётные записи браузерного входа тестовых диспетчеров РУМЕКС (`Имя:пароль`) |
+| `RUMEX_DISPATCHER_MAX_IDS` | MAX ID диспетчеров: только видимость кнопки кабинета в боте |
+| `RUMEX_TEST_DISPATCHER_USERS` | Учётные записи парольного входа тестовых диспетчеров РУМЕКС (`Имя:пароль`) |
 | `RUMEX_TEST_DISPATCHER_AUTH_SECRET` | Отдельный секрет сессий браузерного входа тестовых диспетчеров |
+| `RUMEX_ADMIN_AUTH_SECRET` | Отдельный секрет сессий PWA «РУМЕКС · управление» |
+| `RUMEX_ADMIN_STEP_UP_PIN` | Отдельный PIN подтверждения смены паролей и блокировки машин РУМЕКС |
 
 Шаблон: `fotonych-bot/.env.example`
 

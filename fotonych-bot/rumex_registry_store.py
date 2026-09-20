@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "rumex_registry.db"
 FLEET_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "data" / "drivers_registry.json"
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 PRODUCT_NAME = "Блок 9,7/8,8"
 BLOCK_CODES = ("A", "B", "C", "D", "E", "F", "K")
@@ -383,6 +383,8 @@ def init_rumex_registry_db() -> None:
                 ttn_year INTEGER,
                 ttn_sequence INTEGER,
                 ttn_assigned_at REAL,
+                ttn_printed_at REAL,
+                ttn_printed_by_name TEXT NOT NULL DEFAULT '',
                 printed_by_max_user_id INTEGER,
                 printed_by_name TEXT NOT NULL DEFAULT '',
                 printed_confirmed_at REAL,
@@ -669,6 +671,80 @@ def init_rumex_registry_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_rumex_test_dispatcher_sessions_expiry
                 ON test_dispatcher_sessions(expires_at, revoked_at);
+
+            CREATE TABLE IF NOT EXISTS rumex_dispatcher_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                full_name TEXT NOT NULL,
+                max_user_id INTEGER,
+                password_hash TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                last_password_issued_at REAL,
+                last_activity_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_dispatcher_accounts_active
+                ON rumex_dispatcher_accounts(active, username);
+
+            CREATE TABLE IF NOT EXISTS rumex_admin_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                full_name TEXT NOT NULL,
+                max_user_id INTEGER NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin')),
+                active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS rumex_admin_login_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL DEFAULT '',
+                max_user_id INTEGER,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                failure_reason TEXT NOT NULL DEFAULT '',
+                remote_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                attempted_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_admin_login_attempts
+                ON rumex_admin_login_attempts(max_user_id, attempted_at DESC);
+            CREATE TABLE IF NOT EXISTS rumex_admin_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_hash TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
+                max_user_id INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                revoked_at REAL,
+                remote_address TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_admin_sessions_expiry
+                ON rumex_admin_sessions(expires_at, revoked_at);
+
+            CREATE TABLE IF NOT EXISTS rumex_vehicle_shipment_blocks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                plate_tail TEXT NOT NULL UNIQUE,
+                reason TEXT NOT NULL,
+                blocked_by TEXT NOT NULL,
+                blocked_at REAL NOT NULL,
+                unblocked_by TEXT NOT NULL DEFAULT '',
+                unblocked_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS rumex_management_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                actor_name TEXT NOT NULL,
+                subject_type TEXT NOT NULL DEFAULT '',
+                subject_id TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                occurred_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_management_audit_events
+                ON rumex_management_audit_events(occurred_at DESC, id DESC);
             """
         )
         _add_column_if_missing(
@@ -710,6 +786,12 @@ def init_rumex_registry_db() -> None:
         _add_column_if_missing(conn, "test_shipments", "ttn_year INTEGER")
         _add_column_if_missing(conn, "test_shipments", "ttn_sequence INTEGER")
         _add_column_if_missing(conn, "test_shipments", "ttn_assigned_at REAL")
+        _add_column_if_missing(conn, "test_shipments", "ttn_printed_at REAL")
+        _add_column_if_missing(
+            conn,
+            "test_shipments",
+            "ttn_printed_by_name TEXT NOT NULL DEFAULT ''",
+        )
         conn.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_rumex_test_shipments_ttn_number
                ON test_shipments(ttn_number) WHERE ttn_number <> ''"""
@@ -1415,13 +1497,20 @@ def list_document_fleet_vehicles(*, include_missing: bool = False) -> list[dict[
             f"""SELECT * FROM document_fleet_vehicles {where}
                 ORDER BY source_active DESC, plate_tail"""
         ).fetchall()
-        return [
+        vehicles = [
             _document_vehicle_from_row(
                 row,
                 _current_document_vehicle_binding(conn, int(row["id"])),
             )
             for row in rows
         ]
+        for vehicle in vehicles:
+            block = conn.execute(
+                "SELECT * FROM rumex_vehicle_shipment_blocks WHERE plate_tail = ? AND unblocked_at IS NULL",
+                (vehicle["plate_tail"],),
+            ).fetchone()
+            vehicle["shipment_block"] = dict(block) if block is not None else None
+        return vehicles
 
 
 def get_document_fleet_vehicle(plate_tail: Any) -> dict[str, Any] | None:
@@ -1738,6 +1827,10 @@ def _test_shipment_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[
         event_data = dict(event)
         event_data["payload"] = json.loads(event_data.pop("payload_json"))
         result["events"].append(event_data)
+    result["is_new_for_accountant"] = not any(
+        str(event.get("actor_kind") or "").startswith("accountant")
+        for event in result["events"]
+    )
     return result
 
 
@@ -1776,6 +1869,12 @@ def _current_confirmed_binding_for_tail(
     ).fetchone()
     if vehicle is None:
         raise ValueError("Машина не найдена среди активных машин физического парка")
+    block = conn.execute(
+        "SELECT reason FROM rumex_vehicle_shipment_blocks WHERE plate_tail = ? AND unblocked_at IS NULL",
+        (plate_tail,),
+    ).fetchone()
+    if block is not None:
+        raise ValueError("Машина заблокирована для новых погрузок РУМЕКС: " + str(block["reason"]))
     binding = _current_document_vehicle_binding(conn, int(vehicle["id"]))
     if binding is None:
         raise ValueError("Для машины нет подтверждённой бухгалтером документной карточки")
@@ -2328,6 +2427,57 @@ def confirm_test_documents_handed_to_driver(
     return result
 
 
+def mark_test_ttn_downloaded(
+    test_shipment_id: Any,
+    *,
+    dispatcher_max_user_id: int,
+    dispatcher_name: str,
+    dispatcher_identity_kind: str = "max",
+    dispatcher_identity_id: str = "",
+    occurred_at: float | None = None,
+) -> dict[str, Any]:
+    """Отметить первое скачивание ТТН диспетчером, не подтверждая передачу водителю."""
+    shipment_id = _test_shipment_id(test_shipment_id)
+    dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
+        dispatcher_max_user_id=dispatcher_max_user_id,
+        dispatcher_name=dispatcher_name,
+        dispatcher_identity_kind=dispatcher_identity_kind,
+        dispatcher_identity_id=dispatcher_identity_id,
+    )
+    now = float(occurred_at) if occurred_at is not None else _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            shipment = _test_shipment_for_update(conn, shipment_id)
+            if str(shipment["status"]) not in {"documents_ready", "documents_handed_to_driver"}:
+                raise ValueError("Скачать ТТН можно только после открытия документов")
+            if shipment["ttn_printed_at"] is None:
+                conn.execute(
+                    """UPDATE test_shipments SET ttn_printed_at = ?, ttn_printed_by_name = ?,
+                           updated_at = ? WHERE id = ?""",
+                    (now, dispatcher, now, shipment_id),
+                )
+                _append_test_shipment_event(
+                    conn,
+                    test_shipment_id=shipment_id,
+                    event_type="test_ttn_downloaded",
+                    actor_kind="dispatcher_" + dispatcher_kind,
+                    actor_id=dispatcher_identity,
+                    actor_name=dispatcher,
+                    payload={"ttn_printed_at": now, "dispatcher_max_user_id": dispatcher_id},
+                    occurred_at=now,
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    result = get_test_shipment(shipment_id)
+    if result is None:
+        raise RuntimeError("Не удалось прочитать тестовую погрузку после скачивания ТТН")
+    return result
+
+
 def list_test_block_history(block_type_code: Any, block_number: Any, *, limit: int = 100) -> list[dict[str, Any]]:
     """Вернуть вечную историю изделия по паре «буква + индивидуальный номер»."""
     code = str(block_type_code or "").strip().upper()
@@ -2739,10 +2889,14 @@ def create_accountant_session(
         )
 
 
-def accountant_session_username(*, token_hash: str, now: float | None = None) -> str | None:
-    """Вернуть пользователя действующей сессии и обновить last_seen_at."""
+def accountant_session_username(
+    *, token_hash: str, now: float | None = None, renewal_seconds: float | None = None
+) -> str | None:
+    """Вернуть пользователя действующей сессии и при необходимости продлить её."""
     if not token_hash:
         return None
+    if renewal_seconds is not None and float(renewal_seconds) <= 0:
+        raise ValueError("Срок продления сессии должен быть положительным")
     init_rumex_registry_db()
     current = float(now) if now is not None else _now()
     with _connect() as conn:
@@ -2753,7 +2907,13 @@ def accountant_session_username(*, token_hash: str, now: float | None = None) ->
         ).fetchone()
         if row is None:
             return None
-        conn.execute("UPDATE accountant_sessions SET last_seen_at = ? WHERE id = ?", (current, row["id"]))
+        if renewal_seconds is None:
+            conn.execute("UPDATE accountant_sessions SET last_seen_at = ? WHERE id = ?", (current, row["id"]))
+        else:
+            conn.execute(
+                "UPDATE accountant_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+                (current, current + float(renewal_seconds), row["id"]),
+            )
     return str(row["username"])
 
 
@@ -2840,10 +3000,14 @@ def create_test_dispatcher_session(
         )
 
 
-def test_dispatcher_session_username(*, token_hash: str, now: float | None = None) -> str | None:
-    """Вернуть пользователя действующей отдельной сессии тестового диспетчера."""
+def test_dispatcher_session_username(
+    *, token_hash: str, now: float | None = None, renewal_seconds: float | None = None
+) -> str | None:
+    """Вернуть пользователя сессии тестового диспетчера и при необходимости продлить её."""
     if not token_hash:
         return None
+    if renewal_seconds is not None and float(renewal_seconds) <= 0:
+        raise ValueError("Срок продления сессии должен быть положительным")
     init_rumex_registry_db()
     current = float(now) if now is not None else _now()
     with _connect() as conn:
@@ -2854,7 +3018,13 @@ def test_dispatcher_session_username(*, token_hash: str, now: float | None = Non
         ).fetchone()
         if row is None:
             return None
-        conn.execute("UPDATE test_dispatcher_sessions SET last_seen_at = ? WHERE id = ?", (current, row["id"]))
+        if renewal_seconds is None:
+            conn.execute("UPDATE test_dispatcher_sessions SET last_seen_at = ? WHERE id = ?", (current, row["id"]))
+        else:
+            conn.execute(
+                "UPDATE test_dispatcher_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+                (current, current + float(renewal_seconds), row["id"]),
+            )
     return str(row["username"])
 
 
@@ -2868,4 +3038,359 @@ def revoke_test_dispatcher_session(*, token_hash: str, revoked_at: float | None 
             """UPDATE test_dispatcher_sessions SET revoked_at = ?
                WHERE token_hash = ? AND revoked_at IS NULL""",
             (float(revoked_at) if revoked_at is not None else _now(), token_hash),
+        )
+
+
+def _management_audit(
+    conn: sqlite3.Connection,
+    *,
+    event_type: str,
+    actor_name: str,
+    subject_type: str = "",
+    subject_id: str = "",
+    payload: Mapping[str, Any] | None = None,
+    occurred_at: float | None = None,
+) -> None:
+    conn.execute(
+        """INSERT INTO rumex_management_audit_events (
+               event_type, actor_name, subject_type, subject_id, payload_json, occurred_at
+           ) VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            event_type,
+            (actor_name or "").strip()[:200],
+            (subject_type or "").strip()[:80],
+            (subject_id or "").strip()[:200],
+            _json(dict(payload or {})),
+            float(occurred_at) if occurred_at is not None else _now(),
+        ),
+    )
+
+
+def _dispatcher_account_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result.pop("password_hash", None)
+    result["active"] = bool(result["active"])
+    return result
+
+
+def list_rumex_dispatcher_accounts() -> list[dict[str, Any]]:
+    """Вернуть управляемые учётные записи диспетчеров без хэшей паролей."""
+    init_rumex_registry_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM rumex_dispatcher_accounts ORDER BY active DESC, full_name, username"
+        ).fetchall()
+        return [_dispatcher_account_from_row(row) for row in rows]
+
+
+def rumex_dispatcher_account_count() -> int:
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count FROM rumex_dispatcher_accounts").fetchone()
+    return int(row["count"])
+
+
+def create_rumex_dispatcher_account(
+    *, username: Any, full_name: Any, max_user_id: Any, password_hash: str, actor_name: str
+) -> dict[str, Any]:
+    """Создать отдельную учётную запись диспетчера РУМЕКС."""
+    login = _required_carrier_text(username, "логин", max_length=80)
+    name = _required_carrier_text(full_name, "ФИО", max_length=200)
+    if not password_hash:
+        raise ValueError("Не задан хэш пароля")
+    max_id = _source_max_user_id(max_user_id)
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """INSERT INTO rumex_dispatcher_accounts (
+                       username, full_name, max_user_id, password_hash, created_at, updated_at,
+                       last_password_issued_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (login, name, max_id, password_hash, now, now, now),
+            )
+            _management_audit(
+                conn, event_type="dispatcher_created", actor_name=actor_name,
+                subject_type="dispatcher", subject_id=login,
+                payload={"dispatcher_id": cursor.lastrowid, "max_user_id": max_id}, occurred_at=now,
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise ValueError("Логин диспетчера или MAX ID уже используется") from None
+        except Exception:
+            conn.rollback()
+            raise
+    return get_rumex_dispatcher_account(login) or {}
+
+
+def get_rumex_dispatcher_account(username: Any, *, include_hash: bool = False) -> dict[str, Any] | None:
+    login = str(username or "").strip()
+    if not login:
+        return None
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM rumex_dispatcher_accounts WHERE username = ? COLLATE NOCASE", (login,)
+        ).fetchone()
+    if row is None:
+        return None
+    result = dict(row) if include_hash else _dispatcher_account_from_row(row)
+    result["active"] = bool(result["active"])
+    return result
+
+
+def touch_rumex_dispatcher_activity(username: Any) -> None:
+    login = str(username or "").strip()
+    if not login:
+        return
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE rumex_dispatcher_accounts SET last_activity_at = ? WHERE username = ? COLLATE NOCASE",
+            (_now(), login),
+        )
+
+
+def rumex_admin_access_by_max_user_id(max_user_id: Any) -> dict[str, Any] | None:
+    parsed = _source_max_user_id(max_user_id)
+    if parsed is None:
+        return None
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT username, full_name, max_user_id, role, active FROM rumex_admin_accounts WHERE max_user_id = ?",
+            (parsed,),
+        ).fetchone()
+    if row is None or not bool(row["active"]):
+        return None
+    result = dict(row)
+    result["active"] = bool(result["active"])
+    return result
+
+
+def update_rumex_dispatcher_account(
+    *, username: Any, full_name: Any, max_user_id: Any, active: bool, actor_name: str
+) -> dict[str, Any]:
+    login = _required_carrier_text(username, "логин", max_length=80)
+    name = _required_carrier_text(full_name, "ФИО", max_length=200)
+    if not isinstance(active, bool):
+        raise ValueError("Статус учётной записи должен быть логическим")
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """UPDATE rumex_dispatcher_accounts
+                   SET full_name = ?, max_user_id = ?, active = ?, updated_at = ?
+                   WHERE username = ? COLLATE NOCASE""",
+                (name, _source_max_user_id(max_user_id), int(active), now, login),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Диспетчер не найден")
+            if not active:
+                conn.execute(
+                    "UPDATE test_dispatcher_sessions SET revoked_at = ? WHERE username = ? COLLATE NOCASE AND revoked_at IS NULL",
+                    (now, login),
+                )
+            _management_audit(
+                conn, event_type="dispatcher_updated", actor_name=actor_name,
+                subject_type="dispatcher", subject_id=login,
+                payload={"max_user_id": _source_max_user_id(max_user_id), "active": active}, occurred_at=now,
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise ValueError("MAX ID уже используется другим диспетчером") from None
+        except Exception:
+            conn.rollback()
+            raise
+    return get_rumex_dispatcher_account(login) or {}
+
+
+def reset_rumex_dispatcher_password(*, username: Any, password_hash: str, actor_name: str) -> None:
+    login = _required_carrier_text(username, "логин", max_length=80)
+    if not password_hash:
+        raise ValueError("Не задан хэш пароля")
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                """UPDATE rumex_dispatcher_accounts
+                   SET password_hash = ?, updated_at = ?, last_password_issued_at = ?
+                   WHERE username = ? COLLATE NOCASE""",
+                (password_hash, now, now, login),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Диспетчер не найден")
+            conn.execute(
+                "UPDATE test_dispatcher_sessions SET revoked_at = ? WHERE username = ? COLLATE NOCASE AND revoked_at IS NULL",
+                (now, login),
+            )
+            _management_audit(
+                conn, event_type="dispatcher_password_reset", actor_name=actor_name,
+                subject_type="dispatcher", subject_id=login, occurred_at=now,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def revoke_rumex_dispatcher_sessions(*, username: Any, actor_name: str) -> int:
+    login = _required_carrier_text(username, "логин", max_length=80)
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute(
+                "UPDATE test_dispatcher_sessions SET revoked_at = ? WHERE username = ? COLLATE NOCASE AND revoked_at IS NULL",
+                (now, login),
+            )
+            _management_audit(
+                conn, event_type="dispatcher_sessions_revoked", actor_name=actor_name,
+                subject_type="dispatcher", subject_id=login,
+                payload={"session_count": cursor.rowcount}, occurred_at=now,
+            )
+            conn.commit()
+            return cursor.rowcount
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def rumex_dispatcher_security_summary(username: Any) -> dict[str, Any]:
+    login = _required_carrier_text(username, "логин", max_length=80)
+    init_rumex_registry_db()
+    with _connect() as conn:
+        attempts = [
+            dict(row) for row in conn.execute(
+                """SELECT username, success, failure_reason, remote_address, attempted_at
+                   FROM test_dispatcher_login_attempts WHERE username = ? COLLATE NOCASE
+                   ORDER BY attempted_at DESC, id DESC LIMIT 30""", (login,)
+            )
+        ]
+        for row in attempts:
+            row["success"] = bool(row["success"])
+        sessions = [dict(row) for row in conn.execute(
+            """SELECT created_at, expires_at, last_seen_at, revoked_at, remote_address
+               FROM test_dispatcher_sessions WHERE username = ? COLLATE NOCASE
+               ORDER BY created_at DESC LIMIT 30""", (login,)
+        )]
+    return {"login_attempts": attempts, "sessions": sessions}
+
+
+def set_rumex_vehicle_shipment_block(*, plate_tail: Any, blocked: bool, reason: Any, actor_name: str) -> None:
+    tail = _normalize_plate_tail(plate_tail)
+    actor = _required_carrier_text(actor_name, "администратора", max_length=200)
+    note = _optional_carrier_text(reason, "причину", max_length=500)
+    if blocked and not note:
+        raise ValueError("Укажите причину блокировки машины")
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if blocked:
+                conn.execute(
+                    """INSERT INTO rumex_vehicle_shipment_blocks (plate_tail, reason, blocked_by, blocked_at)
+                       VALUES (?, ?, ?, ?) ON CONFLICT(plate_tail) DO UPDATE SET
+                       reason = excluded.reason, blocked_by = excluded.blocked_by, blocked_at = excluded.blocked_at,
+                       unblocked_by = '', unblocked_at = NULL""",
+                    (tail, note, actor, now),
+                )
+            else:
+                conn.execute(
+                    "UPDATE rumex_vehicle_shipment_blocks SET unblocked_by = ?, unblocked_at = ? WHERE plate_tail = ?",
+                    (actor, now, tail),
+                )
+            _management_audit(
+                conn, event_type="vehicle_shipment_blocked" if blocked else "vehicle_shipment_unblocked",
+                actor_name=actor, subject_type="document_vehicle", subject_id=tail,
+                payload={"reason": note}, occurred_at=now,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def rumex_vehicle_shipment_block(plate_tail: Any) -> dict[str, Any] | None:
+    tail = _normalize_plate_tail(plate_tail)
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM rumex_vehicle_shipment_blocks WHERE plate_tail = ? AND unblocked_at IS NULL", (tail,)
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def list_rumex_management_audit_events(*, limit: int = 100) -> list[dict[str, Any]]:
+    parsed_limit = max(1, min(int(limit), 200))
+    init_rumex_registry_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM rumex_management_audit_events ORDER BY occurred_at DESC, id DESC LIMIT ?", (parsed_limit,)
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["payload"] = json.loads(item.pop("payload_json"))
+        result.append(item)
+    return result
+
+
+def create_rumex_admin_session(
+    *, token_hash: str, username: str, max_user_id: int, expires_at: float,
+    remote_address: str = "", user_agent: str = ""
+) -> None:
+    init_rumex_registry_db()
+    now = _now()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO rumex_admin_sessions (
+                   token_hash, username, max_user_id, created_at, expires_at, last_seen_at,
+                   remote_address, user_agent
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (token_hash, username, int(max_user_id), now, float(expires_at), now,
+             (remote_address or "")[:120], (user_agent or "")[:400]),
+        )
+
+
+def rumex_admin_session_identity(*, token_hash: str, renewal_seconds: float | None = None) -> dict[str, Any] | None:
+    if not token_hash:
+        return None
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT id, username, max_user_id FROM rumex_admin_sessions
+               WHERE token_hash = ? AND revoked_at IS NULL AND expires_at >= ?""", (token_hash, now)
+        ).fetchone()
+        if row is None:
+            return None
+        if renewal_seconds is None:
+            conn.execute("UPDATE rumex_admin_sessions SET last_seen_at = ? WHERE id = ?", (now, row["id"]))
+        else:
+            conn.execute(
+                "UPDATE rumex_admin_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+                (now, now + float(renewal_seconds), row["id"]),
+            )
+    return {"username": str(row["username"]), "max_user_id": int(row["max_user_id"])}
+
+
+def revoke_rumex_admin_session(*, token_hash: str) -> None:
+    if not token_hash:
+        return
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE rumex_admin_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL",
+            (_now(), token_hash),
         )

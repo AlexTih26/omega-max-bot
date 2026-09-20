@@ -8,10 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
-from hashlib import sha256
-from hmac import new as hmac_new
 from pathlib import Path
-from urllib.parse import quote
 
 try:
     from aiohttp import web
@@ -43,8 +40,6 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self._old_samples_dir = api.REGISTRY_SAMPLES_DIR
         self._old_users = os.environ.get("RUMEX_ACCOUNTANT_USERS")
         self._old_secret = os.environ.get("RUMEX_ACCOUNTANT_AUTH_SECRET")
-        self._old_max_token = os.environ.get("MAX_BOT_TOKEN")
-        self._old_test_dispatchers = os.environ.get("RUMEX_TEST_DISPATCHER_MAX_IDS")
         self._old_test_dispatcher_users = os.environ.get("RUMEX_TEST_DISPATCHER_USERS")
         self._old_test_dispatcher_secret = os.environ.get("RUMEX_TEST_DISPATCHER_AUTH_SECRET")
         store.DB_PATH = Path(self._tmpdir.name) / "rumex_registry.db"
@@ -56,12 +51,15 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             "Бухгалтер 1:12345,Бухгалтер 2:23456,Бухгалтер 3:34567"
         )
         os.environ["RUMEX_ACCOUNTANT_AUTH_SECRET"] = "test-secret"
-        os.environ["MAX_BOT_TOKEN"] = "test-max-token"
-        os.environ["RUMEX_TEST_DISPATCHER_MAX_IDS"] = "9001"
         os.environ["RUMEX_TEST_DISPATCHER_USERS"] = "Тестовый диспетчер:password-123"
         os.environ["RUMEX_TEST_DISPATCHER_AUTH_SECRET"] = "test-dispatcher-secret"
 
-        app = web.Application(middlewares=[auth.rumex_registry_auth_middleware])
+        app = web.Application(
+            middlewares=[
+                auth.rumex_registry_auth_middleware,
+                test_dispatcher_auth.rumex_test_dispatcher_auth_middleware,
+            ]
+        )
         auth.register_rumex_registry_auth_routes(app)
         test_dispatcher_auth.register_rumex_test_dispatcher_auth_routes(app)
         api.register_rumex_registry_routes(app)
@@ -84,14 +82,6 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             os.environ.pop("RUMEX_ACCOUNTANT_AUTH_SECRET", None)
         else:
             os.environ["RUMEX_ACCOUNTANT_AUTH_SECRET"] = self._old_secret
-        if self._old_max_token is None:
-            os.environ.pop("MAX_BOT_TOKEN", None)
-        else:
-            os.environ["MAX_BOT_TOKEN"] = self._old_max_token
-        if self._old_test_dispatchers is None:
-            os.environ.pop("RUMEX_TEST_DISPATCHER_MAX_IDS", None)
-        else:
-            os.environ["RUMEX_TEST_DISPATCHER_MAX_IDS"] = self._old_test_dispatchers
         if self._old_test_dispatcher_users is None:
             os.environ.pop("RUMEX_TEST_DISPATCHER_USERS", None)
         else:
@@ -117,15 +107,6 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertEqual(response.status, 200)
         self.assertEqual((await response.json())["user"], "Тестовый диспетчер")
         return response.cookies[test_dispatcher_auth.COOKIE_NAME].value
-
-    def _test_dispatcher_headers(self, user_id: int = 9001) -> dict[str, str]:
-        user = '{"id":' + str(user_id) + ',"first_name":"Тестовый","last_name":"Диспетчер"}'
-        auth_date = str(int(time.time()))
-        check_string = "auth_date=" + auth_date + "\nuser=" + user
-        secret = hmac_new(b"WebAppData", b"test-max-token", sha256).digest()
-        signature = hmac_new(secret, check_string.encode("utf-8"), sha256).hexdigest()
-        init_data = "auth_date=" + auth_date + "&user=" + quote(user, safe="") + "&hash=" + signature
-        return {"X-Max-Init-Data": init_data}
 
     def _prepare_test_vehicle(self) -> None:
         source_path = Path(self._tmpdir.name) / "drivers_registry.json"
@@ -168,6 +149,88 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         body = await response.json()
         self.assertEqual(body["shipments"][0]["registry_number"], "РМ-2026-000001")
         self.assertEqual(len(body["block_types"]), 7)
+
+    async def test_active_accountant_session_renews_database_and_cookie(self):
+        token = "accountant-renewal-token"
+        started_at = time.time()
+        store.create_accountant_session(
+            token_hash=auth._token_hash(token),
+            username="Бухгалтер 1",
+            expires_at=started_at + 60,
+            created_at=started_at,
+        )
+
+        response = await self.client.get(
+            "/api/rumex-registry/test/registry",
+            headers={"Cookie": f"{auth.COOKIE_NAME}={token}"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.cookies[auth.COOKIE_NAME].value, token)
+        self.assertEqual(
+            response.cookies[auth.COOKIE_NAME]["max-age"], str(auth.SESSION_DAYS * 86400)
+        )
+        with sqlite3.connect(store.DB_PATH) as conn:
+            expires_at, last_seen_at = conn.execute(
+                "SELECT expires_at, last_seen_at FROM accountant_sessions WHERE token_hash = ?",
+                (auth._token_hash(token),),
+            ).fetchone()
+        self.assertGreater(expires_at, started_at + auth.SESSION_DAYS * 86400 - 5)
+        self.assertGreaterEqual(last_seen_at, started_at)
+
+    async def test_active_dispatcher_session_renews_database_and_cookie(self):
+        token = "dispatcher-renewal-token"
+        started_at = time.time()
+        store.create_test_dispatcher_session(
+            token_hash=test_dispatcher_auth._token_hash(token),
+            username="Тестовый диспетчер",
+            expires_at=started_at + 60,
+            created_at=started_at,
+        )
+
+        response = await self.client.get(
+            "/api/rumex-registry/test/registry",
+            headers={"Cookie": f"{test_dispatcher_auth.COOKIE_NAME}={token}"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.cookies[test_dispatcher_auth.COOKIE_NAME].value, token)
+        self.assertEqual(
+            response.cookies[test_dispatcher_auth.COOKIE_NAME]["max-age"],
+            str(test_dispatcher_auth.SESSION_HOURS * 3600),
+        )
+        with sqlite3.connect(store.DB_PATH) as conn:
+            expires_at, last_seen_at = conn.execute(
+                "SELECT expires_at, last_seen_at FROM test_dispatcher_sessions WHERE token_hash = ?",
+                (test_dispatcher_auth._token_hash(token),),
+            ).fetchone()
+        self.assertGreater(expires_at, started_at + test_dispatcher_auth.SESSION_HOURS * 3600 - 5)
+        self.assertGreaterEqual(last_seen_at, started_at)
+
+    async def test_logout_revokes_sessions_without_cookie_renewal(self):
+        accountant_token = await self._login()
+        accountant_headers = {"Cookie": f"{auth.COOKIE_NAME}={accountant_token}"}
+        accountant_logout = await self.client.post(
+            "/api/rumex-registry/auth/logout", headers=accountant_headers
+        )
+        self.assertEqual(accountant_logout.status, 200)
+        self.assertEqual(accountant_logout.cookies[auth.COOKIE_NAME]["max-age"], "0")
+        accountant_registry = await self.client.get(
+            "/api/rumex-registry/registry", headers=accountant_headers
+        )
+        self.assertEqual(accountant_registry.status, 401)
+
+        dispatcher_token = await self._test_password_login()
+        dispatcher_headers = {"Cookie": f"{test_dispatcher_auth.COOKIE_NAME}={dispatcher_token}"}
+        dispatcher_logout = await self.client.post(
+            "/api/rumex-registry/test/auth/logout", headers=dispatcher_headers
+        )
+        self.assertEqual(dispatcher_logout.status, 200)
+        self.assertEqual(
+            dispatcher_logout.cookies[test_dispatcher_auth.COOKIE_NAME]["max-age"], "0"
+        )
+        dispatcher_registry = await self.client.get(
+            "/api/rumex-registry/test/registry", headers=dispatcher_headers
+        )
+        self.assertEqual(dispatcher_registry.status, 401)
 
     async def test_er_workflow_requires_order_and_opens_ttn(self):
         token = await self._login()
@@ -286,16 +349,12 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertEqual(xls.content_type, "application/vnd.ms-excel")
         self.assertIn("attachment", xls.headers.get("Content-Disposition", ""))
 
-    async def test_test_dispatcher_flow_is_max_protected_and_accountant_opens_documents(self):
+    async def test_test_dispatcher_flow_requires_password_and_accountant_opens_documents(self):
         self._prepare_test_vehicle()
         denied = await self.client.get("/api/rumex-registry/test/registry")
         self.assertEqual(denied.status, 401)
-        forbidden = await self.client.get(
-            "/api/rumex-registry/test/registry", headers=self._test_dispatcher_headers(9999)
-        )
-        self.assertEqual(forbidden.status, 403)
-
-        headers = self._test_dispatcher_headers()
+        dispatcher_token = await self._test_password_login()
+        headers = {"Cookie": f"{test_dispatcher_auth.COOKIE_NAME}={dispatcher_token}"}
         created = await self.client.post(
             "/api/rumex-registry/test/shipments",
             headers={**headers, "Content-Type": "application/json"},
@@ -313,6 +372,7 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertEqual(created.status, 201)
         shipment = (await created.json())["shipment"]
         self.assertEqual(shipment["status"], "awaiting_accountant_review")
+        self.assertTrue(shipment["is_new_for_accountant"])
         shipment_url = "/api/rumex-registry/test/shipments/" + str(shipment["id"])
 
         before_open = await self.client.get(shipment_url + "/documents/tn?copy=1", headers=headers)
@@ -326,6 +386,7 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertEqual(reviewed.status, 200)
         reviewed_shipment = (await reviewed.json())["shipment"]
         self.assertEqual(reviewed_shipment["status"], "awaiting_er_sent")
+        self.assertFalse(reviewed_shipment["is_new_for_accountant"])
         self.assertEqual(reviewed_shipment["ttn_number"], "ТТН №РМ-2026-000001")
 
         sent = await self.client.post(
@@ -334,7 +395,16 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             json={"external_reference": "Контур-123"},
         )
         self.assertEqual(sent.status, 200)
-        self.assertEqual((await sent.json())["shipment"]["status"], "documents_ready")
+        sent_shipment = (await sent.json())["shipment"]
+        self.assertEqual(sent_shipment["status"], "documents_ready")
+        self.assertFalse(sent_shipment["is_new_for_accountant"])
+
+        accountant_document = await self.client.get(
+            shipment_url + "/documents/tn?copy=1", headers=accountant_headers
+        )
+        self.assertEqual(accountant_document.status, 200)
+        accountant_shipment = await self.client.get(shipment_url, headers=accountant_headers)
+        self.assertIsNone((await accountant_shipment.json())["shipment"]["ttn_printed_at"])
 
         missing_copy = await self.client.get(shipment_url + "/documents/tn", headers=headers)
         self.assertEqual(missing_copy.status, 400)
@@ -350,12 +420,17 @@ class RumexRegistryApiTests(AioHTTPTestCase):
             self.assertIn("attachment", document.headers.get("Content-Disposition", ""))
             self.assertIn("%E2%84%96", document.headers.get("Content-Disposition", ""))
 
+        dispatcher_shipment = await self.client.get(shipment_url, headers=headers)
+        self.assertEqual(dispatcher_shipment.status, 200)
+        self.assertTrue((await dispatcher_shipment.json())["shipment"]["ttn_printed_at"])
+
     async def test_test_vehicle_requires_driver_license_before_creating_shipment(self):
         self._prepare_test_vehicle()
         with sqlite3.connect(store.DB_PATH) as conn:
             conn.execute("DROP TRIGGER document_vehicle_bindings_no_update")
             conn.execute("UPDATE document_vehicle_bindings SET driver_license_number = ''")
-        headers = self._test_dispatcher_headers()
+        dispatcher_token = await self._test_password_login()
+        headers = {"Cookie": f"{test_dispatcher_auth.COOKIE_NAME}={dispatcher_token}"}
 
         vehicle = await self.client.get("/api/rumex-registry/test/vehicles/553", headers=headers)
         self.assertEqual(vehicle.status, 200)

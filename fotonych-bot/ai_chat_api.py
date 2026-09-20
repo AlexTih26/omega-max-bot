@@ -7,6 +7,7 @@ import os
 
 from aiohttp import web
 
+from access_roles import has_private_menu_access
 from ai_chat_service import ChatError, send_chat_message
 from ai_chat_store import (
     clear_conversation_messages,
@@ -43,18 +44,27 @@ def _parse_user(request: web.Request) -> tuple[dict | None, int | None]:
     return user, user_id_from_user(user)
 
 
-async def handle_ai_status(request: web.Request) -> web.Response:
+def _require_service_user(request: web.Request) -> tuple[dict | None, int | None, web.Response | None]:
     user, uid = _parse_user(request)
     if uid is None or user is None:
-        return _json({"error": "open in MAX mini-app"}, 401)
+        return user, uid, _json({"error": "open in MAX mini-app"}, 401)
+    if not has_private_menu_access(uid):
+        return user, uid, _json({"error": "forbidden"}, 403)
+    return user, uid, None
+
+
+async def handle_ai_status(request: web.Request) -> web.Response:
+    user, uid, denied = _require_service_user(request)
+    if denied is not None:
+        return denied
     log_event(max_user_id=uid, event_type="app_open")
     return _json(status_payload(max_user_id=uid, display_name=display_name_from_user(user)))
 
 
 async def handle_ai_messages(request: web.Request) -> web.Response:
-    user, uid = _parse_user(request)
-    if uid is None:
-        return _json({"error": "open in MAX mini-app"}, 401)
+    _user, uid, denied = _require_service_user(request)
+    if denied is not None:
+        return denied
     try:
         cid = int(request.query.get("conversation_id") or "0")
     except ValueError:
@@ -67,16 +77,16 @@ async def handle_ai_messages(request: web.Request) -> web.Response:
 
 
 async def handle_ai_conversations(request: web.Request) -> web.Response:
-    _, uid = _parse_user(request)
-    if uid is None:
-        return _json({"error": "open in MAX mini-app"}, 401)
+    _user, uid, denied = _require_service_user(request)
+    if denied is not None:
+        return denied
     return _json({"conversations": list_conversations(max_user_id=uid)})
 
 
 async def handle_ai_conversation_create(request: web.Request) -> web.Response:
-    user, uid = _parse_user(request)
-    if uid is None:
-        return _json({"error": "open in MAX mini-app"}, 401)
+    user, uid, denied = _require_service_user(request)
+    if denied is not None:
+        return denied
     title = "Новый диалог"
     try:
         body = await request.json()
@@ -91,9 +101,9 @@ async def handle_ai_conversation_create(request: web.Request) -> web.Response:
 
 
 async def handle_ai_chat(request: web.Request) -> web.Response:
-    user, uid = _parse_user(request)
-    if uid is None:
-        return _json({"error": "open in MAX mini-app"}, 401)
+    user, uid, denied = _require_service_user(request)
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -125,9 +135,9 @@ async def handle_ai_chat(request: web.Request) -> web.Response:
 
 
 async def handle_ai_clear(request: web.Request) -> web.Response:
-    _, uid = _parse_user(request)
-    if uid is None:
-        return _json({"error": "open in MAX mini-app"}, 401)
+    _user, uid, denied = _require_service_user(request)
+    if denied is not None:
+        return denied
     try:
         cid = int(request.match_info.get("conversation_id") or "0")
     except ValueError:

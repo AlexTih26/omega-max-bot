@@ -44,8 +44,15 @@
           <div>
             <p class="rr-kicker">Текущие задачи</p>
             <h2>На проверке</h2>
-            <p class="rr-subtitle">Проверьте погрузку, верните её на исправление или отметьте отправку расписки в ЭДО Контур.</p>
+            <p class="rr-subtitle">Возьмите задачу в работу, затем проверьте её или верните на исправление. Если за 10 минут статус не изменён, ТТН открывается автоматически.</p>
           </div>
+          <label class="rr-field">Моя доступность
+            <select id="accountantAvailability">
+              <option value="schedule">По расписанию</option>
+              <option value="around_the_clock">Круглосуточно</option>
+              <option value="unavailable">Недоступен</option>
+            </select>
+          </label>
         </div>
         <p class="rr-empty" id="workEmptyState" hidden>Сейчас нет погрузок, требующих действий бухгалтера.</p>
         <section class="rr-test-list" id="workRegistryList" aria-label="Погрузки, требующие действий"></section>

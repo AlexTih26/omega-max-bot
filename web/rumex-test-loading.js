@@ -157,7 +157,8 @@
       test_shipment_loaded: "Диспетчер зафиксировал фактическую погрузку.",
       test_shipment_returned_for_correction: "Бухгалтер вернул на исправление: " + (payload.reason || "—"),
       test_shipment_resubmitted: "Диспетчер отправил исправленную ревизию №" + (payload.revision_number || ""),
-      test_documents_opened_automatically: "Система открыла ТТН: бухгалтер вне рабочей смены по Москве.",
+      test_shipment_taken_in_work: "Бухгалтер взял погрузку в работу.",
+      test_documents_opened_automatically: "Система открыла ТТН: за 10 минут статус не был изменён.",
       test_shipment_reviewed: payload.er_required ? "Бухгалтер проверил погрузку: нужна ЭР." : "Бухгалтер проверил погрузку: ЭР не требуется.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
       test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
@@ -384,6 +385,12 @@
         list.appendChild(createElement("dd", "", pair[1]));
       });
       details.appendChild(list);
+      if (shipment.status === "awaiting_accountant_review") {
+        var waitText = shipment.task_taken_by
+          ? "В работе у: " + shipment.task_taken_by
+          : "Ожидается решение бухгалтера до " + formatTime(shipment.accountant_decision_due_at);
+        details.appendChild(createElement("p", "", waitText));
+      }
       var items = createElement("p", "", "Блоки: " + (shipment.items || []).map(function (item) {
         return item.block_type_code + " / " + item.block_number + " (" + item.weight_kg + " кг)";
       }).join(", "));

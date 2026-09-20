@@ -40,6 +40,7 @@ from drivers_chat import (
 from taksimo_backup import backup_taksimo_db, daily_backup_loop
 from rumex_registry_backup import backup_rumex_registry_db, daily_rumex_registry_backup_loop
 from rumex_registry_store import init_rumex_registry_db
+from rumex_registry_notifications import rumex_registry_deadline_loop, set_bot as set_rumex_registry_bot
 from sklad_master_access_chat import set_bot as set_sklad_access_bot
 from sklad_master_access_chat import handle_sklad_access_callback
 from sklad_master_backup import backup_sklad_master_db, daily_sklad_backup_loop
@@ -571,6 +572,7 @@ async def main() -> None:
     set_materials_receipt_bot(bot)
     set_materials_reserve_bot(bot)
     set_sklad_access_bot(bot)
+    set_rumex_registry_bot(bot)
     backup_taksimo_db(reason="startup")
     backup_sklad_master_db(reason="startup")
     init_rumex_registry_db()
@@ -588,6 +590,7 @@ async def main() -> None:
     backup_task = asyncio.create_task(daily_backup_loop())
     sklad_backup_task = asyncio.create_task(daily_sklad_backup_loop())
     rumex_registry_backup_task = asyncio.create_task(daily_rumex_registry_backup_loop())
+    rumex_registry_deadline_task = asyncio.create_task(rumex_registry_deadline_loop())
     sklad_eta_task = asyncio.create_task(sklad_eta_reminder_loop())
     materials_report_task = asyncio.create_task(materials_report_loop())
     materials_watch_task = asyncio.create_task(materials_watch_loop())
@@ -601,6 +604,7 @@ async def main() -> None:
         backup_task.cancel()
         sklad_backup_task.cancel()
         rumex_registry_backup_task.cancel()
+        rumex_registry_deadline_task.cancel()
         sklad_eta_task.cancel()
         materials_report_task.cancel()
         materials_watch_task.cancel()

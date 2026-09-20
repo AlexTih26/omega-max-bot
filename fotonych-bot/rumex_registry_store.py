@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "rumex_registry.db"
 FLEET_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "data" / "drivers_registry.json"
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 PRODUCT_NAME = "Блок 9,7/8,8"
 BLOCK_CODES = ("A", "B", "C", "D", "E", "F", "K")
@@ -85,6 +85,10 @@ def _timezone() -> ZoneInfo:
         return ZoneInfo("Asia/Irkutsk")
 
 
+TEST_ACCOUNTANT_WAIT_SECONDS = 10 * 60
+ACCOUNTANT_AVAILABILITY = ("schedule", "around_the_clock", "unavailable")
+
+
 def _current_registry_year() -> int:
     return datetime.now(_timezone()).year
 
@@ -93,6 +97,52 @@ def _accountant_is_on_duty(timestamp: float) -> bool:
     """Рабочая смена бухгалтерии: с 08:00 до 20:00 по московскому времени."""
     moscow_time = datetime.fromtimestamp(timestamp, ZoneInfo("Europe/Moscow"))
     return 8 <= moscow_time.hour < 20
+
+
+def _accountant_schedule_is_active(accountant_name: str, timestamp: float) -> bool:
+    if accountant_name == "Бухгалтер 1":
+        local = datetime.fromtimestamp(timestamp, ZoneInfo("Europe/Moscow"))
+        return 8 <= local.hour < 20
+    if accountant_name == "Бухгалтер 2":
+        local = datetime.fromtimestamp(timestamp, _timezone())
+        return 9 <= local.hour < 18
+    return False
+
+
+def get_accountant_availability(accountant_name: Any, *, timestamp: float | None = None) -> dict[str, Any]:
+    """Вернуть режим и вычисленную доступность конкретного бухгалтера."""
+    name = _required_carrier_text(accountant_name, "имя бухгалтера", max_length=200)
+    now = float(timestamp) if timestamp is not None else _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT availability, updated_at FROM rumex_accountant_availability WHERE accountant_name = ?", (name,)
+        ).fetchone()
+    mode = str(row["availability"]) if row else "schedule"
+    active = mode == "around_the_clock" or (mode == "schedule" and _accountant_schedule_is_active(name, now))
+    return {
+        "accountant_name": name,
+        "availability": mode,
+        "available_now": active,
+        "updated_at": float(row["updated_at"]) if row else None,
+    }
+
+
+def set_accountant_availability(accountant_name: Any, availability: Any, *, occurred_at: float | None = None) -> dict[str, Any]:
+    name = _required_carrier_text(accountant_name, "имя бухгалтера", max_length=200)
+    mode = str(availability or "").strip()
+    if mode not in ACCOUNTANT_AVAILABILITY:
+        raise ValueError("Укажите режим: по расписанию, круглосуточно или недоступен")
+    now = float(occurred_at) if occurred_at is not None else _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO rumex_accountant_availability(accountant_name, availability, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(accountant_name) DO UPDATE SET availability = excluded.availability, updated_at = excluded.updated_at""",
+            (name, mode, now),
+        )
+    return get_accountant_availability(name, timestamp=now)
 
 
 def _check_year(year: int) -> int:
@@ -379,6 +429,9 @@ def init_rumex_registry_db() -> None:
                 dispatcher_max_user_id INTEGER NOT NULL,
                 dispatcher_name TEXT NOT NULL,
                 loaded_at REAL NOT NULL,
+                accountant_decision_due_at REAL,
+                task_taken_by TEXT NOT NULL DEFAULT '',
+                task_taken_at REAL,
                 accountant_name TEXT NOT NULL DEFAULT '',
                 accountant_reviewed_at REAL,
                 er_required INTEGER NOT NULL DEFAULT 1 CHECK (er_required IN (0, 1)),
@@ -404,6 +457,13 @@ def init_rumex_registry_db() -> None:
                 ON test_shipments(status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_rumex_test_shipments_tail
                 ON test_shipments(document_vehicle_binding_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS rumex_accountant_availability (
+                accountant_name TEXT PRIMARY KEY,
+                availability TEXT NOT NULL DEFAULT 'schedule'
+                    CHECK (availability IN ('schedule', 'around_the_clock', 'unavailable')),
+                updated_at REAL NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS test_shipment_revisions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -793,6 +853,9 @@ def init_rumex_registry_db() -> None:
         _add_column_if_missing(conn, "test_shipments", "ttn_sequence INTEGER")
         _add_column_if_missing(conn, "test_shipments", "ttn_assigned_at REAL")
         _add_column_if_missing(conn, "test_shipments", "ttn_printed_at REAL")
+        _add_column_if_missing(conn, "test_shipments", "accountant_decision_due_at REAL")
+        _add_column_if_missing(conn, "test_shipments", "task_taken_by TEXT NOT NULL DEFAULT ''")
+        _add_column_if_missing(conn, "test_shipments", "task_taken_at REAL")
         _add_column_if_missing(
             conn,
             "test_shipments",
@@ -1968,19 +2031,18 @@ def create_test_shipment(
             sequence, registry_number = _reserve_number_in_transaction(
                 conn, registry_year=year, now=now
             )
-            opened_automatically = not _accountant_is_on_duty(now)
+            decision_due_at = now + TEST_ACCOUNTANT_WAIT_SECONDS
             cursor = conn.execute(
                 """INSERT INTO test_shipments (
                        registry_number, registry_year, registry_sequence, status, revision_number,
                        document_vehicle_binding_id, document_snapshot_json,
                        dispatcher_max_user_id, dispatcher_identity_kind, dispatcher_identity_id,
-                       dispatcher_name, loaded_at, created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       dispatcher_name, loaded_at, accountant_decision_due_at, created_at, updated_at
+                   ) VALUES (?, ?, ?, 'awaiting_accountant_review', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     registry_number,
                     year,
                     sequence,
-                    "documents_ready" if opened_automatically else "awaiting_accountant_review",
                     int(binding["id"]),
                     _json(document_snapshot),
                     dispatcher_id,
@@ -1988,6 +2050,7 @@ def create_test_shipment(
                     dispatcher_identity,
                     dispatcher,
                     loaded_timestamp,
+                    decision_due_at,
                     now,
                     now,
                 ),
@@ -2030,36 +2093,6 @@ def create_test_shipment(
                 },
                 occurred_at=now,
             )
-            if opened_automatically:
-                ttn_year = _test_ttn_year_for_loaded_at(loaded_timestamp)
-                ttn_sequence, ttn_number = _reserve_test_ttn_number_in_transaction(
-                    conn, ttn_year=ttn_year, now=now
-                )
-                conn.execute(
-                    """UPDATE test_shipments SET ttn_number = ?, ttn_year = ?, ttn_sequence = ?,
-                           ttn_assigned_at = ?, documents_ready_at = ?, updated_at = ? WHERE id = ?""",
-                    (ttn_number, ttn_year, ttn_sequence, now, now, now, shipment_id),
-                )
-                conn.executemany(
-                    """INSERT INTO test_shipment_documents (
-                           test_shipment_id, document_kind, registry_number, display_suffix,
-                           status, created_at, updated_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        (shipment_id, "ER", registry_number, "ЭР", "draft", now, now),
-                        (shipment_id, "TN", ttn_number, "ТТН", "ready", now, now),
-                    ),
-                )
-                _append_test_shipment_event(
-                    conn,
-                    test_shipment_id=shipment_id,
-                    event_type="test_documents_opened_automatically",
-                    actor_kind="system",
-                    actor_id="",
-                    actor_name="Система",
-                    payload={"ttn_number": ttn_number, "reason": "outside_accountant_hours"},
-                    occurred_at=now,
-                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -2075,6 +2108,104 @@ def _test_shipment_for_update(conn: sqlite3.Connection, shipment_id: int) -> sql
     if shipment is None:
         raise ValueError("Тестовая погрузка не найдена")
     return shipment
+
+
+def claim_test_shipment(
+    test_shipment_id: Any, *, accountant_name: Any, occurred_at: float | None = None
+) -> dict[str, Any]:
+    """Атомарно закрепить ожидающую проверку погрузку за первым бухгалтером."""
+    shipment_id = _test_shipment_id(test_shipment_id)
+    actor = _required_carrier_text(accountant_name, "имя бухгалтера", max_length=200)
+    now = float(occurred_at) if occurred_at is not None else _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            shipment = _test_shipment_for_update(conn, shipment_id)
+            if str(shipment["status"]) != "awaiting_accountant_review":
+                raise ValueError("Взять в работу можно только погрузку, ожидающую проверки")
+            taken_by = str(shipment["task_taken_by"] or "")
+            if taken_by and taken_by != actor:
+                raise ValueError("Эту погрузку уже взял в работу другой бухгалтер")
+            if not taken_by:
+                conn.execute(
+                    """UPDATE test_shipments SET task_taken_by = ?, task_taken_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (actor, now, now, shipment_id),
+                )
+                _append_test_shipment_event(
+                    conn,
+                    test_shipment_id=shipment_id,
+                    event_type="test_shipment_taken_in_work",
+                    actor_kind="accountant",
+                    actor_id=actor,
+                    actor_name=actor,
+                    payload={},
+                    occurred_at=now,
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    result = get_test_shipment(shipment_id)
+    if result is None:
+        raise RuntimeError("Не удалось прочитать тестовую погрузку")
+    return result
+
+
+def release_due_test_shipments(*, occurred_at: float | None = None) -> list[dict[str, Any]]:
+    """Открыть документы только у погрузок, не обработанных за 10 минут."""
+    now = float(occurred_at) if occurred_at is not None else _now()
+    init_rumex_registry_db()
+    released_ids: list[int] = []
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            shipments = conn.execute(
+                """SELECT * FROM test_shipments
+                   WHERE status = 'awaiting_accountant_review'
+                     AND accountant_decision_due_at IS NOT NULL
+                     AND accountant_decision_due_at <= ?""",
+                (now,),
+            ).fetchall()
+            for shipment in shipments:
+                shipment_id = int(shipment["id"])
+                ttn_year = _test_ttn_year_for_loaded_at(float(shipment["loaded_at"]))
+                ttn_sequence, ttn_number = _reserve_test_ttn_number_in_transaction(
+                    conn, ttn_year=ttn_year, now=now
+                )
+                conn.execute(
+                    """UPDATE test_shipments SET status = 'documents_ready', ttn_number = ?, ttn_year = ?,
+                           ttn_sequence = ?, ttn_assigned_at = ?, documents_ready_at = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (ttn_number, ttn_year, ttn_sequence, now, now, now, shipment_id),
+                )
+                conn.executemany(
+                    """INSERT INTO test_shipment_documents (
+                           test_shipment_id, document_kind, registry_number, display_suffix,
+                           status, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        (shipment_id, "ER", str(shipment["registry_number"]), "ЭР", "draft", now, now),
+                        (shipment_id, "TN", ttn_number, "ТТН", "ready", now, now),
+                    ),
+                )
+                _append_test_shipment_event(
+                    conn,
+                    test_shipment_id=shipment_id,
+                    event_type="test_documents_opened_automatically",
+                    actor_kind="system",
+                    actor_id="",
+                    actor_name="Система",
+                    payload={"ttn_number": ttn_number, "reason": "accountant_wait_expired"},
+                    occurred_at=now,
+                )
+                released_ids.append(shipment_id)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return [shipment for shipment_id in released_ids if (shipment := get_test_shipment(shipment_id)) is not None]
 
 
 def return_test_shipment_for_correction(
@@ -2098,6 +2229,8 @@ def return_test_shipment_for_correction(
                 "awaiting_accountant_review", "documents_handed_to_driver"
             } or shipment["accountant_reviewed_at"] is not None:
                 raise ValueError("Вернуть на исправление можно только погрузку, ожидающую проверки")
+            if str(shipment["task_taken_by"] or "") not in {"", actor}:
+                raise ValueError("Эту погрузку уже взял в работу другой бухгалтер")
             revision_number = int(shipment["revision_number"])
             conn.execute(
                 """UPDATE test_shipments
@@ -2164,6 +2297,7 @@ def resubmit_test_shipment(
     )
     loaded_timestamp = _test_shipment_timestamp(loaded_at, "Фактическое время погрузки")
     now = float(occurred_at) if occurred_at is not None else _now()
+    decision_due_at = now + TEST_ACCOUNTANT_WAIT_SECONDS
     init_rumex_registry_db()
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -2181,7 +2315,8 @@ def resubmit_test_shipment(
                        status = 'awaiting_accountant_review', revision_number = ?,
                        dispatcher_max_user_id = ?, dispatcher_identity_kind = ?,
                        dispatcher_identity_id = ?, dispatcher_name = ?, loaded_at = ?,
-                       correction_reason = '', updated_at = ?
+                       correction_reason = '', accountant_decision_due_at = ?, task_taken_by = '',
+                       task_taken_at = NULL, updated_at = ?
                     WHERE id = ?""",
                 (
                     revision_number,
@@ -2190,6 +2325,7 @@ def resubmit_test_shipment(
                     dispatcher_identity,
                     dispatcher,
                     loaded_timestamp,
+                    decision_due_at,
                     now,
                     shipment_id,
                 ),
@@ -2258,6 +2394,8 @@ def review_test_shipment(
             status = str(shipment["status"])
             if status not in {"awaiting_accountant_review", "documents_handed_to_driver"}:
                 raise ValueError("Проверить можно только погрузку, ожидающую бухгалтера")
+            if str(shipment["task_taken_by"] or "") not in {"", actor}:
+                raise ValueError("Эту погрузку уже взял в работу другой бухгалтер")
             snapshot = json.loads(str(shipment["document_snapshot_json"]))
             license_number = str((snapshot.get("driver") or {}).get("license_number") or "").strip()
             if not license_number:

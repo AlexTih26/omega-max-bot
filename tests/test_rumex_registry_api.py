@@ -376,11 +376,19 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         self.assertTrue(shipment["is_new_for_accountant"])
         shipment_url = "/api/rumex-registry/test/shipments/" + str(shipment["id"])
 
+        accountant_token = await self._login("23456")
+        accountant_headers = {"Cookie": f"{auth.COOKIE_NAME}={accountant_token}"}
+        claimed = await self.client.post(shipment_url + "/claim", headers=accountant_headers, json={})
+        self.assertEqual(claimed.status, 200)
+        self.assertEqual((await claimed.json())["shipment"]["task_taken_by"], "Бухгалтер 2")
+        first_token = await self._login("12345")
+        first_headers = {"Cookie": f"{auth.COOKIE_NAME}={first_token}"}
+        unavailable = await self.client.post(shipment_url + "/claim", headers=first_headers, json={})
+        self.assertEqual(unavailable.status, 409)
+
         before_open = await self.client.get(shipment_url + "/documents/tn?copy=1", headers=headers)
         self.assertEqual(before_open.status, 409)
 
-        accountant_token = await self._login("23456")
-        accountant_headers = {"Cookie": f"{auth.COOKIE_NAME}={accountant_token}"}
         reviewed = await self.client.post(
             shipment_url + "/review", headers=accountant_headers, json={"er_required": True}
         )

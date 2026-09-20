@@ -68,6 +68,7 @@
   var cancelFleetBindingButtonBottom = document.getElementById("cancelFleetBindingButtonBottom");
   var fleetSection = document.getElementById("fleetSection");
   var toast = document.getElementById("toast");
+  var accountantAvailability = document.getElementById("accountantAvailability");
 
   function request(path, options) {
     return fetch(API + path, Object.assign({ credentials: "same-origin" }, options || {}))
@@ -415,12 +416,34 @@
       });
   }
 
+  function taskInfo(shipment) {
+    if (shipment.status !== "awaiting_accountant_review") return "";
+    if (shipment.task_taken_by) return "В работе у: " + shipment.task_taken_by;
+    if (shipment.accountant_decision_due_at) return "Ожидание решения до " + formatTime(shipment.accountant_decision_due_at);
+    return "Ожидает решения бухгалтера";
+  }
+
   function testActions(shipment, parent, draftValues, idSuffix) {
     if (shipment.status === "awaiting_accountant_review" || (
       shipment.status === "documents_handed_to_driver" && !shipment.accountant_reviewed_at
     )) {
       var reviewSection = element("section", "rr-test-action");
       reviewSection.appendChild(element("h3", "rr-section-title", "Проверка бухгалтера"));
+      var task = taskInfo(shipment);
+      if (task) reviewSection.appendChild(element("p", "rr-test-detail", task));
+      if (shipment.status === "awaiting_accountant_review" && !shipment.task_taken_by) {
+        var claimButton = element("button", "rr-primary-button", "Взять в работу");
+        claimButton.type = "button";
+        claimButton.addEventListener("click", function () {
+          applyTestAction(shipment.id, "claim", {}, claimButton);
+        });
+        reviewSection.appendChild(claimButton);
+      }
+      if (shipment.status === "awaiting_accountant_review" && shipment.task_taken_by && shipment.task_taken_by !== currentAccountant.user) {
+        reviewSection.appendChild(element("p", "rr-test-detail", "Другой бухгалтер уже работает с этой погрузкой."));
+        parent.appendChild(reviewSection);
+        return;
+      }
       reviewSection.appendChild(element("p", "rr-test-detail", shipment.status === "documents_handed_to_driver"
         ? "Машина уже выпущена. Проверьте документы и затем отметьте отправку расписки в ЭДО Контур."
         : "После проверки потребуется ручная отметка об отправке расписки в ЭДО Контур."));
@@ -797,9 +820,17 @@
     return testRegistryLoadPromise;
   }
 
+  function loadAccountantAvailability() {
+    return request("/accountant/availability")
+      .then(function (body) {
+        if (body.availability) accountantAvailability.value = body.availability.availability || "schedule";
+      })
+      .catch(function (error) { showConfigError(error.message || "Не удалось загрузить доступность"); });
+  }
+
   function refreshData() {
     if (busy || document.hidden) return Promise.resolve();
-    return Promise.all([loadRegistry(), loadTestRegistry(), loadDirectory()]);
+    return Promise.all([loadRegistry(), loadTestRegistry(), loadDirectory(), loadAccountantAvailability()]);
   }
 
   function scheduleAutoRefresh() {
@@ -1060,6 +1091,25 @@
   cancelFleetBindingButton.addEventListener("click", hideFleetBindingForm);
   cancelFleetBindingButtonBottom.addEventListener("click", hideFleetBindingForm);
   fleetBindingForm.addEventListener("submit", saveFleetBinding);
+  accountantAvailability.addEventListener("change", function () {
+    if (!currentAccountant || busy) return;
+    busy = true;
+    accountantAvailability.disabled = true;
+    request("/accountant/availability", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ availability: accountantAvailability.value })
+    })
+      .then(function (body) {
+        accountantAvailability.value = body.availability.availability;
+        showToast("Режим доступности сохранён.");
+      })
+      .catch(function (error) { showToast(error.message || "Не удалось сохранить доступность"); })
+      .finally(function () {
+        busy = false;
+        accountantAvailability.disabled = false;
+      });
+  });
   fleetPanel.appendChild(fleetSection);
 
   loadUser().then(function () {

@@ -437,7 +437,7 @@ class RumexRegistryStoreTests(unittest.TestCase):
             ],
         )
 
-        overnight = store.create_test_shipment(
+        waiting = store.create_test_shipment(
             plate_tail="553",
             block_count=3,
             items=[
@@ -450,6 +450,17 @@ class RumexRegistryStoreTests(unittest.TestCase):
             loaded_at=1_767_225_600.0,
             created_at=1_767_225_700.0,
         )
+        self.assertEqual(waiting["status"], "awaiting_accountant_review")
+        self.assertEqual(waiting["accountant_decision_due_at"], 1_767_226_300.0)
+        taken = store.claim_test_shipment(
+            waiting["id"], accountant_name="Бухгалтер 2", occurred_at=1_767_225_750.0
+        )
+        self.assertEqual(taken["task_taken_by"], "Бухгалтер 2")
+        with self.assertRaisesRegex(ValueError, "уже взял"):
+            store.claim_test_shipment(waiting["id"], accountant_name="Бухгалтер 1")
+        released = store.release_due_test_shipments(occurred_at=1_767_226_301.0)
+        self.assertEqual([item["id"] for item in released], [waiting["id"]])
+        overnight = released[0]
         self.assertEqual(overnight["status"], "documents_ready")
         self.assertTrue(overnight["ttn_number"])
         self.assertEqual(

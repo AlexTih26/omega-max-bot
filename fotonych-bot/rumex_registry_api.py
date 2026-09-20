@@ -9,11 +9,14 @@ from aiohttp import web
 
 from rumex_registry_auth import is_registry_admin, user_from_request
 from rumex_registry_documents import build_test_ttn_workbook, test_ttn_filename
+from rumex_registry_notifications import notify_new_test_shipment
 from rumex_test_dispatcher_auth import user_from_request as test_dispatcher_user_from_request
 from rumex_registry_store import (
     confirm_document_vehicle_binding,
     confirm_test_documents_handed_to_driver,
+    claim_test_shipment,
     create_test_shipment,
+    get_accountant_availability,
     get_document_fleet_vehicle,
     get_shipment,
     get_test_shipment,
@@ -30,10 +33,12 @@ from rumex_registry_store import (
     mark_test_er_sent_to_kontur,
     mark_er_confirmed,
     mark_er_sent,
+    release_due_test_shipments,
     resubmit_test_shipment,
     return_test_shipment_for_correction,
     review_test_shipment,
     save_carrier,
+    set_accountant_availability,
 )
 
 REGISTRY_SAMPLES_DIR = Path(__file__).resolve().parent.parent / "docs" / "registry"
@@ -293,6 +298,7 @@ async def handle_test_registry(_request: web.Request) -> web.Response:
     _viewer, denied = _test_viewer_identity(_request)
     if denied is not None:
         return denied
+    release_due_test_shipments()
     return _json(
         {
             "site_label": "Завод Румекс · тестовая погрузка",
@@ -309,6 +315,7 @@ async def handle_test_shipment(request: web.Request) -> web.Response:
     shipment_id = _test_shipment_id(request)
     if shipment_id is None:
         return _json({"error": "Некорректный номер тестовой погрузки"}, 400)
+    release_due_test_shipments()
     shipment = get_test_shipment(shipment_id)
     if shipment is None:
         return _json({"error": "Тестовая погрузка не найдена"}, 404)
@@ -378,6 +385,7 @@ async def handle_test_shipment_create(request: web.Request) -> web.Response:
         )
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+    request.app.loop.create_task(notify_new_test_shipment(shipment))
     return _json({"ok": True, "shipment": shipment}, 201)
 
 
@@ -496,6 +504,35 @@ async def _test_accountant_action(request: web.Request, action: str) -> web.Resp
     return _json({"ok": True, "message": message, "shipment": shipment})
 
 
+async def handle_test_shipment_claim(request: web.Request) -> web.Response:
+    shipment_id = _test_shipment_id(request)
+    if shipment_id is None:
+        return _json({"error": "Некорректный номер тестовой погрузки"}, 400)
+    accountant = user_from_request(request)
+    if not accountant:
+        return _json({"error": "Требуется вход"}, 401)
+    try:
+        release_due_test_shipments()
+        shipment = claim_test_shipment(shipment_id, accountant_name=accountant)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 409)
+    return _json({"ok": True, "message": "Погрузка взята в работу.", "shipment": shipment})
+
+
+async def handle_accountant_availability(request: web.Request) -> web.Response:
+    accountant = user_from_request(request)
+    if not accountant:
+        return _json({"error": "Требуется вход"}, 401)
+    if request.method == "GET":
+        return _json({"availability": get_accountant_availability(accountant)})
+    try:
+        body = await request.json()
+        availability = set_accountant_availability(accountant, body.get("availability"))
+    except (ValueError, AttributeError) as exc:
+        return _json({"error": str(exc) or "Некорректный запрос"}, 400)
+    return _json({"ok": True, "availability": availability})
+
+
 async def handle_test_shipment_return(request: web.Request) -> web.Response:
     return await _test_accountant_action(request, "return")
 
@@ -586,6 +623,8 @@ def register_rumex_registry_routes(app: web.Application) -> None:
         handle_document_vehicle_binding,
     )
     app.router.add_get("/api/rumex-registry/test/registry", handle_test_registry)
+    app.router.add_get("/api/rumex-registry/accountant/availability", handle_accountant_availability)
+    app.router.add_put("/api/rumex-registry/accountant/availability", handle_accountant_availability)
     app.router.add_get("/api/rumex-registry/test/shipments/{shipment_id}", handle_test_shipment)
     app.router.add_get(
         "/api/rumex-registry/test/blocks/{block_type_code}/{block_number}/history",
@@ -610,6 +649,10 @@ def register_rumex_registry_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/rumex-registry/test/shipments/{shipment_id}/return",
         handle_test_shipment_return,
+    )
+    app.router.add_post(
+        "/api/rumex-registry/test/shipments/{shipment_id}/claim",
+        handle_test_shipment_claim,
     )
     app.router.add_post(
         "/api/rumex-registry/test/shipments/{shipment_id}/review",

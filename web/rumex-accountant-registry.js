@@ -344,16 +344,20 @@
       documentStatus(document.status)
     ].filter(Boolean).join(" · ");
     var archives = shipment.ttn_archives || [];
-    if (document.document_kind === "TN" && shipment.ttn_number && document.status === "issued" && archives.length === 4) {
+    if (document.document_kind === "TN" && shipment.ttn_number && document.status === "issued") {
       var archiveLinks = element("div", "rr-test-document-archive");
       archiveLinks.appendChild(element("strong", "", shipment.ttn_number + " · выдана водителю"));
-      archives.forEach(function (archive) {
-        var copyNumber = Number(archive.copy_number);
+      [1, 2, 3, 4].forEach(function (copyNumber) {
+        var archived = archives.some(function (archive) {
+          return Number(archive.copy_number) === copyNumber;
+        });
         var link = element("a", "rr-test-document rr-test-document-link", "Открыть экземпляр № " + copyNumber);
         link.href = testDocumentUrl(shipment, copyNumber);
         link.target = "_blank";
         link.rel = "noopener";
-        link.title = "Открыть неизменяемый архив ТТН, экземпляр № " + copyNumber;
+        link.title = archived
+          ? "Открыть неизменяемый архив ТТН, экземпляр № " + copyNumber
+          : "Открыть ТТН, экземпляр № " + copyNumber;
         archiveLinks.appendChild(link);
       });
       return archiveLinks;

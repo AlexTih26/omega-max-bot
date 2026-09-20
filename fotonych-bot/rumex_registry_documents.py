@@ -43,7 +43,8 @@ CARRIER_DETAILS_SECOND_PAGE = (
     "664025, Иркутская область, г. Иркутск, ул. Сурикова, д. 6, офис 2"
 )
 OMEGA_DETAILS_SECOND_PAGE = (
-    "ООО «Омега-М», ИНН 5406829253, КПП 502401001\n"
+    "ООО «Омега-М»\n"
+    "ИНН 5406829253, КПП 502401001\n"
     "143405, Московская область, г. Красногорск, ул. Почтовая, д. 3"
 )
 PICKUP_LOCATION = (
@@ -239,7 +240,7 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
 
     # Компактные однострочные реквизиты: оставляем в форме ИНН, КПП и адрес,
     # но не выводим ОГРН. Полный реквизит сохраняется в карточке контрагента.
-    for row_number, height in ((9, 30), (54, 18), (92, 32), (96, 32)):
+    for row_number, height in ((9, 30), (54, 18), (92, 48), (96, 48)):
         sheet.row_dimensions[row_number].height = height
 
     calculation = workbook.calculation

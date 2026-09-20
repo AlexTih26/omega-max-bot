@@ -402,11 +402,13 @@ class RumexRegistryStoreTests(unittest.TestCase):
             shipment["id"],
             dispatcher_max_user_id=9001,
             dispatcher_name="Диспетчер теста",
+            copy_number=1,
             occurred_at=1_767_228_350.0,
         )
         self.assertEqual(downloaded["status"], "documents_ready")
         self.assertEqual(downloaded["ttn_printed_by_name"], "Диспетчер теста")
         self.assertEqual(downloaded["ttn_printed_at"], 1_767_228_350.0)
+        self.assertEqual(downloaded["ttn_downloaded_copies"], [1])
 
         handed = store.confirm_test_documents_handed_to_driver(
             shipment["id"],

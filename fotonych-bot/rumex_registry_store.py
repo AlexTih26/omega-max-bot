@@ -1896,6 +1896,14 @@ def _test_shipment_from_row(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[
         event_data = dict(event)
         event_data["payload"] = json.loads(event_data.pop("payload_json"))
         result["events"].append(event_data)
+    result["ttn_downloaded_copies"] = sorted(
+        {
+            int(event["payload"].get("copy_number"))
+            for event in result["events"]
+            if event["event_type"] == "test_ttn_downloaded"
+            and event["payload"].get("copy_number") in {1, 2, 3, 4}
+        }
+    )
     result["is_new_for_accountant"] = not any(
         str(event.get("actor_kind") or "").startswith("accountant")
         for event in result["events"]
@@ -2640,10 +2648,13 @@ def mark_test_ttn_downloaded(
     dispatcher_name: str,
     dispatcher_identity_kind: str = "max",
     dispatcher_identity_id: str = "",
+    copy_number: int,
     occurred_at: float | None = None,
 ) -> dict[str, Any]:
-    """Отметить первое скачивание ТТН диспетчером, не подтверждая передачу водителю."""
+    """Отметить скачанный экземпляр ТТН, не подтверждая передачу водителю."""
     shipment_id = _test_shipment_id(test_shipment_id)
+    if copy_number not in {1, 2, 3, 4}:
+        raise ValueError("Укажите экземпляр ТТН: 1, 2, 3 или 4")
     dispatcher_id, dispatcher_kind, dispatcher_identity, dispatcher = _test_dispatcher_actor(
         dispatcher_max_user_id=dispatcher_max_user_id,
         dispatcher_name=dispatcher_name,
@@ -2664,16 +2675,20 @@ def mark_test_ttn_downloaded(
                            updated_at = ? WHERE id = ?""",
                     (now, dispatcher, now, shipment_id),
                 )
-                _append_test_shipment_event(
-                    conn,
-                    test_shipment_id=shipment_id,
-                    event_type="test_ttn_downloaded",
-                    actor_kind="dispatcher_" + dispatcher_kind,
-                    actor_id=dispatcher_identity,
-                    actor_name=dispatcher,
-                    payload={"ttn_printed_at": now, "dispatcher_max_user_id": dispatcher_id},
-                    occurred_at=now,
-                )
+            _append_test_shipment_event(
+                conn,
+                test_shipment_id=shipment_id,
+                event_type="test_ttn_downloaded",
+                actor_kind="dispatcher_" + dispatcher_kind,
+                actor_id=dispatcher_identity,
+                actor_name=dispatcher,
+                payload={
+                    "ttn_printed_at": now,
+                    "dispatcher_max_user_id": dispatcher_id,
+                    "copy_number": copy_number,
+                },
+                occurred_at=now,
+            )
             conn.commit()
         except Exception:
             conn.rollback()

@@ -285,8 +285,8 @@
       test_shipment_loaded: "Диспетчер зафиксировал фактическую погрузку.",
       test_shipment_returned_for_correction: "Бухгалтер вернул на исправление: " + (payload.reason || "—"),
       test_shipment_resubmitted: "Диспетчер отправил ревизию №" + (payload.revision_number || ""),
-      test_documents_opened_automatically: "Система открыла ТТН: бухгалтер вне рабочей смены по Москве.",
-      test_shipment_reviewed: "Бухгалтер проверил погрузку; ожидается отметка расписки в Контуре.",
+      test_documents_opened_automatically: "Система открыла ТТН: за 10 минут статус не был изменён.",
+      test_shipment_reviewed: "Документы проверены; ожидается отметка расписки в Контуре.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
       test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
       test_documents_handed_to_driver: "Диспетчер подтвердил печать и передачу документов водителю."
@@ -345,6 +345,10 @@
     section.appendChild(element("p", "rr-test-detail", "Водитель: " + (driver.full_name || "—") + (driver.license_number ? " · удостоверение " + driver.license_number : "")));
     section.appendChild(element("p", "rr-test-detail", "Перевозчик: " + (carrier.name || "—") + (carrier.inn ? " · ИНН " + carrier.inn : "")));
     section.appendChild(element("p", "rr-test-detail", "Юридический адрес: " + (carrier.legal_address || "—")));
+    section.appendChild(element(
+      "p", "rr-test-detail",
+      "Проверил документы: " + (shipment.accountant_name || "Ещё не проверены")
+    ));
     parent.appendChild(section);
   }
 

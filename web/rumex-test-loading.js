@@ -159,7 +159,7 @@
       test_shipment_resubmitted: "Диспетчер отправил исправленную ревизию №" + (payload.revision_number || ""),
       test_shipment_taken_in_work: "Бухгалтер взял погрузку в работу.",
       test_documents_opened_automatically: "Система открыла ТТН: за 10 минут статус не был изменён.",
-      test_shipment_reviewed: payload.er_required ? "Бухгалтер проверил погрузку: нужна ЭР." : "Бухгалтер проверил погрузку: ЭР не требуется.",
+      test_shipment_reviewed: payload.er_required ? "Документы проверены: нужна ЭР." : "Документы проверены: ЭР не требуется.",
       test_er_sent_to_kontur_documents_opened: "Бухгалтер отметил отправку расписки в ЭДО Контур. Документы открыты.",
       test_ttn_downloaded: "Диспетчер скачал ТТН для печати.",
       test_documents_handed_to_driver: "Диспетчер подтвердил печать и передачу документов водителю."
@@ -308,14 +308,17 @@
       var box = createElement("div", "rtl-document");
       if (item.document_kind === "TN" && shipment.ttn_number && ["ready", "issued"].indexOf(item.status) >= 0) {
         [1, 2, 3, 4].forEach(function (copyNumber) {
+          var row = createElement("div", "rtl-ttn-download");
+          var checked = (shipment.ttn_downloaded_copies || []).indexOf(copyNumber) >= 0;
+          row.appendChild(createElement("span", "rtl-ttn-copy-check" + (checked ? " rtl-ttn-copy-check--done" : ""), checked ? "✓" : ""));
           var link = document.createElement("a");
           link.href = documentUrl(shipment.id, copyNumber);
           link.textContent = "Скачать " + (shipment.ttn_number || "ТТН") + " · экземпляр № " + copyNumber;
           link.addEventListener("click", function () {
             setTimeout(loadRegistry, 350);
           });
-          box.appendChild(link);
-          box.appendChild(document.createElement("br"));
+          row.appendChild(link);
+          box.appendChild(row);
         });
       } else if (item.document_kind === "TN") {
         box.textContent = "Старая ТТН " + (item.registry_number || "")
@@ -379,7 +382,8 @@
         ["Перевозчик", ((snapshot.carrier || {}).name || "—")],
         ["Водитель", ((snapshot.driver || {}).full_name || "—")],
         ["Удостоверение", ((snapshot.driver || {}).license_number || "—")],
-        ["Ревизия", "№" + (shipment.revision_number || 1)]
+        ["Ревизия", "№" + (shipment.revision_number || 1)],
+        ["Проверил документы", shipment.accountant_name || "Ещё не проверены"]
       ].forEach(function (pair) {
         list.appendChild(createElement("dt", "", pair[0]));
         list.appendChild(createElement("dd", "", pair[1]));
@@ -420,7 +424,9 @@
         shipment.events.forEach(function (event) {
           var item = document.createElement("li");
           item.appendChild(createElement("time", "", formatTime(event.occurred_at)));
-          item.appendChild(document.createTextNode(eventText(event)));
+          item.appendChild(document.createTextNode(
+            eventText(event) + (event.actor_name ? " · " + event.actor_name : "")
+          ));
           timeline.appendChild(item);
         });
         details.appendChild(timeline);

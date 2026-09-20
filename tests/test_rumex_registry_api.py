@@ -431,7 +431,9 @@ class RumexRegistryApiTests(AioHTTPTestCase):
 
         dispatcher_shipment = await self.client.get(shipment_url, headers=headers)
         self.assertEqual(dispatcher_shipment.status, 200)
-        self.assertTrue((await dispatcher_shipment.json())["shipment"]["ttn_printed_at"])
+        dispatcher_body = await dispatcher_shipment.json()
+        self.assertTrue(dispatcher_body["shipment"]["ttn_printed_at"])
+        self.assertEqual(dispatcher_body["shipment"]["ttn_downloaded_copies"], [1, 2, 3, 4])
 
     async def test_test_vehicle_requires_driver_license_before_creating_shipment(self):
         self._prepare_test_vehicle()

@@ -68,6 +68,9 @@ h3 { font-size: 1rem; }
 .rtl-document { padding: 8px 10px; border-radius: 8px; background: #26382c; color: #dcebdd; font-size: .84rem; }
 .rtl-document a { color: #bde5c6; font-weight: 750; text-decoration: none; }
 .rtl-document a:hover { text-decoration: underline; }
+.rtl-ttn-download { display: flex; align-items: center; gap: 7px; min-height: 1.45em; }
+.rtl-ttn-copy-check { display: inline-grid; place-items: center; width: 1em; height: 1em; color: transparent; font-weight: 800; }
+.rtl-ttn-copy-check--done { color: #9fe5ae; }
 .rtl-link-button { border: 1px solid #426149; border-radius: 8px; background: transparent; color: #c4e6cb; cursor: pointer; padding: 8px 10px; font-size: .84rem; font-weight: 750; }
 .rtl-link-button:hover { border-color: #8dcc9d; color: #effaf1; }
 .rtl-timeline { display: grid; gap: 6px; margin: 0; padding: 0 0 0 14px; border-left: 2px solid #47604d; list-style: none; }

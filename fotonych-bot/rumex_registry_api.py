@@ -459,6 +459,7 @@ async def handle_test_ttn_download(request: web.Request) -> web.Response:
                 dispatcher_name=str(viewer["name"]),
                 dispatcher_identity_kind=str(viewer["identity_kind"]),
                 dispatcher_identity_id=str(viewer["identity_id"]),
+                copy_number=copy_number,
             )
         except ValueError as exc:
             return _json({"error": str(exc)}, 409)

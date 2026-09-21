@@ -410,6 +410,23 @@ class RumexRegistryStoreTests(unittest.TestCase):
         self.assertEqual(downloaded["ttn_printed_at"], 1_767_228_350.0)
         self.assertEqual(downloaded["ttn_downloaded_copies"], [1])
 
+        with self.assertRaisesRegex(ValueError, "экземпляры ТТН №2, №3, №4"):
+            store.confirm_test_documents_handed_to_driver(
+                shipment["id"],
+                dispatcher_max_user_id=9001,
+                dispatcher_name="Диспетчер теста",
+                ttn_archives=[],
+                occurred_at=1_767_228_400.0,
+            )
+        for copy_number in (2, 3, 4):
+            store.mark_test_ttn_downloaded(
+                shipment["id"],
+                dispatcher_max_user_id=9001,
+                dispatcher_name="Диспетчер теста",
+                copy_number=copy_number,
+                occurred_at=1_767_228_350.0 + copy_number,
+            )
+
         handed = store.confirm_test_documents_handed_to_driver(
             shipment["id"],
             dispatcher_max_user_id=9001,
@@ -444,6 +461,9 @@ class RumexRegistryStoreTests(unittest.TestCase):
                 "test_shipment_resubmitted",
                 "test_shipment_reviewed",
                 "test_er_sent_to_kontur_documents_opened",
+                "test_ttn_downloaded",
+                "test_ttn_downloaded",
+                "test_ttn_downloaded",
                 "test_ttn_downloaded",
                 "test_documents_handed_to_driver",
             ],
@@ -481,6 +501,14 @@ class RumexRegistryStoreTests(unittest.TestCase):
         )
         self.assertEqual(overnight["events"][-1]["event_type"], "test_documents_opened_automatically")
 
+        for copy_number in (1, 2, 3, 4):
+            store.mark_test_ttn_downloaded(
+                overnight["id"],
+                dispatcher_max_user_id=9001,
+                dispatcher_name="Диспетчер теста",
+                copy_number=copy_number,
+                occurred_at=1_767_225_750.0 + copy_number,
+            )
         released_overnight = store.confirm_test_documents_handed_to_driver(
             overnight["id"],
             dispatcher_max_user_id=9001,

@@ -2632,6 +2632,24 @@ def confirm_test_documents_handed_to_driver(
             elif str(shipment["status"]) != "documents_ready":
                 raise ValueError("Подтвердить передачу можно только после готовности документов")
             else:
+                downloaded_copies = {
+                    int(payload.get("copy_number"))
+                    for event in conn.execute(
+                        """SELECT payload_json FROM rumex_test_shipment_events
+                           WHERE test_shipment_id = ? AND event_type = 'test_ttn_downloaded'""",
+                        (shipment_id,),
+                    )
+                    for payload in (json.loads(event["payload_json"]),)
+                    if payload.get("copy_number") in {1, 2, 3, 4}
+                }
+                missing_copies = sorted({1, 2, 3, 4} - downloaded_copies)
+                if missing_copies:
+                    copies = ", ".join("№" + str(copy_number) for copy_number in missing_copies)
+                    raise ValueError(
+                        "Нельзя подтвердить передачу водителю: не скачаны для печати экземпляры ТТН "
+                        + copies
+                        + "."
+                    )
                 archives = list(ttn_archives)
                 if {int(item.get("copy_number") or 0) for item in archives} != {1, 2, 3, 4}:
                     raise ValueError("Перед выдачей нужно сформировать четыре экземпляра архива ТТН")

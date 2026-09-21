@@ -467,7 +467,15 @@ class RumexRegistryApiTests(AioHTTPTestCase):
 
         missing_copy = await self.client.get(shipment_url + "/documents/tn", headers=headers)
         self.assertEqual(missing_copy.status, 400)
+        first_document = await self.client.get(shipment_url + "/documents/tn?copy=1", headers=headers)
+        self.assertEqual(first_document.status, 200)
+        premature_handover = await self.client.post(shipment_url + "/handed-to-driver", headers=headers)
+        self.assertEqual(premature_handover.status, 409)
+        self.assertIn("экземпляры ТТН №2, №3, №4", (await premature_handover.json())["error"])
+        self.assertFalse(list(documents.TEST_TTN_ARCHIVE_DIR.glob("*.xlsx")))
         for copy_number in (1, 2, 3, 4):
+            if copy_number == 1:
+                continue
             document = await self.client.get(
                 shipment_url + "/documents/tn?copy=" + str(copy_number), headers=headers
             )

@@ -333,6 +333,18 @@
     return url + "?copy=" + encodeURIComponent(copyNumber);
   }
 
+  function missingTtnCopies(shipment) {
+    var downloaded = shipment.ttn_downloaded_copies || [];
+    return [1, 2, 3, 4].filter(function (copyNumber) {
+      return downloaded.indexOf(copyNumber) < 0;
+    });
+  }
+
+  function missingTtnCopiesMessage(copies) {
+    return "Нельзя подтвердить передачу водителю: не скачаны для печати экземпляры ТТН "
+      + copies.map(function (copyNumber) { return "№" + copyNumber; }).join(", ") + ".";
+  }
+
   function renderDocuments(shipment, parent) {
     var documents = shipment.documents || [];
     documents.forEach(function (item) {
@@ -470,6 +482,15 @@
           "span", "rtl-ttn-printed", "✓ ТТН скачана для печати · " + formatTime(shipment.ttn_printed_at)
         ));
       }
+      if (shipment.status === "documents_ready") {
+        var missingCopies = missingTtnCopies(shipment);
+        if (missingCopies.length) {
+          details.appendChild(createElement(
+            "p", "rtl-ttn-printed", "Для передачи водителю скачайте для печати экземпляры ТТН "
+              + missingCopies.map(function (copyNumber) { return "№" + copyNumber; }).join(", ") + "."
+          ));
+        }
+      }
       var list = document.createElement("dl");
       [
         ["Автомобиль", [vehicle.full_plate, vehicle.model].filter(Boolean).join(" · ") || "—"],
@@ -507,6 +528,11 @@
         var handed = createElement("button", "rtl-link-button rtl-handover-button", "Подтвердить печать и передачу водителю");
         handed.type = "button";
         handed.addEventListener("click", function () {
+          var missingCopies = missingTtnCopies(shipment);
+          if (missingCopies.length) {
+            showToast(missingTtnCopiesMessage(missingCopies));
+            return;
+          }
           handoverShipmentId = shipment.id;
           handoverDialog.hidden = false;
         });

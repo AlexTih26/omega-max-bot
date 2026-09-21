@@ -560,6 +560,14 @@ async def handle_test_shipment_handed_to_driver(request: web.Request) -> web.Res
         current_shipment = get_test_shipment(shipment_id)
         if current_shipment is None:
             return _json({"error": "Тестовая погрузка не найдена"}, 404)
+        missing_copies = sorted({1, 2, 3, 4} - set(current_shipment.get("ttn_downloaded_copies") or []))
+        if missing_copies and current_shipment.get("status") != "documents_handed_to_driver":
+            copies = ", ".join("№" + str(copy_number) for copy_number in missing_copies)
+            raise ValueError(
+                "Нельзя подтвердить передачу водителю: не скачаны для печати экземпляры ТТН "
+                + copies
+                + "."
+            )
         archived = [] if current_shipment.get("status") == "documents_handed_to_driver" else archive_test_ttn_workbooks(current_shipment)
         shipment = confirm_test_documents_handed_to_driver(
             shipment_id,

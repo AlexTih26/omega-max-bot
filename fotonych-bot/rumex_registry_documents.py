@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 from zoneinfo import ZoneInfo
 
 APPROVED_TTN_TEMPLATE_PATH = (
@@ -105,6 +106,33 @@ def _required_snapshot_text(value: Any, label: str) -> str:
     return text
 
 
+def _surname_with_initials(full_name: str) -> str:
+    """Подготовить ФИО для печатной формы, сохранив полное имя в реестре."""
+    text = " ".join(str(full_name or "").split())
+    parts = text.split(" ")
+    if len(parts) < 2:
+        return text
+
+    surname, rest = parts[0], " ".join(parts[1:])
+    existing_initials = re.findall(r"[A-Za-zА-Яа-яЁё]\.", rest)
+    if existing_initials and re.fullmatch(r"[A-Za-zА-Яа-яЁё.\s]+", rest):
+        return surname + " " + "".join(existing_initials)
+
+    initials = "".join(part[0].upper() + "." for part in parts[1:] if part)
+    return surname + " " + initials if initials else surname
+
+
+def _make_yellow_cells_white(sheet) -> None:
+    """Убрать служебную жёлтую подсветку из выдаваемого экземпляра ТТН."""
+    for row in sheet.iter_rows():
+        for cell in row:
+            fill = cell.fill
+            color = fill.fgColor
+            rgb = str(color.rgb or "").upper() if color.type == "rgb" else ""
+            if fill.fill_type == "solid" and rgb.endswith("FFFF00"):
+                cell.fill = PatternFill(fill_type="solid", fgColor="FFFFFFFF", bgColor="FFFFFFFF")
+
+
 def _total_weight(items: list[dict]) -> int:
     if len(items) not in {3, 4, 5, 6}:
         raise ValueError("Утверждённая ТТН формируется только для погрузки от 3 до 6 блоков")
@@ -145,7 +173,9 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
     snapshot = shipment.get("document_snapshot") or {}
     vehicle = snapshot.get("vehicle") or {}
     driver = snapshot.get("driver") or {}
-    driver_name = _required_snapshot_text(driver.get("full_name"), "ФИО водителя")
+    driver_name = _surname_with_initials(
+        _required_snapshot_text(driver.get("full_name"), "ФИО водителя")
+    )
     driver_license = _required_snapshot_text(driver.get("license_number"), "водительское удостоверение")
     vehicle_model = _required_snapshot_text(vehicle.get("model"), "модель автомобиля")
     vehicle_plate = _required_snapshot_text(vehicle.get("full_plate"), "государственный номер автомобиля")
@@ -154,6 +184,7 @@ def build_test_ttn_workbook(shipment: dict, *, copy_number: int) -> bytes:
     if "ТТН" not in workbook.sheetnames:
         raise ValueError("Утверждённый шаблон ТТН имеет неверную структуру")
     sheet = workbook["ТТН"]
+    _make_yellow_cells_white(sheet)
     sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.fitToWidth = 1
     sheet.page_setup.fitToHeight = 2

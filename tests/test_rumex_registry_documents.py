@@ -64,6 +64,7 @@ class RumexRegistryDocumentsTests(unittest.TestCase):
             self.assertEqual(sheet["A62"].value, 3)
             self.assertEqual(sheet["BE62"].value, "без тары")
             self.assertEqual(sheet["CG43"].value, "38 12 123456")
+            self.assertEqual(sheet["BE43"].value, "Иванов И.И.")
             self.assertEqual(
                 sheet["A9"].value,
                 "ООО «Омега-М», ИНН 5406829253, КПП 502401001, "
@@ -102,6 +103,11 @@ class RumexRegistryDocumentsTests(unittest.TestCase):
             self.assertEqual(sheet.page_setup.fitToWidth, 1)
             self.assertEqual(sheet.page_setup.fitToHeight, 2)
             self.assertIsNone(sheet.page_setup.scale)
+            for row in sheet.iter_rows():
+                for cell in row:
+                    fill = cell.fill
+                    rgb = str(fill.fgColor.rgb or "").upper() if fill.fgColor.type == "rgb" else ""
+                    self.assertFalse(fill.fill_type == "solid" and rgb.endswith("FFFF00"), cell.coordinate)
             self.assertEqual(
                 documents.test_ttn_filename(shipment, copy_number=copy_number),
                 f"ТТН №РМ-2026-000001 — Экземпляр № {copy_number}.xlsx",
@@ -117,6 +123,11 @@ class RumexRegistryDocumentsTests(unittest.TestCase):
             documents.build_test_ttn_workbook(shipment, copy_number=1)
         with self.assertRaisesRegex(ValueError, "экземпляр ТТН от 1 до 4"):
             documents.test_ttn_filename({"ttn_number": "ТТН №РМ-2026-000001"}, copy_number=5)
+
+    def test_surname_with_initials_keeps_compact_name_and_shortens_full_name(self) -> None:
+        self.assertEqual(documents._surname_with_initials("Иванов Иван Иванович"), "Иванов И.И.")
+        self.assertEqual(documents._surname_with_initials("Бадрянов А.С."), "Бадрянов А.С.")
+        self.assertEqual(documents._surname_with_initials("Петров Пётр"), "Петров П.")
 
 
 if __name__ == "__main__":

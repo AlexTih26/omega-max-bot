@@ -547,24 +547,27 @@ async def on_message(event: MessageCreated) -> None:
 
 async def main() -> None:
     await bot.delete_webhook()
-    await bot.set_my_commands(
-        BotCommand(name="start", description="Меню и сервисы"),
-        BotCommand(name="id", description="Ваш MAX id (личный чат)"),
-        BotCommand(name="whoami", description="Ваш MAX id (личный чат)"),
-        BotCommand(name="materials", description="Материалы: меню мастера"),
-        BotCommand(name="reserve", description="Резерв материалов (мастер)"),
-        BotCommand(name="stock", description="Остатки на складе (мастер)"),
-        BotCommand(name="need", description="Что надо — дефицит (мастер)"),
-        BotCommand(name="ai", description="Служебный ИИ-помощник"),
-        BotCommand(name="clear", description="Очистить память ИИ"),
-        BotCommand(name="taksimo_chat", description="ID чата уведомлений Таксимо"),
-        BotCommand(name="materials_chat", description="ID чата расходников"),
-        BotCommand(name="materials_now", description="Сводка расходников сейчас"),
-        BotCommand(name="materials_alerts", description="Флаги по расходникам"),
-        BotCommand(name="drivers_chat", description="ID чата водителей"),
-        BotCommand(name="menu", description="Меню Таксимо (в чате отчётов)"),
-        BotCommand(name="taksimo", description="Меню Таксимо"),
-    )
+    try:
+        await bot.set_my_commands(
+            BotCommand(name="start", description="Меню и сервисы"),
+            BotCommand(name="id", description="Ваш MAX id (личный чат)"),
+            BotCommand(name="whoami", description="Ваш MAX id (личный чат)"),
+            BotCommand(name="materials", description="Материалы: меню мастера"),
+            BotCommand(name="reserve", description="Резерв материалов (мастер)"),
+            BotCommand(name="stock", description="Остатки на складе (мастер)"),
+            BotCommand(name="need", description="Что надо — дефицит (мастер)"),
+            BotCommand(name="ai", description="Служебный ИИ-помощник"),
+            BotCommand(name="clear", description="Очистить память ИИ"),
+            BotCommand(name="taksimo_chat", description="ID чата уведомлений Таксимо"),
+            BotCommand(name="materials_chat", description="ID чата расходников"),
+            BotCommand(name="materials_now", description="Сводка расходников сейчас"),
+            BotCommand(name="materials_alerts", description="Флаги по расходникам"),
+            BotCommand(name="drivers_chat", description="ID чата водителей"),
+            BotCommand(name="menu", description="Меню Таксимо (в чате отчётов)"),
+            BotCommand(name="taksimo", description="Меню Таксимо"),
+        )
+    except Exception:
+        logger.exception("Не удалось обновить список команд MAX; бот продолжит запуск")
     set_bot(bot)
     set_taksimo_bot(bot)
     set_drivers_bot(bot)

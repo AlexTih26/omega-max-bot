@@ -1,0 +1,27 @@
+{
+  "id": "/rumex-accountant",
+  "name": "РУМЕКС — бухгалтерия",
+  "short_name": "РУМЕКС бухгалтер",
+  "description": "Бухгалтерский реестр отгрузок и документов РУМЕКС",
+  "start_url": "/rumex-accountant-registry.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f7fb",
+  "theme_color": "#3d6d4b",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/rumex-accountant-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/rumex-accountant-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>РУМЕКС · разметка кнопок кабинета бухгалтера</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #1f2631;
+      --surface: #283241;
+      --surface-2: #222c39;
+      --border: #455367;
+      --text: #f0f4fa;
+      --muted: #b7c2d2;
+      --accent: #70d5b5;
+      --accent-text: #10261f;
+      --warn: #ffd37e;
+      --warn-text: #33240b;
+      --danger: #ffb8c0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .wrap { width: min(980px, 100%); margin: 0 auto; padding: 28px 18px 60px; }
+    header { display: flex; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
+    .kicker { margin: 0 0 6px; color: var(--accent); font-size: 13px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(28px, 5vw, 42px); letter-spacing: -.03em; }
+    h2 { margin: 0; font-size: 28px; }
+    h3 { margin: 0; font-size: 20px; }
+    p { line-height: 1.45; }
+    .muted { color: var(--muted); }
+    .user { text-align: right; color: var(--muted); white-space: nowrap; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 10px; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 22px; }
+    .tab { border: 1px solid var(--border); border-radius: 14px; padding: 11px 16px; color: var(--muted); font-weight: 800; }
+    .tab.active { border-color: var(--accent); background: #183e35; color: var(--text); }
+    .grid { display: grid; gap: 16px; }
+    .card, .panel { border: 1px solid var(--border); border-radius: 18px; background: var(--surface); padding: 18px; }
+    .card { display: grid; gap: 14px; }
+    .row { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+    .date { color: var(--muted); font-weight: 800; }
+    .number { font-size: 22px; font-weight: 900; }
+    .status { border: 1px solid var(--warn); border-radius: 999px; color: var(--warn); padding: 6px 10px; font-size: 13px; font-weight: 800; white-space: nowrap; }
+    .info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .info { border-radius: 14px; background: var(--surface-2); padding: 13px; }
+    .items { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+    .items li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid rgba(183, 194, 210, .14); padding-bottom: 7px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 4px; }
+    .action { position: relative; min-height: 58px; border: 0; border-radius: 15px; padding: 14px 18px 14px 62px; font: inherit; font-weight: 900; cursor: default; }
+    .primary { background: var(--accent); color: var(--accent-text); }
+    .warning { background: var(--warn); color: var(--warn-text); }
+    .secondary { border: 1px solid var(--border); background: transparent; color: var(--text); }
+    .tag { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; min-width: 38px; height: 34px; border-radius: 11px; background: rgba(16, 38, 31, .18); border: 1px solid rgba(16, 38, 31, .28); font-weight: 1000; }
+    .secondary .tag { background: rgba(112, 213, 181, .12); border-color: var(--border); color: var(--accent); }
+    .legend { display: grid; gap: 10px; border: 1px dashed var(--border); border-radius: 18px; padding: 16px; background: rgba(112, 213, 181, .05); }
+    .legend code { color: var(--accent); font-weight: 900; }
+    .list { display: grid; gap: 10px; }
+    .registry-line { display: grid; grid-template-columns: auto auto 1fr auto; align-items: center; gap: 12px; border: 1px solid var(--border); border-radius: 15px; padding: 14px; background: var(--surface-2); }
+    @media (max-width: 720px) {
+      header, .row { flex-direction: column; }
+      .user { text-align: left; }
+      .info-grid { grid-template-columns: 1fr; }
+      .registry-line { grid-template-columns: 1fr; }
+      .action { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <p class="kicker">РУМЕКС · кабинет бухгалтера</p>
+        <h1>Работа с отгрузками</h1>
+        <p class="muted">Проверка погрузок, ЭДО и документы</p>
+      </div>
+      <div class="user">
+        <div>Бухгалтер 1</div>
+        <div style="color: var(--accent); margin-top: 8px;">Выйти</div>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Макет вкладок">
+      <div class="tab active">Работа</div>
+      <div class="tab">Реестр</div>
+      <div class="tab">Карточки машин</div>
+      <div class="tab">Справочники</div>
+    </nav>
+
+    <section class="legend" aria-label="Как давать правки">
+      <h3>Как дать правки</h3>
+      <p class="muted">Напишите номер элемента и действие: <code>A1 ярче зелёным</code>, <code>A2 сделать оранжевым</code>, <code>B1 крупнее</code>, <code>C2 оставить спокойной</code>.</p>
+    </section>
+
+    <section class="grid" style="margin-top: 22px;">
+      <div>
+        <p class="kicker">Текущие задачи</p>
+        <h2>На проверке</h2>
+        <p class="muted">Погрузки, где бухгалтер должен принять решение.</p>
+      </div>
+
+      <article class="card">
+        <div class="row">
+          <div>
+            <div class="date">14.09.2026, 01:30</div>
+            <div class="number">ТТН №РМ-2026-000005</div>
+            <p class="muted">С294ЕЕ / 138 · SHACMAN · 3 поз.</p>
+          </div>
+          <span class="status">Ожидает проверки</span>
+        </div>
+
+        <div class="info-grid">
+          <div class="info">
+            <p class="kicker">Машина</p>
+            <strong>С294ЕЕ / 138 · SHACMAN</strong>
+            <p class="muted">Водитель Иванов Иван Иванович</p>
+          </div>
+          <div class="info">
+            <p class="kicker">Документная связь</p>
+            <strong>ООО «Комсомольская ТК»</strong>
+            <p class="muted">В/У 38 12 123456</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <p class="kicker">Груз</p>
+          <ul class="items">
+            <li><span>БЛОК 9,7/8,8 · A 3611</span><strong>7 780 кг</strong></li>
+            <li><span>БЛОК 9,7/8,8 · K 7741</span><strong>3 850 кг</strong></li>
+            <li><span>БЛОК 9,7/8,8 · A 3612</span><strong>7 780 кг</strong></li>
+          </ul>
+        </div>
+
+        <div>
+          <h3>Проверка бухгалтера</h3>
+          <p class="muted">После проверки потребуется ручная отметка об отправке расписки в ЭДО Контур.</p>
+          <div class="actions">
+            <button class="action primary" type="button"><span class="tag">A1</span>Проверить и ожидать ЭДО</button>
+            <button class="action warning" type="button"><span class="tag">A2</span>Вернуть на исправление</button>
+          </div>
+        </div>
+      </article>
+
+      <section class="panel">
+        <p class="kicker">Реестр</p>
+        <h2>Все погрузки</h2>
+        <p class="muted">Запись начинается с даты погрузки и номера.</p>
+        <div class="list">
+          <div class="registry-line"><strong>14.09.2026, 01:30</strong><strong>ТТН №РМ-2026-000005</strong><span class="muted">SHACMAN · 3 поз.</span><span class="status">Ожидает проверки</span></div>
+          <div class="registry-line"><strong>14.09.2026, 00:59</strong><strong>ТТН №РМ-2026-000004</strong><span class="muted">SHACMAN · 4 поз.</span><span class="status">Ожидает ЭДО</span></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <p class="kicker">Карточки машин</p>
+        <div class="row">
+          <div>
+            <h2>Документный парк</h2>
+            <p class="muted">Снимок физического парка и подтверждённые связи.</p>
+          </div>
+          <button class="action primary" type="button"><span class="tag">B1</span>Обновить снимок</button>
+        </div>
+        <div class="actions">
+          <button class="action secondary" type="button"><span class="tag">B2</span>Подтвердить связь</button>
+          <button class="action secondary" type="button"><span class="tag">B3</span>Подтвердить новую ревизию</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <p class="kicker">Справочники</p>
+        <div class="row">
+          <div>
+            <h2>Перевозчики</h2>
+            <p class="muted">Реквизиты по подтверждённым источникам.</p>
+          </div>
+          <button class="action primary" type="button"><span class="tag">C1</span>Добавить перевозчика</button>
+        </div>
+        <div class="actions">
+          <button class="action secondary" type="button"><span class="tag">C2</span>Изменить перевозчика</button>
+          <button class="action secondary" type="button"><span class="tag">C3</span>Открыть образец</button>
+          <button class="action secondary" type="button"><span class="tag">C4</span>Скачать образец</button>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

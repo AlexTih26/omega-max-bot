@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from rumex_registry_store import get_accountant_availability, release_due_test_shipments
 
@@ -32,6 +34,65 @@ def _recipients() -> dict[str, int]:
         if user_id > 0:
             recipients[name.strip()] = user_id
     return recipients
+
+
+def _format_time(timestamp: object) -> str:
+    try:
+        value = float(timestamp)
+    except (TypeError, ValueError):
+        return "—"
+    try:
+        timezone = ZoneInfo((os.getenv("RUMEX_TIMEZONE") or "Asia/Irkutsk").strip())
+    except Exception:
+        timezone = ZoneInfo("Asia/Irkutsk")
+    return datetime.fromtimestamp(value, tz=timezone).strftime("%d.%m.%Y %H:%M")
+
+
+async def _notify_accountant_one(text: str, *, event_name: str) -> None:
+    """Отправить личное информационное сообщение бухгалтеру 1 без влияния на запись."""
+    if _bot is None:
+        return
+    user_id = _recipients().get("Бухгалтер 1")
+    if user_id is None:
+        logger.warning("РУМЕКС: не настроен получатель Бухгалтер 1 для %s", event_name)
+        return
+    try:
+        await _bot.send_message(user_id=user_id, text=text)
+        logger.info("РУМЕКС: уведомление %s доставлено бухгалтеру 1", event_name)
+    except Exception:
+        logger.exception("РУМЕКС: не удалось отправить уведомление %s бухгалтеру 1", event_name)
+
+
+async def notify_carrier_created(carrier: dict, *, actor_name: str) -> None:
+    """Сообщить бухгалтеру 1 о новой карточке перевозчика."""
+    await _notify_accountant_one(
+        "🏢 РУМЕКС · добавлен новый перевозчик\n\n"
+        "📌 Наименование: " + str(carrier.get("name") or "—") + "\n"
+        "🧾 ИНН: " + str(carrier.get("inn") or "—") + "\n"
+        "✅ Источник: " + str(carrier.get("confirmation_reference") or "—") + "\n"
+        "👤 Добавил: " + (actor_name or "—") + "\n"
+        "🕒 Когда: " + _format_time(carrier.get("created_at")),
+        event_name="новый перевозчик",
+    )
+
+
+async def notify_document_vehicle_binding_confirmed(binding: dict) -> None:
+    """Сообщить бухгалтеру 1 о подтверждённой документной связи машины."""
+    vehicle = binding.get("vehicle_snapshot") or {}
+    carrier = binding.get("carrier_snapshot") or {}
+    vehicle_label = " · ".join(
+        value for value in (str(vehicle.get("full_plate") or "").strip(), str(vehicle.get("model") or "").strip()) if value
+    ) or str(binding.get("plate_tail_snapshot") or "—")
+    await _notify_accountant_one(
+        "🚛 РУМЕКС · подтверждена документная связь\n\n"
+        "🚚 Автомобиль: " + vehicle_label + "\n"
+        "🏢 Перевозчик: " + str(carrier.get("name") or "—") + "\n"
+        "👤 Водитель: " + str(binding.get("driver_full_name") or "—") + "\n"
+        "🪪 Удостоверение: " + str(binding.get("driver_license_number") or "—") + "\n"
+        "✅ Подтвердил: " + str(binding.get("confirmed_by") or "—") + "\n"
+        "🕒 Когда: " + _format_time(binding.get("checked_at")),
+        event_name="документная связь машины",
+    )
 
 
 async def notify_new_test_shipment(shipment: dict) -> None:

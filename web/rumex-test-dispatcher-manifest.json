@@ -1,0 +1,27 @@
+{
+  "id": "/rumex-test-dispatcher",
+  "name": "РУМЕКС — диспетчер",
+  "short_name": "РУМЕКС диспетчер",
+  "description": "Тестовый кабинет погрузки РУМЕКС",
+  "start_url": "/rumex-test-loading.html",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#17221d",
+  "theme_color": "#526b3c",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/rumex-test-dispatcher-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/rumex-test-dispatcher-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

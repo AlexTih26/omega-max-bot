@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import asyncio
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,7 +19,11 @@ from rumex_registry_documents import (
     test_ttn_filename,
 )
 from rumex_registry_export import build_test_registry_workbook
-from rumex_registry_notifications import notify_new_test_shipment
+from rumex_registry_notifications import (
+    notify_carrier_created,
+    notify_document_vehicle_binding_confirmed,
+    notify_new_test_shipment,
+)
 from rumex_test_dispatcher_auth import user_from_request as test_dispatcher_user_from_request
 from rumex_registry_store import (
     DB_PATH,
@@ -329,6 +334,8 @@ async def _save_carrier(request: web.Request, carrier_id: int | None) -> web.Res
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
     _backup_after_registry_write("carrier_saved")
+    if carrier_id is None:
+        asyncio.create_task(notify_carrier_created(carrier, actor_name=accountant or ""))
     return _json({"ok": True, "carrier": carrier}, 201 if carrier_id is None else 200)
 
 
@@ -393,6 +400,7 @@ async def handle_document_vehicle_binding(request: web.Request) -> web.Response:
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
     _backup_after_registry_write("document_vehicle_bound")
+    asyncio.create_task(notify_document_vehicle_binding_confirmed(binding))
     return _json({"ok": True, "binding": binding}, 201)
 
 

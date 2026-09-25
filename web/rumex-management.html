@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#13231e">
+  <meta name="application-name" content="РУМЕКС управление">
+  <title>РУМЕКС · управление</title>
+  <link rel="stylesheet" href="/rumex-management.css?v=1">
+  <script src="https://st.max.ru/js/max-web-app.js"></script>
+</head>
+<body>
+  <main class="rm-app">
+    <header class="rm-header"><div><p>РУМЕКС</p><h1>Управление</h1></div><button id="logout" hidden>Выйти</button></header>
+    <section class="rm-login" id="loginPanel"><h2>Защищённый кабинет</h2><p>Доступ предоставляется супер-администратору из приложения MAX.</p><button id="login">Войти через MAX</button><p id="loginError" class="error"></p></section>
+    <section id="cabinet" hidden>
+      <nav><button data-tab="dispatchers" class="active">Диспетчеры</button><button data-tab="fleet">Документный парк</button><button data-tab="shipments">Погрузки</button><button data-tab="directories">Справочники</button><button data-tab="audit">Аудит</button></nav>
+      <section id="dispatchers" class="panel"><div class="heading"><div><h2>Диспетчеры</h2><p>Пароли показываются только при выпуске или сбросе.</p></div><button id="addDispatcher">Создать</button></div><div id="dispatcherList"></div></section>
+      <section id="fleet" class="panel" hidden><div class="heading"><div><h2>Документный парк</h2><p>Блокировка действует только на новые погрузки РУМЕКС и не меняет Таксимо.</p></div></div><div id="fleetList"></div></section>
+      <section id="shipments" class="panel" hidden><h2>Погрузки</h2><div id="shipmentList"></div></section>
+      <section id="directories" class="panel" hidden><h2>Справочники</h2><div id="directoryList"></div></section>
+      <section id="audit" class="panel" hidden><h2>Журнал управления</h2><div id="auditList"></div></section>
+    </section>
+  </main>
+  <dialog id="dispatcherDialog"><form method="dialog" id="dispatcherForm"><h2 id="dialogTitle">Диспетчер</h2><label>ФИО<input name="full_name" required maxlength="200"></label><label>Логин<input name="username" required maxlength="80"></label><label>MAX ID <small>только видимость пункта меню</small><input name="max_user_id" inputmode="numeric"></label><label class="checkbox"><input name="active" type="checkbox" checked> Учётная запись активна</label><p class="error" id="dispatcherError"></p><menu><button value="cancel">Отмена</button><button value="default" id="saveDispatcher">Сохранить</button></menu></form></dialog>
+  <dialog id="pinDialog"><form method="dialog" id="pinForm"><h2>Подтвердите действие</h2><p>Введите PIN подтверждения.</p><label>PIN<input name="step_up_pin" type="password" required></label><p class="error" id="pinError"></p><menu><button value="cancel">Отмена</button><button value="default">Подтвердить</button></menu></form></dialog>
+  <dialog id="passwordDialog"><form method="dialog"><h2>Новый пароль</h2><p id="issuedPassword"></p><p>Скопируйте пароль сейчас: повторно он не показывается.</p><menu><button value="default">Закрыть</button></menu></form></dialog>
+  <script src="/rumex-management.js?v=1"></script>
+</body>
+</html>

@@ -24,8 +24,11 @@
       <p class="tn-subtitle">Приёмка, площадка и вагоны</p>
       <form id="loginForm" novalidate>
         <label class="tn-field" for="pin">Ваш PIN
-          <input id="pin" type="password" inputmode="numeric" pattern="[0-9]{6,12}" minlength="6" maxlength="12"
-            autocomplete="off" placeholder="Введите 6–12 цифр" required autofocus>
+          <span class="tn-password-field">
+            <input id="pin" type="password" inputmode="numeric" pattern="[0-9]{6,12}" minlength="6" maxlength="12"
+              autocomplete="off" placeholder="Введите 6–12 цифр" required autofocus>
+            <button class="tn-password-toggle" id="pinVisibilityButton" type="button" aria-pressed="false">Показать</button>
+          </span>
         </label>
         <button class="tn-button tn-button--primary tn-button--wide" id="loginButton" type="submit">Войти</button>
       </form>
@@ -40,6 +43,7 @@
       var pin = document.getElementById("pin");
       var error = document.getElementById("loginError");
       var button = document.getElementById("loginButton");
+      var pinVisibilityButton = document.getElementById("pinVisibilityButton");
       var params = new URLSearchParams(location.search);
       var appHome = "/taksimo-new/index.html";
       var next = params.get("next") || appHome;
@@ -58,6 +62,14 @@
           if (!result.response.ok && result.data.error) error.textContent = result.data.error;
         })
         .catch(function () { error.textContent = "Не удалось проверить доступ. Проверьте соединение."; });
+
+      pinVisibilityButton.addEventListener("click", function () {
+        var visible = pin.type === "text";
+        pin.type = visible ? "password" : "text";
+        pinVisibilityButton.textContent = visible ? "Показать" : "Скрыть";
+        pinVisibilityButton.setAttribute("aria-pressed", String(!visible));
+        pin.focus();
+      });
 
       form.addEventListener("submit", function (event) {
         event.preventDefault();

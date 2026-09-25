@@ -95,6 +95,11 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
 .tn-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .tn-field { display: grid; gap: 6px; color: var(--tn-muted); font-size: .85rem; font-weight: 680; }
 .tn-field input, .tn-field select, .tn-field textarea { width: 100%; min-height: 39px; border: 1px solid var(--tn-border); border-radius: 8px; background: var(--tn-surface-alt); color: var(--tn-text); padding: 8px 10px; }
+.tn-password-field { display: flex; align-items: stretch; gap: 7px; }
+.tn-password-field input { min-width: 0; }
+.tn-password-toggle { flex: 0 0 auto; min-height: 39px; border: 1px solid var(--tn-border); border-radius: 8px; background: var(--tn-surface); color: var(--tn-accent); padding: 8px 10px; font-size: .82rem; font-weight: 740; }
+.tn-password-toggle:hover { border-color: var(--tn-accent); background: var(--tn-accent-soft); }
+.tn-password-toggle:focus-visible { outline: 3px solid color-mix(in srgb, var(--tn-accent) 22%, transparent); outline-offset: 1px; }
 .tn-field textarea { min-height: 84px; resize: vertical; }
 .tn-field input:focus, .tn-field select:focus, .tn-field textarea:focus { outline: 3px solid color-mix(in srgb, var(--tn-accent) 22%, transparent); border-color: var(--tn-accent); }
 .tn-field--wide, .tn-form-actions { grid-column: 1 / -1; }

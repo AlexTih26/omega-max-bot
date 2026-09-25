@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#176b5b">
+  <meta name="application-name" content="Таксимо — новая площадка">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Таксимо">
+  <title>Таксимо — новая площадка</title>
+  <link rel="manifest" href="/taksimo-new/manifest.json">
+  <link rel="icon" href="/taksimo-new/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/taksimo-new/icon.svg">
+  <link rel="stylesheet" href="/taksimo-new/app.css">
+  <script src="/taksimo-new/pwa.js" defer></script>
+  <script src="/taksimo-new/app.js" defer></script>
+</head>
+<body>
+  <div class="tn-app">
+    <header class="tn-header">
+      <div class="tn-brand">
+        <div class="tn-mark" aria-hidden="true">Т</div>
+        <div>
+          <p class="tn-kicker">Новый изолированный контур</p>
+          <h1>Таксимо</h1>
+        </div>
+      </div>
+      <div class="tn-user">
+        <span id="currentUser">Проверка доступа…</span>
+        <button class="tn-link-button" id="installAppButton" type="button" hidden>Установить</button>
+        <button class="tn-link-button" id="logoutButton" type="button">Выйти</button>
+      </div>
+    </header>
+
+    <main class="tn-main">
+      <div class="tn-notice" id="appError" role="alert" hidden></div>
+      <nav class="tn-tabs" aria-label="Разделы новой Таксимо">
+        <button class="tn-tab" type="button" data-tab="today" aria-selected="true">Сегодня</button>
+        <button class="tn-tab" type="button" data-tab="reception" aria-selected="false">Приёмка</button>
+        <button class="tn-tab" type="button" data-tab="yard" aria-selected="false">Площадка</button>
+        <button class="tn-tab" type="button" data-tab="wagons" aria-selected="false">Вагоны</button>
+        <button class="tn-tab" type="button" data-tab="search" aria-selected="false">Поиск</button>
+        <button class="tn-tab" type="button" data-tab="journal" aria-selected="false">Журнал</button>
+        <button class="tn-tab" type="button" data-tab="reports" aria-selected="false">Отчёты</button>
+        <button class="tn-tab" type="button" data-tab="manage" aria-selected="false" data-operator1-only>Управление</button>
+      </nav>
+
+      <section class="tn-panel" data-panel="today">
+        <div class="tn-panel-heading">
+          <div>
+            <p class="tn-kicker">Оперативная смена</p>
+            <h2>Сегодня</h2>
+            <p class="tn-subtitle" id="todayTimezone">Загрузка данных…</p>
+          </div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+        <div class="tn-stats" id="dashboardStats"></div>
+        <section class="tn-section">
+          <div class="tn-section-heading">
+            <div><h3>Ожидаемые приёмки</h3><p class="tn-help">Из ручного ввода и доверенного служебного моста.</p></div>
+          </div>
+          <p class="tn-empty" id="expectedEmpty" hidden>Нет ожидаемых приёмок.</p>
+          <div class="tn-card-list" id="expectedIntakes"></div>
+        </section>
+        <p class="tn-photo-notice">Фото ТТН, груза и повреждений пока не загружаются: для неизменяемого архива требуется отдельное защищённое Object Storage.</p>
+      </section>
+
+      <section class="tn-panel" data-panel="reception" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">Факт приёмки</p><h2>Приёмка</h2><p class="tn-subtitle">Один оператор может редактировать одну приёмку одновременно.</p></div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+        <details class="tn-form-card" id="manualIntakeDetails">
+          <summary>Создать ручную ожидаемую приёмку</summary>
+          <form id="manualIntakeForm" class="tn-form-grid">
+            <label class="tn-field">Ожидаемое число блоков *<input name="expected_blocks_count" type="number" min="1" max="100" required></label>
+            <label class="tn-field">Номер ТТН<input name="ttn_number" maxlength="120"></label>
+            <label class="tn-field">Номер машины<input name="vehicle_plate" maxlength="40" autocapitalize="characters"></label>
+            <label class="tn-field">Водитель<input name="driver_name" maxlength="200"></label>
+            <label class="tn-field">Плановое прибытие<input name="planned_arrival_at" type="datetime-local"></label>
+            <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Создать приёмку</button></div>
+          </form>
+        </details>
+        <p class="tn-empty" id="intakesEmpty" hidden>Приёмок пока нет.</p>
+        <div class="tn-card-list" id="intakesList"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="yard" hidden>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">13 × 25</p><h2>Площадка</h2><p class="tn-subtitle">До четырёх блоков в одной ячейке.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
+        <div class="tn-yard-legend"><span><i class="tn-dot"></i> блок на площадке</span><span>Цифра — занятых мест в ячейке</span></div>
+        <div class="tn-yard-scroll"><div class="tn-yard-grid" id="yardGrid" aria-label="Схема площадки"></div></div>
+        <div class="tn-card-list" id="yardBlocks"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="wagons" hidden>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Погрузка и отправка</p><h2>Вагоны</h2><p class="tn-subtitle">Загрузка фиксируется навсегда; отправить вагон может только Оператор 1.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
+        <form class="tn-form-card tn-inline-form" id="wagonLoadForm">
+          <label class="tn-field">ID блока *<input name="block_id" type="number" min="1" required></label>
+          <label class="tn-field">Номер вагона *<input name="wagon_number" maxlength="40" required autocapitalize="characters"></label>
+          <button class="tn-button tn-button--primary" type="submit">Загрузить блок</button>
+        </form>
+        <p class="tn-empty" id="wagonsEmpty" hidden>Вагонов пока нет.</p>
+        <div class="tn-card-list" id="wagonsList"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="search" hidden>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Блок, вагон или ТТН</p><h2>Поиск</h2><p class="tn-subtitle">Поиск ведётся только по данным нового контура.</p></div></div>
+        <label class="tn-field tn-search-field">Запрос<input id="searchInput" type="search" maxlength="80" placeholder="Например: A 4495, вагон или ТТН" autocomplete="off" autocapitalize="characters"></label>
+        <p class="tn-empty" id="searchEmpty" hidden>Ничего не найдено.</p>
+        <div class="tn-card-list" id="searchResults"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="journal" hidden>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Неизменяемая история</p><h2>Журнал</h2><p class="tn-subtitle">Подтверждённые факты не редактируются и не удаляются.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
+        <p class="tn-empty" id="eventsEmpty" hidden>Событий пока нет.</p>
+        <ol class="tn-timeline" id="eventsList"></ol>
+      </section>
+
+      <section class="tn-panel" data-panel="reports" hidden>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Сводка</p><h2>Отчёты</h2><p class="tn-subtitle">По подтверждённым и не отменённым приёмкам.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
+        <label class="tn-field tn-report-date">Дата<input id="reportDate" type="date"></label>
+        <div class="tn-stats" id="reportStats"></div>
+        <div class="tn-card-list" id="reportIntakes"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="manage" hidden>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Оператор 1</p><h2>Управление фактами</h2><p class="tn-subtitle">Отмена и корректировка сохраняются отдельной причиной; исходный факт не меняется.</p></div></div>
+        <form class="tn-form-card tn-form-grid" id="correctionForm">
+          <h3>Создать корректировку</h3>
+          <label class="tn-field">Вид операции *<select name="subject_type" required><option value="intake">Приёмка</option><option value="wagon_load">Загрузка вагона</option><option value="wagon_dispatch">Отправка вагона</option></select></label>
+          <label class="tn-field">ID операции *<input name="subject_id" maxlength="80" required></label>
+          <label class="tn-field tn-field--wide">Причина *<textarea name="reason" maxlength="500" required></textarea></label>
+          <label class="tn-field tn-field--wide">Детали (необязательно)<textarea name="details" maxlength="2000" placeholder="Что именно нужно учесть в новой записи"></textarea></label>
+          <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Зафиксировать корректировку</button></div>
+        </form>
+        <form class="tn-form-card tn-form-grid" id="operationCancellationForm">
+          <h3>Отменить подтверждённую операцию</h3>
+          <label class="tn-field">Вид операции *<select name="subject_type" required><option value="intake">Приёмка</option><option value="wagon_load">Загрузка вагона</option><option value="wagon_dispatch">Отправка вагона</option></select></label>
+          <label class="tn-field">ID операции *<input name="subject_id" maxlength="80" required></label>
+          <label class="tn-field tn-field--wide">Причина отмены *<textarea name="reason" maxlength="500" required></textarea></label>
+          <div class="tn-form-actions"><button class="tn-button tn-button--danger" type="submit">Зафиксировать отмену</button></div>
+        </form>
+        <p class="tn-photo-notice">Учётными записями и PIN управляет только технический владелец через серверную утилиту, не Оператор 1.</p>
+      </section>
+    </main>
+  </div>
+
+  <div class="tn-modal" id="intakeModal" hidden>
+    <div class="tn-modal-backdrop" data-close-modal></div>
+    <section class="tn-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="intakeModalTitle">
+      <header class="tn-modal-header"><div><p class="tn-kicker">Факт приёмки</p><h2 id="intakeModalTitle">Приёмка</h2></div><button class="tn-close" type="button" data-close-modal aria-label="Закрыть">×</button></header>
+      <div id="intakeModalContent"></div>
+    </section>
+  </div>
+  <div class="tn-toast" id="toast" hidden></div>
+</body>
+</html>

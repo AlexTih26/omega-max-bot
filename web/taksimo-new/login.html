@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#176b5b">
+  <meta name="application-name" content="Таксимо — новая площадка">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Таксимо">
+  <title>Таксимо — вход оператора</title>
+  <link rel="manifest" href="/taksimo-new/manifest.json">
+  <link rel="icon" href="/taksimo-new/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/taksimo-new/icon.svg">
+  <link rel="stylesheet" href="/taksimo-new/app.css">
+  <script src="/taksimo-new/pwa.js" defer></script>
+</head>
+<body class="tn-login-page">
+  <main class="tn-login-wrap">
+    <section class="tn-login-card" aria-labelledby="loginTitle">
+      <div class="tn-mark" aria-hidden="true">Т</div>
+      <p class="tn-kicker">Новый изолированный контур</p>
+      <h1 id="loginTitle">Таксимо</h1>
+      <p class="tn-subtitle">Приёмка, площадка и вагоны</p>
+      <form id="loginForm" novalidate>
+        <label class="tn-field" for="pin">Ваш PIN
+          <input id="pin" type="password" inputmode="numeric" pattern="[0-9]{6,12}" minlength="6" maxlength="12"
+            autocomplete="off" placeholder="Введите 6–12 цифр" required autofocus>
+        </label>
+        <button class="tn-button tn-button--primary tn-button--wide" id="loginButton" type="submit">Войти</button>
+      </form>
+      <p class="tn-form-error" id="loginError" role="alert"></p>
+      <p class="tn-help">PIN выдаёт и меняет только технический владелец. Старый кабинет Таксимо здесь не используется.</p>
+    </section>
+  </main>
+  <script>
+    (function () {
+      "use strict";
+      var form = document.getElementById("loginForm");
+      var pin = document.getElementById("pin");
+      var error = document.getElementById("loginError");
+      var button = document.getElementById("loginButton");
+      var params = new URLSearchParams(location.search);
+      var appHome = "/taksimo-new/index.html";
+      var next = params.get("next") || appHome;
+      if (!next.startsWith("/taksimo-new/") || next.startsWith("//") || next === "/taksimo-new/") next = appHome;
+
+      function body(response) {
+        return response.text().then(function (text) {
+          try { return text ? JSON.parse(text) : {}; } catch (_) { return {}; }
+        });
+      }
+
+      fetch("/api/taksimo-new/auth/check", { credentials: "same-origin" })
+        .then(function (response) { return body(response).then(function (data) { return { response: response, data: data }; }); })
+        .then(function (result) {
+          if (result.response.ok && result.data.authenticated) location.replace(next);
+          if (!result.response.ok && result.data.error) error.textContent = result.data.error;
+        })
+        .catch(function () { error.textContent = "Не удалось проверить доступ. Проверьте соединение."; });
+
+      form.addEventListener("submit", function (event) {
+        event.preventDefault();
+        error.textContent = "";
+        if (!form.checkValidity()) { form.reportValidity(); return; }
+        button.disabled = true;
+        fetch("/api/taksimo-new/auth", {
+          method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: pin.value.trim() })
+        })
+          .then(function (response) {
+            return body(response).then(function (data) {
+              if (!response.ok) throw new Error(data.error || "Не удалось выполнить вход");
+              return data;
+            });
+          })
+          .then(function () { location.replace(next); })
+          .catch(function (err) { error.textContent = err.message || "Не удалось выполнить вход"; pin.select(); })
+          .finally(function () { button.disabled = false; });
+      });
+    })();
+  </script>
+</body>
+</html>

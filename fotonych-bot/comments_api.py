@@ -42,6 +42,8 @@ from rumex_management_api import register_rumex_management_routes
 from taksimo_find_api import register_taksimo_find_routes
 from taksimo_api import register_taksimo_routes
 from taksimo_auth import register_taksimo_auth_routes, taksimo_auth_middleware
+from taksimo_new_api import register_taksimo_new_routes
+from taksimo_new_auth import register_taksimo_new_auth_routes, taksimo_new_auth_middleware
 from admin_api import register_admin_routes
 from ai_chat_api import register_ai_chat_routes
 from ai_chat_store import init_omega_chat_db
@@ -246,13 +248,22 @@ async def handle_work_create(request: web.Request) -> web.Response:
     return _json({"request": item}, 201)
 
 
+@web.middleware
+async def isolated_taksimo_auth_middleware(request: web.Request, handler):
+    """Не давать старому PIN-middleware перехватывать новый изолированный API."""
+    if request.path.startswith("/api/taksimo-new/"):
+        return await handler(request)
+    return await taksimo_auth_middleware(request, handler)
+
+
 def create_app() -> web.Application:
     init_db()
     init_work_db()
     init_omega_chat_db()
     app = web.Application(
         middlewares=[
-            taksimo_auth_middleware,
+            isolated_taksimo_auth_middleware,
+            taksimo_new_auth_middleware,
             rumex_registry_auth_middleware,
             rumex_test_dispatcher_auth_middleware,
             rumex_admin_auth_middleware,
@@ -267,6 +278,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/work/requests", handle_work_create)
     register_taksimo_auth_routes(app)
     register_taksimo_routes(app)
+    register_taksimo_new_auth_routes(app)
+    register_taksimo_new_routes(app)
     register_sklad_master_routes(app)
     register_drivers_routes(app)
     register_panel_routes(app)

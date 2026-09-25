@@ -1,0 +1,21 @@
+{
+  "id": "/taksimo-new/index.html",
+  "name": "Таксимо — новая площадка",
+  "short_name": "Таксимо",
+  "description": "Приёмка, площадка и вагоны нового изолированного контура Таксимо",
+  "start_url": "/taksimo-new/index.html",
+  "scope": "/taksimo-new/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f7fb",
+  "theme_color": "#176b5b",
+  "lang": "ru",
+  "icons": [
+    {
+      "src": "/taksimo-new/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

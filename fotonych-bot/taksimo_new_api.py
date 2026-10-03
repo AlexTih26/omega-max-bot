@@ -10,6 +10,7 @@ from aiohttp import web
 from taksimo_new_auth import operator_from_request
 from taksimo_new_db import TaksimoNewDatabaseError
 import taksimo_new_store as store
+import taksimo_legacy_reader as legacy
 
 
 def _json(data: dict, status: int = 200) -> web.Response:
@@ -101,6 +102,32 @@ async def handle_intake_confirm(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 409)
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+
+
+async def _handle_intake_fact(request: web.Request, recorder) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        return _json({"intake": recorder(request.match_info["public_id"], operator=operator)})
+    except KeyError:
+        return _json({"error": "Приёмка не найдена"}, 404)
+    except store.TaksimoNewConflictError as exc:
+        return _json({"error": str(exc)}, 409)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+
+
+async def handle_intake_arrival(request: web.Request) -> web.Response:
+    return await _handle_intake_fact(request, store.record_intake_arrival)
+
+
+async def handle_intake_crane_started(request: web.Request) -> web.Response:
+    return await _handle_intake_fact(request, store.record_intake_crane_started)
+
+
+async def handle_intake_crane_ended(request: web.Request) -> web.Response:
+    return await _handle_intake_fact(request, store.record_intake_crane_ended)
 
 
 async def handle_intake_cancel(request: web.Request) -> web.Response:
@@ -201,6 +228,38 @@ async def handle_wagon_dispatch(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
+async def _handle_wagon_transition(request: web.Request, transition) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        return _json({"wagon": transition(request.match_info["wagon_number"], operator=operator)})
+    except PermissionError as exc:
+        return _json({"error": str(exc)}, 403)
+    except KeyError:
+        return _json({"error": "Вагон не найден"}, 404)
+    except store.TaksimoNewConflictError as exc:
+        return _json({"error": str(exc)}, 409)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+
+
+async def handle_wagon_loaded(request: web.Request) -> web.Response:
+    return await _handle_wagon_transition(request, store.mark_wagon_loaded)
+
+
+async def handle_wagon_arrived_kodar(request: web.Request) -> web.Response:
+    return await _handle_wagon_transition(request, store.mark_wagon_arrived_kodar)
+
+
+async def handle_wagon_unloaded_bts_east(request: web.Request) -> web.Response:
+    return await _handle_wagon_transition(request, store.mark_wagon_unloaded_bts_east)
+
+
+async def handle_wagon_returned_empty(request: web.Request) -> web.Response:
+    return await _handle_wagon_transition(request, store.mark_wagon_returned_empty)
+
+
 async def handle_search(request: web.Request) -> web.Response:
     try:
         return _json({"results": store.search(request.query.get("q"), limit=request.query.get("limit", 50))})
@@ -217,6 +276,38 @@ async def handle_report(request: web.Request) -> web.Response:
         return _json(store.report_summary(date_value=request.query.get("date")))
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+
+
+# --- Read-only справочники и картина площадки из старой Таксимо ---
+# Подтягиваются напрямую из старой SQLite (mode=ro) на каждый запрос, пока
+# операторы ещё работают в старой версии. Старая база не изменяется.
+
+async def handle_legacy_vehicles(_request: web.Request) -> web.Response:
+    return _json({"vehicles": legacy.list_legacy_vehicles()})
+
+
+async def handle_legacy_wagons(_request: web.Request) -> web.Response:
+    return _json({"wagons": legacy.list_legacy_wagons()})
+
+
+async def handle_legacy_slots(_request: web.Request) -> web.Response:
+    return _json({"slots": legacy.list_legacy_wagon_slots()})
+
+
+async def handle_legacy_slabs(_request: web.Request) -> web.Response:
+    return _json({"slabs": legacy.list_legacy_slabs()})
+
+
+async def handle_legacy_sessions(_request: web.Request) -> web.Response:
+    return _json({"sessions": legacy.list_legacy_sessions()})
+
+
+async def handle_legacy_wagon_history(_request: web.Request) -> web.Response:
+    return _json({"history": legacy.list_legacy_wagon_history()})
+
+
+async def handle_dead_ends(_request: web.Request) -> web.Response:
+    return _json({"dead_ends": store.wagon_dead_ends()})
 
 
 async def handle_attachment_placeholder(_request: web.Request) -> web.Response:
@@ -266,6 +357,21 @@ async def handle_integration_ack(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
+async def handle_integration_failure(request: web.Request) -> web.Response:
+    unavailable = _service_unavailable_response()
+    if unavailable:
+        return unavailable
+    if not _service_authorized(request):
+        return _json({"error": "Интеграция не авторизована"}, 401)
+    try:
+        body = await _body(request)
+        if not store.record_outbox_delivery_failure(request.match_info["public_id"], result_note=body.get("result_note")):
+            return _json({"error": "Событие не найдено или уже подтверждено"}, 404)
+        return _json({"ok": True})
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+
+
 def _with_database_errors(handler):
     async def wrapped(request: web.Request) -> web.Response:
         try:
@@ -281,6 +387,9 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_post("/api/taksimo-new/intakes", _with_database_errors(handle_intakes))
     app.router.add_get("/api/taksimo-new/intakes/{public_id}", _with_database_errors(handle_intake))
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/claim", _with_database_errors(handle_intake_claim))
+    app.router.add_post("/api/taksimo-new/intakes/{public_id}/arrival", _with_database_errors(handle_intake_arrival))
+    app.router.add_post("/api/taksimo-new/intakes/{public_id}/crane-started", _with_database_errors(handle_intake_crane_started))
+    app.router.add_post("/api/taksimo-new/intakes/{public_id}/crane-ended", _with_database_errors(handle_intake_crane_ended))
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/confirm", _with_database_errors(handle_intake_confirm))
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/cancel", _with_database_errors(handle_intake_cancel))
     app.router.add_post("/api/taksimo-new/corrections", _with_database_errors(handle_corrections))
@@ -288,11 +397,23 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo-new/yard", _with_database_errors(handle_yard))
     app.router.add_get("/api/taksimo-new/wagons", _with_database_errors(handle_wagons))
     app.router.add_post("/api/taksimo-new/wagons/load", _with_database_errors(handle_wagon_load))
+    app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/loaded", _with_database_errors(handle_wagon_loaded))
     app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/dispatch", _with_database_errors(handle_wagon_dispatch))
+    app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/arrived-kodar", _with_database_errors(handle_wagon_arrived_kodar))
+    app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/unloaded-bts-east", _with_database_errors(handle_wagon_unloaded_bts_east))
+    app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/returned-empty", _with_database_errors(handle_wagon_returned_empty))
     app.router.add_get("/api/taksimo-new/search", _with_database_errors(handle_search))
     app.router.add_get("/api/taksimo-new/events", _with_database_errors(handle_events))
     app.router.add_get("/api/taksimo-new/reports/summary", _with_database_errors(handle_report))
+    app.router.add_get("/api/taksimo-new/catalog/vehicles", handle_legacy_vehicles)
+    app.router.add_get("/api/taksimo-new/catalog/wagons", handle_legacy_wagons)
+    app.router.add_get("/api/taksimo-new/catalog/slots", handle_legacy_slots)
+    app.router.add_get("/api/taksimo-new/catalog/slabs", handle_legacy_slabs)
+    app.router.add_get("/api/taksimo-new/catalog/sessions", handle_legacy_sessions)
+    app.router.add_get("/api/taksimo-new/catalog/wagon-history", handle_legacy_wagon_history)
+    app.router.add_get("/api/taksimo-new/catalog/dead-ends", handle_dead_ends)
     app.router.add_post("/api/taksimo-new/attachments", _with_database_errors(handle_attachment_placeholder))
     app.router.add_post("/api/taksimo-new/integration/rumex/expected-intakes", _with_database_errors(handle_integration_expected))
     app.router.add_get("/api/taksimo-new/integration/outbox", _with_database_errors(handle_integration_outbox))
     app.router.add_post("/api/taksimo-new/integration/outbox/{public_id}/ack", _with_database_errors(handle_integration_ack))
+    app.router.add_post("/api/taksimo-new/integration/outbox/{public_id}/failure", _with_database_errors(handle_integration_failure))

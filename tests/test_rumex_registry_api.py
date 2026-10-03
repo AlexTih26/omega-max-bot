@@ -37,6 +37,30 @@ if AIOHTTP_AVAILABLE:
 
 @unittest.skipUnless(AIOHTTP_AVAILABLE, "Для HTTP-тестов требуется aiohttp")
 class RumexRegistryApiTests(AioHTTPTestCase):
+    def _create_documented_shipment(self) -> dict:
+        created_at = 1_767_225_600.0
+        with sqlite3.connect(store.DB_PATH) as conn:
+            driver = conn.execute(
+                """INSERT INTO drivers
+                   (full_name, phone, max_user_id, carrier_id, active, created_at, updated_at)
+                   VALUES (?, ?, ?, NULL, 1, ?, ?)""",
+                ("Тестовый водитель", "+70000000000", 42, created_at, created_at),
+            )
+            vehicle = conn.execute(
+                """INSERT INTO vehicles
+                   (plate, plate_normalized, model, carrier_id, active, created_at, updated_at)
+                   VALUES (?, ?, ?, NULL, 1, ?, ?)""",
+                ("Т000ТТ 138", "T000TT138", "Тестовый автомобиль", created_at, created_at),
+            )
+        return store.create_shipment(
+            registry_year=2026,
+            items=[{"letter": "A", "number": "103"}],
+            driver_id=int(driver.lastrowid),
+            vehicle_id=int(vehicle.lastrowid),
+            dispatcher_name="Диспетчер",
+            created_at=created_at,
+        )
+
     async def get_application(self):
         self._tmpdir = tempfile.TemporaryDirectory()
         self._old_db_path = store.DB_PATH
@@ -72,11 +96,7 @@ class RumexRegistryApiTests(AioHTTPTestCase):
         auth.register_rumex_registry_auth_routes(app)
         test_dispatcher_auth.register_rumex_test_dispatcher_auth_routes(app)
         api.register_rumex_registry_routes(app)
-        self.shipment = store.create_shipment(
-            registry_year=2026,
-            items=[{"letter": "A", "number": "103"}],
-            dispatcher_name="Диспетчер",
-        )
+        self.shipment = self._create_documented_shipment()
         return app
 
     async def asyncTearDown(self) -> None:

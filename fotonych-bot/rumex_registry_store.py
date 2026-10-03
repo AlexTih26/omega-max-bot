@@ -13,14 +13,14 @@ import os
 import re
 import sqlite3
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "rumex_registry.db"
 FLEET_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "data" / "drivers_registry.json"
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 PRODUCT_NAME = "Блок 9,7/8,8"
 BLOCK_CODES = ("A", "B", "C", "D", "E", "F", "K")
@@ -686,6 +686,109 @@ def init_rumex_registry_db() -> None:
                 SELECT RAISE(ABORT, 'События аудита РУМЕКС нельзя удалять');
             END;
 
+            -- Изолированный мост РУМЕКС -> новая Таксимо. Снимок документа и
+            -- факт постановки в очередь создаются в той же транзакции, что и
+            -- подтверждение ЭР: HTTP никогда не является частью этой операции.
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shipment_id INTEGER NOT NULL,
+                document_version INTEGER NOT NULL CHECK (document_version >= 1),
+                external_reference TEXT NOT NULL UNIQUE,
+                physical_owner TEXT NOT NULL CHECK (physical_owner = 'taksimo_new'),
+                snapshot_json TEXT NOT NULL,
+                er_confirmed_at REAL NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE (shipment_id, document_version),
+                FOREIGN KEY (shipment_id) REFERENCES shipments(id) ON DELETE RESTRICT
+            );
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_snapshots_no_update
+            BEFORE UPDATE ON rumex_taksimo_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'Подтверждённый снимок для Таксимо нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_snapshots_no_delete
+            BEFORE DELETE ON rumex_taksimo_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'Подтверждённый снимок для Таксимо нельзя удалять');
+            END;
+
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL UNIQUE,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                created_at REAL NOT NULL,
+                delivered_at REAL,
+                delivery_reference TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (snapshot_id) REFERENCES rumex_taksimo_snapshots(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_outbox_pending
+                ON rumex_taksimo_outbox(delivered_at, created_at, id);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_outbox_delivery_only
+            BEFORE UPDATE ON rumex_taksimo_outbox
+            WHEN NOT (
+                NEW.id = OLD.id
+                AND NEW.snapshot_id = OLD.snapshot_id
+                AND NEW.idempotency_key = OLD.idempotency_key
+                AND NEW.created_at = OLD.created_at
+                AND OLD.delivered_at IS NULL
+                AND NEW.delivered_at IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Исходящий снимок можно только подтвердить доставкой');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_outbox_no_delete
+            BEFORE DELETE ON rumex_taksimo_outbox
+            BEGIN
+                SELECT RAISE(ABORT, 'Исходящий снимок для Таксимо нельзя удалять');
+            END;
+
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_outbox_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                outbox_id INTEGER NOT NULL,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                http_status INTEGER,
+                result_note TEXT NOT NULL DEFAULT '',
+                attempted_at REAL NOT NULL,
+                FOREIGN KEY (outbox_id) REFERENCES rumex_taksimo_outbox(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_outbox_attempts
+                ON rumex_taksimo_outbox_attempts(outbox_id, attempted_at DESC, id DESC);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_outbox_attempts_no_update
+            BEFORE UPDATE ON rumex_taksimo_outbox_attempts
+            BEGIN
+                SELECT RAISE(ABORT, 'Попытку доставки нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_outbox_attempts_no_delete
+            BEFORE DELETE ON rumex_taksimo_outbox_attempts
+            BEGIN
+                SELECT RAISE(ABORT, 'Попытку доставки нельзя удалять');
+            END;
+
+            -- Физические факты приходит только из outbox новой Таксимо.
+            -- Они не меняют ЭР или ТТН, а лишь дополняют документную историю.
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_physical_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_event_public_id TEXT NOT NULL UNIQUE,
+                event_type TEXT NOT NULL,
+                rumex_shipment_id INTEGER,
+                payload_json TEXT NOT NULL,
+                source_occurred_at REAL,
+                received_at REAL NOT NULL,
+                FOREIGN KEY (rumex_shipment_id) REFERENCES shipments(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_physical_events_shipment
+                ON rumex_taksimo_physical_events(rumex_shipment_id, source_occurred_at, id);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_physical_events_no_update
+            BEFORE UPDATE ON rumex_taksimo_physical_events
+            BEGIN
+                SELECT RAISE(ABORT, 'Физический факт новой Таксимо нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_physical_events_no_delete
+            BEFORE DELETE ON rumex_taksimo_physical_events
+            BEGIN
+                SELECT RAISE(ABORT, 'Физический факт новой Таксимо нельзя удалять');
+            END;
+
             CREATE TABLE IF NOT EXISTS accountant_login_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT NOT NULL DEFAULT '',
@@ -707,7 +810,8 @@ def init_rumex_registry_db() -> None:
                 last_seen_at REAL NOT NULL,
                 revoked_at REAL,
                 remote_address TEXT NOT NULL DEFAULT '',
-                user_agent TEXT NOT NULL DEFAULT ''
+                user_agent TEXT NOT NULL DEFAULT '',
+                auth_method TEXT NOT NULL DEFAULT 'max' CHECK (auth_method IN ('max', 'password'))
             );
             CREATE INDEX IF NOT EXISTS idx_rumex_accountant_sessions_expiry
                 ON accountant_sessions(expires_at, revoked_at);
@@ -776,6 +880,8 @@ def init_rumex_registry_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_rumex_admin_login_attempts
                 ON rumex_admin_login_attempts(max_user_id, attempted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_rumex_admin_login_attempts_remote
+                ON rumex_admin_login_attempts(remote_address, attempted_at DESC);
             CREATE TABLE IF NOT EXISTS rumex_admin_sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 token_hash TEXT NOT NULL UNIQUE,
@@ -847,6 +953,11 @@ def init_rumex_registry_db() -> None:
             conn,
             "document_vehicle_bindings",
             "driver_license_number TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            conn,
+            "rumex_admin_sessions",
+            "auth_method TEXT NOT NULL DEFAULT 'max'",
         )
         _add_column_if_missing(conn, "test_shipments", "ttn_number TEXT NOT NULL DEFAULT ''")
         _add_column_if_missing(conn, "test_shipments", "ttn_year INTEGER")
@@ -2983,6 +3094,242 @@ def _shipment_for_update(conn: sqlite3.Connection, shipment_id: int) -> sqlite3.
     return shipment
 
 
+def _taksimo_snapshot_payload(
+    conn: sqlite3.Connection,
+    *,
+    shipment: sqlite3.Row,
+    document_version: int,
+    confirmed_at: float,
+) -> dict[str, Any]:
+    shipment_id = int(shipment["id"])
+    documents = {
+        str(row["document_kind"]): dict(row)
+        for row in conn.execute(
+            "SELECT * FROM shipment_documents WHERE shipment_id = ?", (shipment_id,)
+        )
+    }
+    items = [
+        dict(row)
+        for row in conn.execute(
+            """SELECT block_type_code, block_number, product_name, weight_kg
+               FROM shipment_items WHERE shipment_id = ? ORDER BY sort_order""",
+            (shipment_id,),
+        )
+    ]
+    driver = json.loads(str(shipment["driver_snapshot_json"]) or "{}")
+    vehicle = json.loads(str(shipment["vehicle_snapshot_json"]) or "{}")
+    vehicle_plate = str(vehicle.get("plate") or vehicle.get("full_plate") or "").strip()
+    driver_name = str(driver.get("full_name") or driver.get("driver_full_name") or "").strip()
+    if not vehicle_plate:
+        raise ValueError("Нельзя передать рейс в новую Таксимо: в подтверждённых документах нет номера машины")
+    if not driver_name:
+        raise ValueError("Нельзя передать рейс в новую Таксимо: в подтверждённых документах нет ФИО водителя")
+    external_reference = f"rumex-shipment:{shipment_id}:v{document_version}"
+    return {
+        "contract_version": 1,
+        "external_reference": external_reference,
+        "rumex_shipment_id": shipment_id,
+        "document_version": document_version,
+        "physical_owner": "taksimo_new",
+        "ttn_number": str(documents.get("TN", {}).get("registry_number") or shipment["registry_number"]),
+        "vehicle_plate": vehicle_plate,
+        "driver_name": driver_name,
+        "expected_blocks": [
+            {
+                "block_type": str(item["block_type_code"]),
+                "block_number": str(item["block_number"]),
+                "product_name": str(item["product_name"]),
+                "weight_kg": int(item["weight_kg"]),
+            }
+            for item in items
+        ],
+        "confirmation": {
+            "er_confirmed_at": datetime.fromtimestamp(confirmed_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+            "er_external_reference": str(documents.get("ER", {}).get("external_reference") or ""),
+        },
+    }
+
+
+def _enqueue_taksimo_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    shipment: sqlite3.Row,
+    confirmed_at: float,
+) -> dict[str, Any]:
+    shipment_id = int(shipment["id"])
+    existing = conn.execute(
+        "SELECT * FROM rumex_taksimo_snapshots WHERE shipment_id = ? AND document_version = 1",
+        (shipment_id,),
+    ).fetchone()
+    if existing is not None:
+        return json.loads(str(existing["snapshot_json"]))
+    snapshot = _taksimo_snapshot_payload(
+        conn, shipment=shipment, document_version=1, confirmed_at=confirmed_at
+    )
+    cursor = conn.execute(
+        """INSERT INTO rumex_taksimo_snapshots (
+               shipment_id, document_version, external_reference, physical_owner, snapshot_json,
+               er_confirmed_at, created_at
+           ) VALUES (?, ?, ?, 'taksimo_new', ?, ?, ?)""",
+        (
+            shipment_id,
+            snapshot["document_version"],
+            snapshot["external_reference"],
+            _json(snapshot),
+            confirmed_at,
+            confirmed_at,
+        ),
+    )
+    snapshot_id = int(cursor.lastrowid)
+    conn.execute(
+        """INSERT INTO rumex_taksimo_outbox (snapshot_id, idempotency_key, created_at)
+           VALUES (?, ?, ?)""",
+        (snapshot_id, snapshot["external_reference"], confirmed_at),
+    )
+    return snapshot
+
+
+def list_pending_taksimo_snapshots(*, limit: int = 25) -> list[dict[str, Any]]:
+    """Вернуть неподтверждённые снимки для односторонней доставки в новую Таксимо."""
+    init_rumex_registry_db()
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = 25
+    parsed_limit = max(1, min(parsed_limit, 100))
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT outbox.id AS outbox_id, outbox.idempotency_key, snapshot.snapshot_json
+               FROM rumex_taksimo_outbox AS outbox
+               JOIN rumex_taksimo_snapshots AS snapshot ON snapshot.id = outbox.snapshot_id
+               WHERE outbox.delivered_at IS NULL
+               ORDER BY outbox.created_at, outbox.id LIMIT ?""",
+            (parsed_limit,),
+        ).fetchall()
+    return [
+        {
+            "outbox_id": int(row["outbox_id"]),
+            "idempotency_key": str(row["idempotency_key"]),
+            "snapshot": json.loads(str(row["snapshot_json"])),
+        }
+        for row in rows
+    ]
+
+
+def record_taksimo_snapshot_delivery(
+    outbox_id: int,
+    *,
+    success: bool,
+    http_status: int | None = None,
+    result_note: str = "",
+    delivery_reference: str = "",
+    attempted_at: float | None = None,
+) -> bool:
+    """Зафиксировать попытку доставки и при успехе окончательно подтвердить очередь."""
+    init_rumex_registry_db()
+    now = float(attempted_at) if attempted_at is not None else _now()
+    note = " ".join(str(result_note or "").split())[:500]
+    reference = " ".join(str(delivery_reference or "").split())[:200]
+    parsed_status = None if http_status is None else int(http_status)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT delivered_at FROM rumex_taksimo_outbox WHERE id = ?", (int(outbox_id),)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Исходящий снимок не найден")
+            conn.execute(
+                """INSERT INTO rumex_taksimo_outbox_attempts
+                   (outbox_id, success, http_status, result_note, attempted_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (int(outbox_id), int(bool(success)), parsed_status, note, now),
+            )
+            if success and row["delivered_at"] is None:
+                conn.execute(
+                    """UPDATE rumex_taksimo_outbox
+                       SET delivered_at = ?, delivery_reference = ? WHERE id = ?""",
+                    (now, reference, int(outbox_id)),
+                )
+            conn.commit()
+            return row["delivered_at"] is None
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def record_taksimo_physical_event(
+    *,
+    source_event_public_id: Any,
+    event_type: Any,
+    payload: Mapping[str, Any],
+    source_occurred_at: float | None = None,
+    received_at: float | None = None,
+) -> bool:
+    """Неизменно принять факт из новой Таксимо и отразить его в аудите РУМЕКС."""
+    source_id = str(source_event_public_id or "").strip()
+    kind = str(event_type or "").strip()
+    if not source_id or len(source_id) > 80:
+        raise ValueError("Некорректный идентификатор физического события")
+    if not kind or len(kind) > 80:
+        raise ValueError("Некорректный вид физического события")
+    shipment_id_raw = payload.get("rumex_shipment_id")
+    try:
+        shipment_id = int(shipment_id_raw)
+    except (TypeError, ValueError):
+        raise ValueError("Некорректный идентификатор отгрузки РУМЕКС") from None
+    if shipment_id < 1:
+        raise ValueError("Некорректный идентификатор отгрузки РУМЕКС")
+    try:
+        document_version = int(payload.get("rumex_document_version"))
+    except (TypeError, ValueError):
+        raise ValueError("Некорректная версия документа РУМЕКС") from None
+    if document_version < 1:
+        raise ValueError("Некорректная версия документа РУМЕКС")
+    if payload.get("physical_owner") != "taksimo_new":
+        raise ValueError("Физический факт должен принадлежать новой Таксимо")
+    now = float(received_at) if received_at is not None else _now()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            exists = conn.execute(
+                "SELECT id FROM rumex_taksimo_physical_events WHERE source_event_public_id = ?",
+                (source_id,),
+            ).fetchone()
+            if exists is not None:
+                conn.commit()
+                return False
+            _shipment_for_update(conn, shipment_id)
+            snapshot = conn.execute(
+                """SELECT id FROM rumex_taksimo_snapshots
+                   WHERE shipment_id = ? AND document_version = ? AND physical_owner = 'taksimo_new'""",
+                (shipment_id, document_version),
+            ).fetchone()
+            if snapshot is None:
+                raise ValueError("Факт не связан с подтверждённым снимком РУМЕКС")
+            conn.execute(
+                """INSERT INTO rumex_taksimo_physical_events
+                   (source_event_public_id, event_type, rumex_shipment_id, payload_json, source_occurred_at, received_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (source_id, kind, shipment_id, _json(dict(payload)), source_occurred_at, now),
+            )
+            _append_audit_event(
+                conn,
+                shipment_id=shipment_id,
+                event_type=f"taksimo_new.{kind}",
+                actor_kind="integration",
+                actor_id="taksimo_new",
+                actor_name="Новая Таксимо",
+                payload={"source_event_public_id": source_id, **dict(payload)},
+                occurred_at=now,
+            )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+
+
 def mark_er_sent(
     shipment_id: int,
     *,
@@ -3061,6 +3408,9 @@ def mark_er_confirmed(
             shipment = _shipment_for_update(conn, shipment_id)
             status = str(shipment["status"])
             if status == "tn_ready":
+                _enqueue_taksimo_snapshot(
+                    conn, shipment=shipment, confirmed_at=float(shipment["er_confirmed_at"] or now)
+                )
                 conn.commit()
             elif status != "er_sent":
                 raise ValueError("Подтверждение ЭР доступно только после отправки в Контур")
@@ -3102,6 +3452,7 @@ def mark_er_confirmed(
                     payload={"external_reference": external},
                     occurred_at=now,
                 )
+                _enqueue_taksimo_snapshot(conn, shipment=shipment, confirmed_at=now)
                 conn.commit()
         except Exception:
             conn.rollback()
@@ -3464,6 +3815,139 @@ def rumex_admin_access_by_max_user_id(max_user_id: Any) -> dict[str, Any] | None
     return result
 
 
+def _admin_account_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    result.pop("password_hash", None)
+    result["active"] = bool(result["active"])
+    return result
+
+
+def get_rumex_admin_account(username: Any, *, include_hash: bool = False) -> dict[str, Any] | None:
+    """Получить учётную запись управления, никогда не выдавая хэш по умолчанию."""
+    login = str(username or "").strip()
+    if not login:
+        return None
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM rumex_admin_accounts WHERE username = ? COLLATE NOCASE", (login,)
+        ).fetchone()
+    if row is None:
+        return None
+    result = dict(row) if include_hash else _admin_account_from_row(row)
+    result["active"] = bool(result["active"])
+    return result
+
+
+def provision_rumex_admin_account(
+    *, username: Any, full_name: Any, max_user_id: Any, password_hash: str, actor_name: str
+) -> dict[str, Any]:
+    """Создать либо безопасно перевыпустить явную учётную запись управления.
+
+    При перевыпуске пароля прежние сессии этого администратора отзываются.
+    Пароль передаётся только в виде уже рассчитанного хэша.
+    """
+    login = _required_carrier_text(username, "логин", max_length=80)
+    name = _required_carrier_text(full_name, "ФИО", max_length=200)
+    actor = _required_carrier_text(actor_name, "ответственного", max_length=200)
+    if not password_hash:
+        raise ValueError("Не задан хэш пароля")
+    max_id = _source_max_user_id(max_user_id)
+    if max_id is None:
+        raise ValueError("Укажите корректный MAX ID")
+    now = _now()
+    init_rumex_registry_db()
+    with _connect() as conn:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT id, max_user_id FROM rumex_admin_accounts WHERE username = ? COLLATE NOCASE",
+                (login,),
+            ).fetchone()
+            if existing is None:
+                cursor = conn.execute(
+                    """INSERT INTO rumex_admin_accounts (
+                           username, full_name, max_user_id, password_hash, active, created_at, updated_at
+                       ) VALUES (?, ?, ?, ?, 1, ?, ?)""",
+                    (login, name, max_id, password_hash, now, now),
+                )
+                event_type = "admin_account_provisioned"
+                account_id = cursor.lastrowid
+            else:
+                previous_max_id = int(existing["max_user_id"])
+                conn.execute(
+                    """UPDATE rumex_admin_accounts
+                       SET full_name = ?, max_user_id = ?, password_hash = ?, active = 1, updated_at = ?
+                       WHERE id = ?""",
+                    (name, max_id, password_hash, now, existing["id"]),
+                )
+                conn.execute(
+                    """UPDATE rumex_admin_sessions SET revoked_at = ?
+                       WHERE max_user_id IN (?, ?) AND auth_method = 'password' AND revoked_at IS NULL""",
+                    (now, previous_max_id, max_id),
+                )
+                event_type = "admin_account_password_reset"
+                account_id = int(existing["id"])
+            _management_audit(
+                conn,
+                event_type=event_type,
+                actor_name=actor,
+                subject_type="admin",
+                subject_id=login,
+                payload={"admin_id": account_id, "max_user_id": max_id},
+                occurred_at=now,
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise ValueError("Логин администратора или MAX ID уже используется") from None
+        except Exception:
+            conn.rollback()
+            raise
+    return get_rumex_admin_account(login) or {}
+
+
+def record_rumex_admin_login_attempt(
+    *,
+    username: str = "",
+    max_user_id: Any = None,
+    success: bool,
+    failure_reason: str = "",
+    remote_address: str = "",
+    user_agent: str = "",
+    attempted_at: float | None = None,
+) -> None:
+    """Сохранить попытку входа администратора, не записывая пароль или токен."""
+    init_rumex_registry_db()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO rumex_admin_login_attempts (
+                   username, max_user_id, success, failure_reason, remote_address, user_agent, attempted_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                (username or "").strip()[:80],
+                _source_max_user_id(max_user_id),
+                int(bool(success)),
+                (failure_reason or "").strip()[:160],
+                (remote_address or "").strip()[:120],
+                (user_agent or "").strip()[:400],
+                float(attempted_at) if attempted_at is not None else _now(),
+            ),
+        )
+
+
+def failed_rumex_admin_login_count(*, remote_address: str, since: float) -> int:
+    """Вернуть число неудачных входов в управление с одного адреса."""
+    init_rumex_registry_db()
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS count FROM rumex_admin_login_attempts
+               WHERE success = 0 AND remote_address = ? AND attempted_at >= ?""",
+            ((remote_address or "").strip()[:120], float(since)),
+        ).fetchone()
+    return int(row["count"])
+
+
 def update_rumex_dispatcher_account(
     *, username: Any, full_name: Any, max_user_id: Any, active: bool, actor_name: str
 ) -> dict[str, Any]:
@@ -3641,18 +4125,20 @@ def list_rumex_management_audit_events(*, limit: int = 100) -> list[dict[str, An
 
 def create_rumex_admin_session(
     *, token_hash: str, username: str, max_user_id: int, expires_at: float,
-    remote_address: str = "", user_agent: str = ""
+    remote_address: str = "", user_agent: str = "", auth_method: str = "max"
 ) -> None:
+    if auth_method not in {"max", "password"}:
+        raise ValueError("Некорректный способ входа администратора")
     init_rumex_registry_db()
     now = _now()
     with _connect() as conn:
         conn.execute(
             """INSERT INTO rumex_admin_sessions (
                    token_hash, username, max_user_id, created_at, expires_at, last_seen_at,
-                   remote_address, user_agent
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   remote_address, user_agent, auth_method
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (token_hash, username, int(max_user_id), now, float(expires_at), now,
-             (remote_address or "")[:120], (user_agent or "")[:400]),
+             (remote_address or "")[:120], (user_agent or "")[:400], auth_method),
         )
 
 
@@ -3663,7 +4149,7 @@ def rumex_admin_session_identity(*, token_hash: str, renewal_seconds: float | No
     init_rumex_registry_db()
     with _connect() as conn:
         row = conn.execute(
-            """SELECT id, username, max_user_id FROM rumex_admin_sessions
+            """SELECT id, username, max_user_id, auth_method FROM rumex_admin_sessions
                WHERE token_hash = ? AND revoked_at IS NULL AND expires_at >= ?""", (token_hash, now)
         ).fetchone()
         if row is None:
@@ -3675,7 +4161,11 @@ def rumex_admin_session_identity(*, token_hash: str, renewal_seconds: float | No
                 "UPDATE rumex_admin_sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
                 (now, now + float(renewal_seconds), row["id"]),
             )
-    return {"username": str(row["username"]), "max_user_id": int(row["max_user_id"])}
+    return {
+        "username": str(row["username"]),
+        "max_user_id": int(row["max_user_id"]),
+        "auth_method": str(row["auth_method"]),
+    }
 
 
 def revoke_rumex_admin_session(*, token_hash: str) -> None:

@@ -9,18 +9,27 @@
     in_progress: "В работе",
     confirmed: "Подтверждена",
     discrepancy: "Расхождение",
-    loading: "Загрузка",
-    dispatched: "Отправлен"
+    forming: "Формируется",
+    loaded: "Загружен в тупиках, в вагонах",
+    in_transit: "В пути",
+    at_kodar: "В Кодаре",
+    unloaded_bts_east: "Выгружен у БТС Восток"
   };
   var eventLabels = {
     intake_expected_imported: "Получена ожидаемая приёмка из служебного моста",
     intake_draft_created: "Создана ручная ожидаемая приёмка",
     intake_locked: "Приёмка взята в работу",
+    intake_arrived: "Машина прибыла на площадку",
+    intake_crane_started: "Кран начал работу",
+    intake_crane_ended: "Кран завершил работу",
     intake_confirmed: "Приёмка подтверждена",
     intake_discrepancy: "Приёмка подтверждена с расхождением",
     intake_cancelled: "Оператор 1 отменил подтверждённую приёмку",
     block_loaded_to_wagon: "Блок загружен в вагон",
+    wagon_loaded: "Загрузка вагона зафиксирована",
     wagon_dispatched: "Вагон отправлен",
+    wagon_arrived_kodar: "Вагон прибыл в Кодар",
+    wagon_unloaded_bts_east: "Вагон выгружен у БТС Восток",
     operation_corrected: "Создана корректировка подтверждённой операции",
     operation_cancelled: "Оператор 1 отменил подтверждённую операцию"
   };
@@ -161,8 +170,9 @@
       var wagons = data.wagons || {};
       stats.appendChild(statCard((intakes.expected || 0) + (intakes.in_progress || 0), "ожидают или в работе"));
       stats.appendChild(statCard(data.yard_blocks || 0, "блоков на площадке"));
-      stats.appendChild(statCard(wagons.loading || 0, "вагонов загружается"));
-      stats.appendChild(statCard(wagons.dispatched || 0, "вагонов отправлено"));
+      stats.appendChild(statCard(wagons.forming || 0, "вагонов формируется"));
+      stats.appendChild(statCard(wagons.in_transit || 0, "вагонов в пути"));
+      stats.appendChild(statCard((wagons.at_kodar || 0) + (wagons.unloaded_bts_east || 0), "вагонов в Кодаре или выгружено"));
       stats.appendChild(statCard(data.pending_integrations || 0, "неподтверждённых сообщений моста"));
       renderIntakes(document.getElementById("expectedIntakes"), data.expected_intakes || [], document.getElementById("expectedEmpty"));
     });
@@ -225,15 +235,11 @@
         row.appendChild(statusBadge(wagon.status));
         card.appendChild(row);
         card.appendChild(element("p", "tn-card-meta", "Блоков: " + wagon.blocks_count + " · создан: " + formatDate(wagon.created_at)));
+        if (wagon.loaded_at) card.appendChild(element("p", "tn-card-meta", "Загрузка: " + formatDate(wagon.loaded_at)));
         if (wagon.dispatched_at) card.appendChild(element("p", "tn-card-meta", "Отправлен: " + formatDate(wagon.dispatched_at)));
-        if (isOperator1() && wagon.status === "loading") {
-          var actions = element("div", "tn-card-actions");
-          var dispatch = element("button", "tn-button tn-button--primary", "Отправить вагон");
-          dispatch.type = "button";
-          dispatch.addEventListener("click", function () { dispatchWagon(wagon.wagon_number, dispatch); });
-          actions.appendChild(dispatch);
-          card.appendChild(actions);
-        }
+        if (wagon.arrived_kodar_at) card.appendChild(element("p", "tn-card-meta", "Кодар: " + formatDate(wagon.arrived_kodar_at)));
+        if (wagon.unloaded_bts_east_at) card.appendChild(element("p", "tn-card-meta", "БТС Восток: " + formatDate(wagon.unloaded_bts_east_at)));
+        if (isOperator1()) appendWagonAction(card, wagon);
         list.appendChild(card);
       });
     });
@@ -379,7 +385,41 @@
       modalContent.appendChild(claim);
       return;
     }
+    if (intake.source_system === "rumex" && !intake.arrived_at) {
+      modalContent.appendChild(intakeFactAction(intake, "arrival", "Зафиксировать прибытие машины", "Прибытие машины зафиксировано."));
+      return;
+    }
+    if (intake.source_system === "rumex" && !intake.crane_started_at) {
+      modalContent.appendChild(intakeFactAction(intake, "crane-started", "Зафиксировать начало работы крана", "Начало работы крана зафиксировано."));
+      return;
+    }
+    if (intake.source_system === "rumex" && !intake.crane_ended_at) {
+      modalContent.appendChild(intakeFactAction(intake, "crane-ended", "Зафиксировать окончание работы крана", "Окончание работы крана зафиксировано."));
+      return;
+    }
     modalContent.appendChild(receiptForm(intake));
+  }
+
+  function intakeFactAction(intake, endpoint, label, successText) {
+    var section = element("section", "tn-form-card");
+    section.appendChild(element("h3", "", "Физический факт"));
+    section.appendChild(element("p", "tn-help", "Этот факт будет записан отдельно и не изменит ЭР или ТТН РУМЕКС."));
+    var button = element("button", "tn-button tn-button--primary", label);
+    button.type = "button";
+    button.addEventListener("click", function () {
+      if (!window.confirm(label + "? Запись останется в журнале.")) return;
+      button.disabled = true;
+      jsonRequest("/intakes/" + encodeURIComponent(intake.public_id) + "/" + endpoint, "POST", {})
+        .then(function (data) {
+          showToast(successText);
+          renderIntakeModal(data.intake);
+          loadDashboard().catch(function () {});
+          loadIntakes().catch(function () {});
+        })
+        .catch(function (error) { showToast(error.message || "Не удалось зафиксировать факт"); button.disabled = false; });
+    });
+    section.appendChild(button);
+    return section;
   }
 
   function lineField(label, type, name, value, options) {
@@ -513,12 +553,31 @@
       .catch(function (error) { showToast(error.message || "Не удалось отменить приёмку"); button.disabled = false; });
   }
 
-  function dispatchWagon(number, button) {
-    if (!window.confirm("Отправить вагон " + number + "? Подтверждённая отправка останется в журнале.")) return;
+  function wagonTransition(number, endpoint, question, successText, button) {
+    if (!window.confirm(question + " Вагон " + number + " останется в журнале.")) return;
     button.disabled = true;
-    jsonRequest("/wagons/" + encodeURIComponent(number) + "/dispatch", "POST", {})
-      .then(function () { showToast("Вагон отправлен и записан в журнал."); return loadWagons(); })
-      .catch(function (error) { showToast(error.message || "Не удалось отправить вагон"); button.disabled = false; });
+    jsonRequest("/wagons/" + encodeURIComponent(number) + "/" + endpoint, "POST", {})
+      .then(function () { showToast(successText); return Promise.all([loadWagons(), loadDashboard()]); })
+      .catch(function (error) { showToast(error.message || "Не удалось зафиксировать этап вагона"); button.disabled = false; });
+  }
+
+  function appendWagonAction(card, wagon) {
+    var actionsByStatus = {
+      forming: { endpoint: "loaded", label: "Зафиксировать загрузку", question: "Зафиксировать загрузку?", success: "Загрузка вагона зафиксирована." },
+      loaded: { endpoint: "dispatch", label: "Отправить в путь", question: "Отправить в путь?", success: "Вагон отправлен в путь." },
+      in_transit: { endpoint: "arrived-kodar", label: "Подтвердить прибытие в Кодар", question: "Подтвердить прибытие в Кодар?", success: "Прибытие в Кодар зафиксировано." },
+      at_kodar: { endpoint: "unloaded-bts-east", label: "Подтвердить выгрузку у БТС Восток", question: "Подтвердить выгрузку у БТС Восток?", success: "Выгрузка у БТС Восток зафиксирована." }
+    };
+    var action = actionsByStatus[wagon.status];
+    if (!action) return;
+    var actions = element("div", "tn-card-actions");
+    var button = element("button", "tn-button tn-button--primary", action.label);
+    button.type = "button";
+    button.addEventListener("click", function () {
+      wagonTransition(wagon.wagon_number, action.endpoint, action.question, action.success, button);
+    });
+    actions.appendChild(button);
+    card.appendChild(actions);
   }
 
   function submitManualIntake(event) {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "taksimo-new-shell-v2";
+const CACHE_NAME = "taksimo-new-shell-v3";
 const APP_SHELL_URLS = [
   "/taksimo-new/index.html",
   "/taksimo-new/login.html",

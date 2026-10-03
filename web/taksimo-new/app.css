@@ -77,10 +77,10 @@ h3 { margin: 0; font-size: 1rem; }
 .tn-card-meta { margin: 7px 0 0; color: var(--tn-muted); font-size: .88rem; line-height: 1.45; }
 .tn-card-actions { flex-wrap: wrap; margin-top: 12px; }
 .tn-badge { display: inline-flex; border: 1px solid var(--tn-border); border-radius: 999px; padding: 3px 8px; color: var(--tn-muted); font-size: .72rem; font-weight: 750; white-space: nowrap; }
-.tn-badge--expected, .tn-badge--in_progress { border-color: var(--tn-warning); color: var(--tn-warning); background: var(--tn-warning-soft); }
-.tn-badge--confirmed, .tn-badge--loading { border-color: var(--tn-accent); color: var(--tn-accent); background: var(--tn-accent-soft); }
+.tn-badge--expected, .tn-badge--in_progress, .tn-badge--forming, .tn-badge--in_transit { border-color: var(--tn-warning); color: var(--tn-warning); background: var(--tn-warning-soft); }
+.tn-badge--confirmed, .tn-badge--loaded, .tn-badge--unloaded_bts_east { border-color: var(--tn-accent); color: var(--tn-accent); background: var(--tn-accent-soft); }
 .tn-badge--discrepancy { border-color: var(--tn-danger); color: var(--tn-danger); background: var(--tn-danger-soft); }
-.tn-badge--dispatched { border-color: var(--tn-border); color: var(--tn-muted); }
+.tn-badge--at_kodar { border-color: var(--tn-border); color: var(--tn-muted); }
 .tn-empty { margin: 0; border: 1px dashed var(--tn-border); border-radius: 12px; background: var(--tn-surface-alt); color: var(--tn-muted); padding: 15px; text-align: center; font-size: .92rem; }
 .tn-button { min-height: 38px; border: 1px solid transparent; border-radius: 9px; padding: 8px 12px; font-weight: 740; }
 .tn-button--primary { background: var(--tn-accent); color: #fff; }

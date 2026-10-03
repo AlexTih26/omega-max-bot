@@ -41,11 +41,14 @@ from taksimo_backup import backup_taksimo_db, daily_backup_loop
 from rumex_registry_backup import backup_rumex_registry_db, daily_rumex_registry_backup_loop
 from rumex_registry_store import init_rumex_registry_db
 from rumex_registry_notifications import rumex_registry_deadline_loop, set_bot as set_rumex_registry_bot
+from rumex_taksimo_bridge import rumex_taksimo_bridge_loop
 from sklad_master_access_chat import set_bot as set_sklad_access_bot
 from sklad_master_access_chat import handle_sklad_access_callback
 from sklad_master_backup import backup_sklad_master_db, daily_sklad_backup_loop
 from sklad_master_reminders import sklad_eta_reminder_loop
-from taksimo_notify import daily_report_loop, notify_chat_id, set_bot as set_taksimo_bot
+from taksimo_notify import notify_chat_id, set_bot as set_taksimo_bot
+from taksimo_new_notify import daily_report_loop as taksimo_new_daily_report_loop
+from taksimo_new_notify import set_bot as set_taksimo_new_bot
 from materials_chat import (
     handle_materials_chat_message,
     is_materials_chat,
@@ -570,6 +573,7 @@ async def main() -> None:
         logger.exception("Не удалось обновить список команд MAX; бот продолжит запуск")
     set_bot(bot)
     set_taksimo_bot(bot)
+    set_taksimo_new_bot(bot)
     set_drivers_bot(bot)
     set_materials_bot(bot)
     set_materials_receipt_bot(bot)
@@ -589,11 +593,12 @@ async def main() -> None:
             logger.info("Реестр водителей при старте: %s, chat_id=%s", n, drivers_cid)
         except Exception:
             logger.exception("Не удалось загрузить реестр водителей")
-    report_task = asyncio.create_task(daily_report_loop())
+    report_task = asyncio.create_task(taksimo_new_daily_report_loop())
     backup_task = asyncio.create_task(daily_backup_loop())
     sklad_backup_task = asyncio.create_task(daily_sklad_backup_loop())
     rumex_registry_backup_task = asyncio.create_task(daily_rumex_registry_backup_loop())
     rumex_registry_deadline_task = asyncio.create_task(rumex_registry_deadline_loop())
+    rumex_taksimo_bridge_task = asyncio.create_task(rumex_taksimo_bridge_loop())
     sklad_eta_task = asyncio.create_task(sklad_eta_reminder_loop())
     materials_report_task = asyncio.create_task(materials_report_loop())
     materials_watch_task = asyncio.create_task(materials_watch_loop())
@@ -608,6 +613,7 @@ async def main() -> None:
         sklad_backup_task.cancel()
         rumex_registry_backup_task.cancel()
         rumex_registry_deadline_task.cancel()
+        rumex_taksimo_bridge_task.cancel()
         sklad_eta_task.cancel()
         materials_report_task.cancel()
         materials_watch_task.cancel()

@@ -20,6 +20,19 @@ OPERATOR_ROLES = {"operator1", "operator2", "operator3"}
 MAX_LOCK_MINUTES = 20
 DEFAULT_TIMEZONE = "Asia/Irkutsk"
 
+# Тупики новой площадки — своя конфигурация, НЕ копия старой (там было два:
+# ГРУЗОВОЙ и ТУРАН по 10). Слоты обязательны: это позиция вагона.
+WAGON_DEAD_ENDS = (
+    {"code": "gruzovoy_1", "name": "Грузовой 1", "slots": 10},
+    {"code": "gruzovoy_2", "name": "Грузовой 2 (Туран)", "slots": 10},
+    {"code": "gruzovoy_3", "name": "Грузовой 3", "slots": 10},
+)
+
+
+def wagon_dead_ends() -> list[dict[str, Any]]:
+    """Конфигурация тупиков/слотов новой площадки."""
+    return [dict(item) for item in WAGON_DEAD_ENDS]
+
 
 class TaksimoNewConflictError(ValueError):
     """Конфликт состояния: старые данные нельзя молча заменить."""
@@ -132,6 +145,33 @@ def _append_outbox(
            VALUES (%s, %s, %s, CAST(%s AS JSON), %s)""",
         (_public_id(), event_type, idempotency_key, _json(payload), created_at),
     )
+
+
+def _append_notification(
+    cursor: Any,
+    *,
+    event_type: str,
+    idempotency_key: str,
+    payload: Mapping[str, Any],
+    created_at: datetime,
+) -> None:
+    cursor.execute(
+        """INSERT INTO tn_notification_outbox
+           (public_id, event_type, idempotency_key, payload_json, created_at)
+           VALUES (%s, %s, %s, CAST(%s AS JSON), %s)""",
+        (_public_id(), event_type, idempotency_key, _json(payload), created_at),
+    )
+
+
+def _rumex_context(row: Mapping[str, Any]) -> dict[str, Any]:
+    shipment_id = row.get("rumex_shipment_id")
+    if shipment_id is None:
+        return {}
+    return {
+        "rumex_shipment_id": int(shipment_id),
+        "rumex_document_version": int(row["rumex_document_version"]),
+        "physical_owner": str(row["physical_owner"]),
+    }
 
 
 def _intake_line_payload(line: Mapping[str, Any], *, require_location: bool) -> dict[str, Any]:
@@ -329,7 +369,23 @@ def _intake_payload(cursor: Any, row: Mapping[str, Any], *, include_lines: bool 
 def import_expected_intake(payload: Mapping[str, Any], *, idempotency_key: str) -> dict[str, Any]:
     """Принять новый ожидаемый рейс только из доверенного одностороннего моста."""
     key = _required_text(idempotency_key, "ключ идемпотентности", max_length=160)
+    if payload.get("contract_version") != 1:
+        raise ValueError("Неподдерживаемая версия контракта РУМЕКС")
     reference = _required_text(payload.get("external_reference"), "внешний номер рейса", max_length=160)
+    rumex_shipment_id = _as_int(payload.get("rumex_shipment_id"), "идентификатор отгрузки РУМЕКС", minimum=1)
+    document_version = _as_int(payload.get("document_version"), "версия документа РУМЕКС", minimum=1)
+    if payload.get("physical_owner") != "taksimo_new":
+        raise ValueError("Физическим владельцем рейса должна быть новая Таксимо")
+    ttn_number = _required_text(payload.get("ttn_number"), "номер ТТН", max_length=120)
+    vehicle_plate = _required_text(payload.get("vehicle_plate"), "номер машины", max_length=40).upper()
+    driver_name = _required_text(payload.get("driver_name"), "имя водителя", max_length=200)
+    confirmation = payload.get("confirmation")
+    if not isinstance(confirmation, Mapping):
+        raise ValueError("Передайте реквизиты подтверждения ЭР")
+    er_confirmed_at = _datetime_from_external(confirmation.get("er_confirmed_at"), "время подтверждения ЭР")
+    if er_confirmed_at is None:
+        raise ValueError("Передайте время подтверждения ЭР")
+    _optional_text(confirmation.get("er_external_reference"), "внешнюю ссылку подтверждённого ЭР", max_length=200)
     expected_raw = payload.get("expected_blocks")
     if not isinstance(expected_raw, list) or not expected_raw:
         raise ValueError("Передайте ожидаемые блоки рейса")
@@ -354,17 +410,23 @@ def import_expected_intake(payload: Mapping[str, Any], *, idempotency_key: str) 
             cursor.execute("SELECT id FROM tn_intakes WHERE source_system = 'rumex' AND source_reference = %s", (reference,))
             if cursor.fetchone() is not None:
                 raise TaksimoNewConflictError("Рейс РУМЕКС с таким номером уже принят под другим ключом")
+            cursor.execute(
+                """SELECT id FROM tn_intakes
+                   WHERE source_system = 'rumex' AND rumex_shipment_id = %s AND rumex_document_version = %s""",
+                (rumex_shipment_id, document_version),
+            )
+            if cursor.fetchone() is not None:
+                raise TaksimoNewConflictError("Эта версия документа РУМЕКС уже принята под другим ключом")
             public_id = _public_id()
             cursor.execute(
                 """INSERT INTO tn_intakes
-                   (public_id, source_system, source_reference, ttn_number, vehicle_plate, driver_name,
-                    planned_arrival_at, expected_blocks_count, status, created_at, updated_at)
-                   VALUES (%s, 'rumex', %s, %s, %s, %s, %s, %s, 'expected', %s, %s)""",
+                   (public_id, source_system, source_reference, rumex_shipment_id, rumex_document_version,
+                    physical_owner, ttn_number, vehicle_plate, driver_name, planned_arrival_at,
+                    expected_blocks_count, status, created_at, updated_at)
+                   VALUES (%s, 'rumex', %s, %s, %s, 'taksimo_new', %s, %s, %s, %s, %s, 'expected', %s, %s)""",
                 (
-                    public_id, reference,
-                    _optional_text(payload.get("ttn_number"), "номер ТТН", max_length=120),
-                    _optional_text(payload.get("vehicle_plate"), "номер машины", max_length=40).upper(),
-                    _optional_text(payload.get("driver_name"), "имя водителя", max_length=200),
+                    public_id, reference, rumex_shipment_id, document_version,
+                    ttn_number, vehicle_plate, driver_name,
                     _datetime_from_external(payload.get("planned_arrival_at"), "плановое время прибытия"),
                     len(expected), now, now,
                 ),
@@ -387,7 +449,14 @@ def import_expected_intake(payload: Mapping[str, Any], *, idempotency_key: str) 
             _append_event(
                 cursor, event_type="intake_expected_imported", subject_type="intake", subject_public_id=public_id,
                 actor_kind="integration", actor_id="rumex", actor_name="РУМЕКС",
-                payload={"external_reference": reference, "expected_blocks_count": len(expected)}, occurred_at=now,
+                payload={
+                    "external_reference": reference,
+                    "rumex_shipment_id": rumex_shipment_id,
+                    "rumex_document_version": document_version,
+                    "physical_owner": "taksimo_new",
+                    "er_confirmed_at": iso_utc(er_confirmed_at),
+                    "expected_blocks_count": len(expected),
+                }, occurred_at=now,
             )
             intake = _fetch_intake(cursor, intake_id)
             if intake is None:
@@ -489,6 +558,17 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
             locked_until = row.get("locked_until")
             if locked_by and int(locked_by) != int(operator["id"]) and locked_until and locked_until >= now:
                 raise TaksimoNewConflictError("Приёмку редактирует другой оператор")
+            if str(row["source_system"]) == "rumex":
+                required_facts = {
+                    "arrived_at": "прибытие машины",
+                    "crane_started_at": "начало работы крана",
+                    "crane_ended_at": "окончание работы крана",
+                }
+                missing_facts = [label for field, label in required_facts.items() if row.get(field) is None]
+                if missing_facts:
+                    raise TaksimoNewConflictError(
+                        "Перед приёмкой рейса РУМЕКС зафиксируйте: " + ", ".join(missing_facts)
+                    )
             if str(row["source_system"]) != "rumex" and len(normalized) != int(row["expected_blocks_count"]):
                 raise ValueError("Число фактических блоков должно совпадать с ожидаемым")
             expected_identities: set[tuple[str, str]] = set()
@@ -597,6 +677,7 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                 "operator": {"role": str(operator["role"]), "name": str(operator["name"])},
                 "blocks": normalized,
                 "expected_blocks": len(expected_identities) if expected_identities else int(row["expected_blocks_count"]),
+                **_rumex_context(row),
             }
             _append_event(
                 cursor, event_type="intake_confirmed" if not discrepancy else "intake_discrepancy",
@@ -604,14 +685,132 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                 actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name,
                 payload=outgoing_payload, occurred_at=now,
             )
-            _append_outbox(
-                cursor, event_type="taksimo.intake.confirmed" if not discrepancy else "taksimo.intake.discrepancy",
-                idempotency_key=f"intake:{public_id}:{status}", payload=outgoing_payload, created_at=now,
+            _append_notification(
+                cursor,
+                event_type="intake_confirmed" if not discrepancy else "intake_discrepancy",
+                idempotency_key=f"intake:{public_id}:notification:{status}",
+                payload=outgoing_payload,
+                created_at=now,
             )
+            if _rumex_context(row):
+                _append_outbox(
+                    cursor, event_type="taksimo.intake.confirmed" if not discrepancy else "taksimo.intake.discrepancy",
+                    idempotency_key=f"intake:{public_id}:{status}", payload=outgoing_payload, created_at=now,
+                )
             updated = _fetch_intake(cursor, intake_id)
             if updated is None:
                 raise RuntimeError("Не удалось прочитать подтверждённую приёмку")
             return _intake_payload(cursor, updated)
+
+
+def _record_intake_fact(
+    public_id: str,
+    *,
+    fact: str,
+    operator: Mapping[str, Any],
+) -> dict[str, Any]:
+    definitions = {
+        "arrival": {
+            "column": "arrived_at",
+            "event_type": "intake_arrived",
+            "outbox_type": "taksimo.intake.arrived",
+            "label": "прибытие машины",
+            "allowed_statuses": {"expected", "in_progress"},
+            "next_status": "in_progress",
+        },
+        "crane_started": {
+            "column": "crane_started_at",
+            "event_type": "intake_crane_started",
+            "outbox_type": "taksimo.intake.crane_started",
+            "label": "начало работы крана",
+            "allowed_statuses": {"in_progress"},
+            "required_column": "arrived_at",
+        },
+        "crane_ended": {
+            "column": "crane_ended_at",
+            "event_type": "intake_crane_ended",
+            "outbox_type": "taksimo.intake.crane_ended",
+            "label": "окончание работы крана",
+            "allowed_statuses": {"in_progress"},
+            "required_column": "crane_started_at",
+        },
+    }
+    definition = definitions[fact]
+    now = utc_now()
+    actor_kind, actor_id, actor_name = _operator_actor(operator)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_intakes WHERE public_id = %s FOR UPDATE", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            intake_id = int(found["id"])
+            row = _fetch_intake(cursor, intake_id, for_update=True)
+            if row is None:
+                raise KeyError(public_id)
+            if row["cancelled_at"] is not None or str(row["status"]) not in definition["allowed_statuses"]:
+                raise TaksimoNewConflictError(f"Нельзя зафиксировать {definition['label']} в текущем статусе приёмки")
+            if row.get(definition["column"]) is not None:
+                raise TaksimoNewConflictError(f"{definition['label'].capitalize()} уже зафиксировано")
+            required_column = definition.get("required_column")
+            if required_column and row.get(required_column) is None:
+                raise TaksimoNewConflictError(f"Сначала зафиксируйте {definitions['arrival' if required_column == 'arrived_at' else 'crane_started']['label']}")
+            status = definition.get("next_status")
+            if status:
+                cursor.execute(
+                    f"UPDATE tn_intakes SET {definition['column']} = %s, status = %s, updated_at = %s WHERE id = %s",
+                    (now, status, now, intake_id),
+                )
+            else:
+                cursor.execute(
+                    f"UPDATE tn_intakes SET {definition['column']} = %s, updated_at = %s WHERE id = %s",
+                    (now, now, intake_id),
+                )
+            payload = {
+                "event": definition["event_type"],
+                "intake_id": public_id,
+                "external_reference": str(row["source_reference"] or ""),
+                "ttn_number": str(row["ttn_number"]),
+                "vehicle_plate": str(row["vehicle_plate"]),
+                "operator": {"role": str(operator["role"]), "name": str(operator["name"])},
+                "occurred_at": iso_utc(now),
+                **_rumex_context(row),
+            }
+            _append_event(
+                cursor, event_type=definition["event_type"], subject_type="intake", subject_public_id=public_id,
+                actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
+            )
+            _append_notification(
+                cursor,
+                event_type=definition["event_type"],
+                idempotency_key=f"intake:{public_id}:notification:{fact}",
+                payload=payload,
+                created_at=now,
+            )
+            if _rumex_context(row):
+                _append_outbox(
+                    cursor, event_type=definition["outbox_type"],
+                    idempotency_key=f"intake:{public_id}:{fact}", payload=payload, created_at=now,
+                )
+            updated = _fetch_intake(cursor, intake_id)
+            if updated is None:
+                raise RuntimeError("Не удалось прочитать приёмку после фиксации факта")
+            return _intake_payload(cursor, updated)
+
+
+def record_intake_arrival(public_id: str, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Неизменно зафиксировать фактическое прибытие автомобиля на площадку."""
+    return _record_intake_fact(public_id, fact="arrival", operator=operator)
+
+
+def record_intake_crane_started(public_id: str, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Неизменно зафиксировать начало работы крана по приёмке."""
+    return _record_intake_fact(public_id, fact="crane_started", operator=operator)
+
+
+def record_intake_crane_ended(public_id: str, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Неизменно зафиксировать окончание работы крана по приёмке."""
+    return _record_intake_fact(public_id, fact="crane_ended", operator=operator)
 
 
 def list_intakes(*, date_value: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -700,7 +899,7 @@ def cancel_operation(
             else:
                 subject_public_id = _required_text(subject_public_id, "номер вагона", max_length=40).upper()
                 cursor.execute(
-                    "SELECT id FROM tn_wagons WHERE wagon_number = %s AND status = 'dispatched' FOR UPDATE",
+                    "SELECT id FROM tn_wagons WHERE wagon_number = %s AND dispatched_at IS NOT NULL FOR UPDATE",
                     (subject_public_id,),
                 )
                 if cursor.fetchone() is None:
@@ -759,11 +958,17 @@ def create_correction(
                 if subject is None or str(subject["status"]) not in {"confirmed", "discrepancy"}:
                     raise TaksimoNewConflictError("Корректировка возможна только для подтверждённой приёмки")
             elif subject_type == "wagon_load":
-                cursor.execute("SELECT id FROM tn_wagon_loads WHERE id = %s FOR UPDATE", (subject_public_id,))
+                load_id = _as_int(subject_public_id, "загрузка вагона", minimum=1)
+                subject_public_id = str(load_id)
+                cursor.execute("SELECT id FROM tn_wagon_loads WHERE id = %s FOR UPDATE", (load_id,))
                 if cursor.fetchone() is None:
                     raise KeyError(subject_public_id)
             else:
-                cursor.execute("SELECT id FROM tn_wagons WHERE wagon_number = %s AND status = 'dispatched' FOR UPDATE", (subject_public_id,))
+                subject_public_id = _required_text(subject_public_id, "номер вагона", max_length=40).upper()
+                cursor.execute(
+                    "SELECT id FROM tn_wagons WHERE wagon_number = %s AND dispatched_at IS NOT NULL FOR UPDATE",
+                    (subject_public_id,),
+                )
                 if cursor.fetchone() is None:
                     raise KeyError(subject_public_id)
             cursor.execute(
@@ -802,12 +1007,60 @@ def list_wagons() -> list[dict[str, Any]]:
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """SELECT w.id, w.wagon_number, w.status, w.created_at, w.dispatched_at,
+                """SELECT w.id, w.wagon_number, w.status, w.created_at, w.loaded_at, w.dispatched_at,
+                          w.arrived_kodar_at, w.unloaded_bts_east_at,
                           COUNT(loads.id) AS blocks_count
                    FROM tn_wagons AS w LEFT JOIN tn_wagon_loads AS loads ON loads.wagon_id = w.id
                    GROUP BY w.id ORDER BY w.created_at DESC, w.id DESC"""
             )
             return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def _wagon_rumex_contexts(cursor: Any, wagon_id: int) -> list[dict[str, Any]]:
+    cursor.execute(
+        """SELECT DISTINCT i.rumex_shipment_id, i.rumex_document_version
+           FROM tn_wagon_loads AS loads
+           JOIN tn_blocks AS block ON block.id = loads.block_id
+           JOIN tn_intakes AS i ON i.id = block.received_intake_id
+           WHERE loads.wagon_id = %s
+             AND i.source_system = 'rumex'
+             AND i.physical_owner = 'taksimo_new'
+             AND i.rumex_shipment_id IS NOT NULL
+             AND i.rumex_document_version IS NOT NULL
+           ORDER BY i.rumex_shipment_id, i.rumex_document_version""",
+        (wagon_id,),
+    )
+    return [
+        {
+            "rumex_shipment_id": int(row["rumex_shipment_id"]),
+            "rumex_document_version": int(row["rumex_document_version"]),
+            "physical_owner": "taksimo_new",
+        }
+        for row in cursor.fetchall()
+    ]
+
+
+def _append_wagon_physical_facts(
+    cursor: Any,
+    *,
+    wagon_id: int,
+    wagon_number: str,
+    stage: str,
+    event_type: str,
+    payload: Mapping[str, Any],
+    created_at: datetime,
+) -> None:
+    for context in _wagon_rumex_contexts(cursor, wagon_id):
+        _append_outbox(
+            cursor,
+            event_type=event_type,
+            idempotency_key=(
+                f"wagon:{wagon_number}:{stage}:rumex:{context['rumex_shipment_id']}:"
+                f"v{context['rumex_document_version']}"
+            ),
+            payload={**payload, **context},
+            created_at=created_at,
+        )
 
 
 def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[str, Any]) -> dict[str, Any]:
@@ -817,7 +1070,13 @@ def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[s
     actor_kind, actor_id, actor_name = _operator_actor(operator)
     with transaction() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM tn_blocks WHERE id = %s FOR UPDATE", (parsed_block_id,))
+            cursor.execute(
+                """SELECT block.*, i.rumex_shipment_id, i.rumex_document_version, i.physical_owner
+                   FROM tn_blocks AS block
+                   JOIN tn_intakes AS i ON i.id = block.received_intake_id
+                   WHERE block.id = %s FOR UPDATE""",
+                (parsed_block_id,),
+            )
             block = cursor.fetchone()
             if block is None:
                 raise KeyError(parsed_block_id)
@@ -827,14 +1086,28 @@ def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[s
             wagon = cursor.fetchone()
             if wagon is None:
                 cursor.execute(
-                    "INSERT INTO tn_wagons (wagon_number, status, created_at) VALUES (%s, 'loading', %s)",
+                    "INSERT INTO tn_wagons (wagon_number, status, created_at) VALUES (%s, 'forming', %s)",
                     (number, now),
                 )
                 wagon_id = int(cursor.lastrowid)
             else:
-                if str(wagon["status"]) != "loading":
-                    raise TaksimoNewConflictError("Отправленный вагон нельзя догружать")
-                wagon_id = int(wagon["id"])
+                if str(wagon["status"]) == "returned_empty":
+                    # Порожний вагон снова у площадки: начинаем новый проход.
+                    # Поля предыдущего прохода сбрасываются, история сохраняется в tn_events.
+                    cursor.execute(
+                        """UPDATE tn_wagons SET status = 'forming', loaded_at = NULL,
+                           loaded_by_operator_id = NULL, dispatched_at = NULL,
+                           dispatched_by_operator_id = NULL, arrived_kodar_at = NULL,
+                           arrived_kodar_by_operator_id = NULL, unloaded_bts_east_at = NULL,
+                           unloaded_bts_east_by_operator_id = NULL, returned_empty_at = NULL,
+                           returned_empty_by_operator_id = NULL WHERE id = %s""",
+                        (int(wagon["id"]),),
+                    )
+                    wagon_id = int(wagon["id"])
+                elif str(wagon["status"]) == "forming":
+                    wagon_id = int(wagon["id"])
+                else:
+                    raise TaksimoNewConflictError("Вагон после фиксации загрузки нельзя догружать")
             cursor.execute(
                 """INSERT INTO tn_wagon_loads (wagon_id, block_id, loaded_by_operator_id, loaded_at)
                    VALUES (%s, %s, %s, %s)""",
@@ -851,14 +1124,56 @@ def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[s
                 actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name,
                 payload={"wagon_number": number, "block_id": parsed_block_id, "block": f"{block['block_type']} {block['block_number']}"}, occurred_at=now,
             )
-            _append_outbox(
-                cursor, event_type="taksimo.wagon_load.confirmed", idempotency_key=f"wagon-load:{load_id}",
-                payload={
-                    "load_id": load_id, "wagon_number": number, "block_id": parsed_block_id,
-                    "block": f"{block['block_type']} {block['block_number']}", "loaded_at": iso_utc(now),
-                }, created_at=now,
-            )
+            context = _rumex_context(block)
+            if context:
+                _append_outbox(
+                    cursor, event_type="taksimo.wagon_load.confirmed", idempotency_key=f"wagon-load:{load_id}",
+                    payload={
+                        "load_id": load_id, "wagon_number": number, "block_id": parsed_block_id,
+                        "block": f"{block['block_type']} {block['block_number']}", "loaded_at": iso_utc(now),
+                        **context,
+                    }, created_at=now,
+                )
             return {"id": load_id, "wagon_number": number, "block_id": parsed_block_id, "loaded_at": iso_utc(now)}
+
+
+def mark_wagon_loaded(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    if str(operator["role"]) != "operator1":
+        raise PermissionError("Зафиксировать загрузку вагона может только Оператор 1")
+    number = _required_text(wagon_number, "номер вагона", max_length=40).upper()
+    now = utc_now()
+    actor_kind, actor_id, actor_name = _operator_actor(operator)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM tn_wagons WHERE wagon_number = %s FOR UPDATE", (number,))
+            wagon = cursor.fetchone()
+            if wagon is None:
+                raise KeyError(number)
+            if str(wagon["status"]) != "forming":
+                raise TaksimoNewConflictError("Загрузка вагона уже зафиксирована")
+            cursor.execute("SELECT COUNT(*) AS count FROM tn_wagon_loads WHERE wagon_id = %s", (int(wagon["id"]),))
+            count = int(cursor.fetchone()["count"])
+            if not count:
+                raise ValueError("Нельзя зафиксировать загрузку пустого вагона")
+            cursor.execute(
+                """UPDATE tn_wagons SET status = 'loaded', loaded_at = %s, loaded_by_operator_id = %s
+                   WHERE id = %s""",
+                (now, int(operator["id"]), int(wagon["id"])),
+            )
+            payload = {"wagon_number": number, "blocks_count": count, "loaded_at": iso_utc(now)}
+            _append_event(
+                cursor, event_type="wagon_loaded", subject_type="wagon", subject_public_id=number,
+                actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
+            )
+            _append_wagon_physical_facts(
+                cursor, wagon_id=int(wagon["id"]), wagon_number=number, stage="loaded",
+                event_type="taksimo.wagon.loaded", payload=payload, created_at=now,
+            )
+            _append_notification(
+                cursor, event_type="wagon_loaded", idempotency_key=f"wagon:{number}:loaded",
+                payload=payload, created_at=now,
+            )
+    return {"wagon_number": number, "status": "loaded", "blocks_count": count, "loaded_at": iso_utc(now)}
 
 
 def dispatch_wagon(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
@@ -873,14 +1188,12 @@ def dispatch_wagon(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[st
             wagon = cursor.fetchone()
             if wagon is None:
                 raise KeyError(number)
-            if str(wagon["status"]) != "loading":
-                raise TaksimoNewConflictError("Вагон уже отправлен")
+            if str(wagon["status"]) != "loaded":
+                raise TaksimoNewConflictError("Перед отправлением зафиксируйте загрузку вагона")
             cursor.execute("SELECT COUNT(*) AS count FROM tn_wagon_loads WHERE wagon_id = %s", (int(wagon["id"]),))
             count = int(cursor.fetchone()["count"])
-            if not count:
-                raise ValueError("Нельзя отправить пустой вагон")
             cursor.execute(
-                """UPDATE tn_wagons SET status = 'dispatched', dispatched_at = %s, dispatched_by_operator_id = %s
+                """UPDATE tn_wagons SET status = 'in_transit', dispatched_at = %s, dispatched_by_operator_id = %s
                    WHERE id = %s""",
                 (now, int(operator["id"]), int(wagon["id"])),
             )
@@ -889,11 +1202,97 @@ def dispatch_wagon(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[st
                 cursor, event_type="wagon_dispatched", subject_type="wagon_dispatch", subject_public_id=number,
                 actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
             )
-            _append_outbox(
-                cursor, event_type="taksimo.wagon.dispatched", idempotency_key=f"wagon:{number}:dispatched",
+            _append_wagon_physical_facts(
+                cursor, wagon_id=int(wagon["id"]), wagon_number=number, stage="in_transit",
+                event_type="taksimo.wagon.in_transit", payload=payload, created_at=now,
+            )
+            _append_notification(
+                cursor, event_type="wagon_in_transit", idempotency_key=f"wagon:{number}:in_transit",
                 payload=payload, created_at=now,
             )
-    return {"wagon_number": number, "status": "dispatched", "blocks_count": count, "dispatched_at": iso_utc(now)}
+    return {"wagon_number": number, "status": "in_transit", "blocks_count": count, "dispatched_at": iso_utc(now)}
+
+
+def _advance_wagon_lifecycle(
+    wagon_number: Any,
+    *,
+    expected_status: str,
+    next_status: str,
+    timestamp_column: str,
+    operator_column: str,
+    event_type: str,
+    outbox_type: str,
+    notification_type: str,
+    operator: Mapping[str, Any],
+) -> dict[str, Any]:
+    if str(operator["role"]) != "operator1":
+        raise PermissionError("Подтвердить этап вагона может только Оператор 1")
+    number = _required_text(wagon_number, "номер вагона", max_length=40).upper()
+    now = utc_now()
+    actor_kind, actor_id, actor_name = _operator_actor(operator)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM tn_wagons WHERE wagon_number = %s FOR UPDATE", (number,))
+            wagon = cursor.fetchone()
+            if wagon is None:
+                raise KeyError(number)
+            if str(wagon["status"]) != expected_status:
+                raise TaksimoNewConflictError("Нельзя подтвердить этот этап в текущем статусе вагона")
+            cursor.execute("SELECT COUNT(*) AS count FROM tn_wagon_loads WHERE wagon_id = %s", (int(wagon["id"]),))
+            count = int(cursor.fetchone()["count"])
+            cursor.execute(
+                f"UPDATE tn_wagons SET status = %s, {timestamp_column} = %s, {operator_column} = %s WHERE id = %s",
+                (next_status, now, int(operator["id"]), int(wagon["id"])),
+            )
+            payload = {
+                "wagon_number": number,
+                "blocks_count": count,
+                "status": next_status,
+                "occurred_at": iso_utc(now),
+            }
+            _append_event(
+                cursor, event_type=event_type, subject_type="wagon", subject_public_id=number,
+                actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
+            )
+            _append_wagon_physical_facts(
+                cursor, wagon_id=int(wagon["id"]), wagon_number=number, stage=next_status,
+                event_type=outbox_type, payload=payload, created_at=now,
+            )
+            _append_notification(
+                cursor, event_type=notification_type, idempotency_key=f"wagon:{number}:{next_status}",
+                payload=payload, created_at=now,
+            )
+    return payload
+
+
+def mark_wagon_arrived_kodar(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Зафиксировать прибытие вагона в Кодар без изменения исходных фактов."""
+    return _advance_wagon_lifecycle(
+        wagon_number, expected_status="in_transit", next_status="at_kodar",
+        timestamp_column="arrived_kodar_at", operator_column="arrived_kodar_by_operator_id",
+        event_type="wagon_arrived_kodar", outbox_type="taksimo.wagon.at_kodar",
+        notification_type="wagon_at_kodar", operator=operator,
+    )
+
+
+def mark_wagon_unloaded_bts_east(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Зафиксировать выгрузку вагона у БТС Восток без перезаписи пути."""
+    return _advance_wagon_lifecycle(
+        wagon_number, expected_status="at_kodar", next_status="unloaded_bts_east",
+        timestamp_column="unloaded_bts_east_at", operator_column="unloaded_bts_east_by_operator_id",
+        event_type="wagon_unloaded_bts_east", outbox_type="taksimo.wagon.unloaded_bts_east",
+        notification_type="wagon_unloaded_bts_east", operator=operator,
+    )
+
+
+def mark_wagon_returned_empty(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Зафиксировать возврат порожнего вагона на площадку, замыкая цикл."""
+    return _advance_wagon_lifecycle(
+        wagon_number, expected_status="unloaded_bts_east", next_status="returned_empty",
+        timestamp_column="returned_empty_at", operator_column="returned_empty_by_operator_id",
+        event_type="wagon_returned_empty", outbox_type="taksimo.wagon.returned_empty",
+        notification_type="wagon_returned_empty", operator=operator,
+    )
 
 
 def search(query: Any, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -937,7 +1336,12 @@ def dashboard() -> dict[str, Any]:
             yard_blocks = int(cursor.fetchone()["count"])
             cursor.execute("SELECT status, COUNT(*) AS count FROM tn_wagons GROUP BY status")
             wagon_statuses = {str(row["status"]): int(row["count"]) for row in cursor.fetchall()}
-            cursor.execute("SELECT COUNT(*) AS count FROM tn_integration_outbox WHERE delivered_at IS NULL")
+            cursor.execute(
+                """SELECT COUNT(*) AS count FROM tn_integration_outbox
+                   WHERE delivered_at IS NULL
+                     AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.physical_owner')) = 'taksimo_new'
+                     AND JSON_EXTRACT(payload_json, '$.rumex_shipment_id') IS NOT NULL"""
+            )
             pending_integrations = int(cursor.fetchone()["count"])
             cursor.execute(
                 """SELECT i.*, canc.cancelled_at, canc.reason AS cancellation_reason
@@ -972,12 +1376,151 @@ def report_summary(*, date_value: str | None = None) -> dict[str, Any]:
     }
 
 
+def _report_interval(date_value: Any) -> tuple[str, datetime, datetime]:
+    try:
+        day = datetime.fromisoformat(_required_text(date_value, "дату отчёта", max_length=32)).date()
+    except ValueError:
+        raise ValueError("Некорректная дата") from None
+    zone = ZoneInfo(DEFAULT_TIMEZONE)
+    start = datetime.combine(day, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc).replace(tzinfo=None)
+    return day.isoformat(), start, start + timedelta(days=1)
+
+
+def _daily_report_payload(
+    cursor: Any,
+    *,
+    date_value: str,
+    start: datetime,
+    finish: datetime,
+    generated_at: datetime,
+) -> dict[str, Any]:
+    cursor.execute(
+        """SELECT COUNT(DISTINCT i.id) AS confirmed_intakes,
+                  COALESCE(SUM(line.receipt_state = 'received'), 0) AS received_blocks,
+                  COALESCE(SUM(line.receipt_state = 'missing'), 0) AS missing_blocks,
+                  COALESCE(SUM(line.condition_code = 'damage'), 0) AS damaged_blocks
+           FROM tn_intakes AS i
+           LEFT JOIN tn_intake_lines AS line ON line.intake_id = i.id
+           LEFT JOIN tn_intake_cancellations AS cancellation ON cancellation.intake_id = i.id
+           WHERE i.status IN ('confirmed', 'discrepancy')
+             AND cancellation.id IS NULL
+             AND i.confirmed_at >= %s AND i.confirmed_at < %s""",
+        (start, finish),
+    )
+    intake_stats = cursor.fetchone() or {}
+    cursor.execute(
+        """SELECT w.wagon_number, w.status, w.created_at, w.loaded_at, w.dispatched_at,
+                  w.arrived_kodar_at, w.unloaded_bts_east_at, COUNT(loads.id) AS blocks_count
+           FROM tn_wagons AS w
+           LEFT JOIN tn_wagon_loads AS loads ON loads.wagon_id = w.id
+           WHERE (w.loaded_at >= %s AND w.loaded_at < %s)
+              OR (w.dispatched_at >= %s AND w.dispatched_at < %s)
+              OR (w.arrived_kodar_at >= %s AND w.arrived_kodar_at < %s)
+              OR (w.unloaded_bts_east_at >= %s AND w.unloaded_bts_east_at < %s)
+           GROUP BY w.id
+           ORDER BY COALESCE(w.unloaded_bts_east_at, w.arrived_kodar_at, w.dispatched_at, w.loaded_at), w.id""",
+        (start, finish, start, finish, start, finish, start, finish),
+    )
+    wagons = [_row_datetime(dict(row)) for row in cursor.fetchall()]
+    return {
+        "date": date_value,
+        "generated_at": iso_utc(generated_at),
+        "timezone": DEFAULT_TIMEZONE,
+        "intakes": {
+            "confirmed": int(intake_stats.get("confirmed_intakes") or 0),
+            "received_blocks": int(intake_stats.get("received_blocks") or 0),
+            "missing_blocks": int(intake_stats.get("missing_blocks") or 0),
+            "damaged_blocks": int(intake_stats.get("damaged_blocks") or 0),
+        },
+        "wagons": wagons,
+    }
+
+
+def enqueue_daily_report(date_value: Any) -> bool:
+    """Поставить одну сводку новой Таксимо за смену в отдельную очередь MAX."""
+    day, start, finish = _report_interval(date_value)
+    key = f"daily-report:{day}"
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_notification_outbox WHERE idempotency_key = %s", (key,))
+            if cursor.fetchone() is not None:
+                return False
+            _append_notification(
+                cursor,
+                event_type="daily_report",
+                idempotency_key=key,
+                payload=_daily_report_payload(
+                    cursor, date_value=day, start=start, finish=finish, generated_at=now
+                ),
+                created_at=now,
+            )
+            return True
+
+
+def list_pending_notifications(*, limit: int = 100) -> list[dict[str, Any]]:
+    """Вернуть недоставленные сообщения нового контура без legacy-состояния."""
+    parsed_limit = max(1, min(int(limit), 200))
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT * FROM tn_notification_outbox WHERE delivered_at IS NULL
+                   ORDER BY created_at, id LIMIT %s""",
+                (parsed_limit,),
+            )
+            result = []
+            for row in cursor.fetchall():
+                item = _row_datetime(dict(row))
+                payload = item.pop("payload_json", "{}")
+                item["payload"] = json.loads(payload) if isinstance(payload, str) else payload
+                result.append(item)
+            return result
+
+
+def record_notification_delivery(
+    public_id: Any,
+    *,
+    success: bool,
+    result_note: Any = "",
+    receipt_reference: Any = "",
+) -> bool:
+    """Записать попытку MAX и подтвердить сообщение только после успеха."""
+    identifier = _required_text(public_id, "идентификатор уведомления", max_length=80)
+    note = _optional_text(result_note, "результат попытки", max_length=500)
+    reference = _optional_text(receipt_reference, "ссылку доставки", max_length=200)
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM tn_notification_outbox WHERE public_id = %s AND delivered_at IS NULL FOR UPDATE",
+                (identifier,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            cursor.execute(
+                """INSERT INTO tn_notification_attempts (notification_id, success, result_note, attempted_at)
+                   VALUES (%s, %s, %s, %s)""",
+                (int(row["id"]), int(bool(success)), note, now),
+            )
+            if success:
+                cursor.execute(
+                    """UPDATE tn_notification_outbox SET delivered_at = %s, receipt_reference = %s
+                       WHERE id = %s AND delivered_at IS NULL""",
+                    (now, reference, int(row["id"])),
+                )
+                return cursor.rowcount == 1
+            return True
+
+
 def list_outbox(*, limit: int = 100) -> list[dict[str, Any]]:
     parsed_limit = max(1, min(int(limit), 200))
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT * FROM tn_integration_outbox WHERE delivered_at IS NULL
+                   AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.physical_owner')) = 'taksimo_new'
+                   AND JSON_EXTRACT(payload_json, '$.rumex_shipment_id') IS NOT NULL
                    ORDER BY created_at, id LIMIT %s""", (parsed_limit,)
             )
             result = []
@@ -994,8 +1537,42 @@ def acknowledge_outbox(public_id: str, *, receipt_reference: Any) -> bool:
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
+                "SELECT id FROM tn_integration_outbox WHERE public_id = %s AND delivered_at IS NULL FOR UPDATE",
+                (public_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            cursor.execute(
                 """UPDATE tn_integration_outbox SET delivered_at = %s, receipt_reference = %s
                    WHERE public_id = %s AND delivered_at IS NULL""",
                 (utc_now(), reference, public_id),
             )
-            return cursor.rowcount == 1
+            if cursor.rowcount != 1:
+                return False
+            cursor.execute(
+                """INSERT INTO tn_integration_outbox_attempts (outbox_id, success, result_note, attempted_at)
+                   VALUES (%s, 1, %s, %s)""",
+                (int(row["id"]), reference, utc_now()),
+            )
+            return True
+
+
+def record_outbox_delivery_failure(public_id: str, *, result_note: Any) -> bool:
+    """Сохранить неудачную попытку доставки факта без его удаления из очереди."""
+    note = _required_text(result_note, "результат попытки", max_length=500)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id FROM tn_integration_outbox WHERE public_id = %s AND delivered_at IS NULL FOR UPDATE",
+                (public_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return False
+            cursor.execute(
+                """INSERT INTO tn_integration_outbox_attempts (outbox_id, success, result_note, attempted_at)
+                   VALUES (%s, 0, %s, %s)""",
+                (int(row["id"]), note, utc_now()),
+            )
+            return True

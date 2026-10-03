@@ -101,6 +101,20 @@
       .then(function () { location.reload(); })
       .catch(function (error) { document.getElementById("loginError").textContent = error.message; });
   };
+  document.getElementById("passwordLoginForm").onsubmit = function (event) {
+    event.preventDefault();
+    var form = new FormData(event.target);
+    document.getElementById("loginError").textContent = "";
+    request("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ username: form.get("username"), password: form.get("password") })
+    }).then(function () {
+      event.target.reset();
+      location.reload();
+    }).catch(function (error) {
+      document.getElementById("loginError").textContent = error.message;
+    });
+  };
   document.getElementById("logout").onclick = function () { request("/auth/logout", { method: "POST" }).then(function () { location.reload(); }); };
   document.querySelectorAll("nav button").forEach(function (button) {
     button.onclick = function () {

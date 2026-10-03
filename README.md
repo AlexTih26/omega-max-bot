@@ -111,10 +111,14 @@ comments.html + comments.js  ←→  nginx /api/*  ←→  comments_api.py
 | `RUMEX_DISPATCHER_MAX_IDS` | MAX ID диспетчеров: только видимость кнопки кабинета в боте |
 | `RUMEX_TEST_DISPATCHER_USERS` | Учётные записи парольного входа тестовых диспетчеров РУМЕКС (`Имя:пароль`) |
 | `RUMEX_TEST_DISPATCHER_AUTH_SECRET` | Отдельный секрет сессий браузерного входа тестовых диспетчеров |
-| `RUMEX_ADMIN_AUTH_SECRET` | Отдельный секрет сессий PWA «РУМЕКС · управление» |
+| `RUMEX_ADMIN_AUTH_SECRET` | Отдельный секрет сессий PWA «РУМЕКС · управление», в том числе парольного браузерного входа |
 | `RUMEX_ADMIN_STEP_UP_PIN` | Отдельный PIN подтверждения смены паролей и блокировки машин РУМЕКС |
 
 Шаблон: `fotonych-bot/.env.example`
+
+Парольный браузерный вход в «РУМЕКС · управление» создаётся только на сервере
+от root через `python3 scripts/rumex-management-admin.py`. Утилита запросит
+пароль скрыто и не сохраняет его в `.env`, Git или журнале.
 
 ---
 

@@ -29,10 +29,44 @@ class RumexRegistryStoreTests(unittest.TestCase):
         store.DB_PATH = self._old_db_path
         self._tmpdir.cleanup()
 
+    def _documented_transport_ids(self) -> tuple[int, int]:
+        """Создать тестовые справочные снимки водителя и машины для ЭР."""
+        store.init_rumex_registry_db()
+        with sqlite3.connect(store.DB_PATH) as conn:
+            driver = conn.execute(
+                "SELECT id FROM drivers WHERE full_name = ? AND phone = ?",
+                ("Тестовый водитель", "+70000000000"),
+            ).fetchone()
+            if driver is None:
+                driver_id = int(conn.execute(
+                    """INSERT INTO drivers
+                       (full_name, phone, max_user_id, carrier_id, active, created_at, updated_at)
+                       VALUES (?, ?, ?, NULL, 1, ?, ?)""",
+                    ("Тестовый водитель", "+70000000000", 42, 1_767_225_600.0, 1_767_225_600.0),
+                ).lastrowid)
+            else:
+                driver_id = int(driver[0])
+            vehicle = conn.execute(
+                "SELECT id FROM vehicles WHERE plate_normalized = ?", ("T000TT138",)
+            ).fetchone()
+            if vehicle is None:
+                vehicle_id = int(conn.execute(
+                    """INSERT INTO vehicles
+                       (plate, plate_normalized, model, carrier_id, active, created_at, updated_at)
+                       VALUES (?, ?, ?, NULL, 1, ?, ?)""",
+                    ("Т000ТТ 138", "T000TT138", "Тестовый автомобиль", 1_767_225_600.0, 1_767_225_600.0),
+                ).lastrowid)
+            else:
+                vehicle_id = int(vehicle[0])
+        return driver_id, vehicle_id
+
     def _create_shipment(self, *, year: int = 2026, number: str = "101") -> dict:
+        driver_id, vehicle_id = self._documented_transport_ids()
         return store.create_shipment(
             registry_year=year,
             items=[{"letter": "A", "number": number}],
+            driver_id=driver_id,
+            vehicle_id=vehicle_id,
             dispatcher_max_user_id=42,
             dispatcher_name="Диспетчер РУМЕКС",
             created_at=1_767_225_600.0,
@@ -769,6 +803,26 @@ class RumexRegistryStoreTests(unittest.TestCase):
             [event["event_type"] for event in confirmed["audit_events"]],
             ["shipment_created", "er_sent_to_kontur", "er_confirmed_tn_opened"],
         )
+        pending = store.list_pending_taksimo_snapshots()
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["snapshot"]["physical_owner"], "taksimo_new")
+        self.assertEqual(pending[0]["snapshot"]["vehicle_plate"], "Т000ТТ 138")
+        self.assertEqual(pending[0]["snapshot"]["driver_name"], "Тестовый водитель")
+
+    def test_er_confirmation_requires_transport_snapshots_before_enqueuing_bridge(self) -> None:
+        shipment = store.create_shipment(
+            registry_year=2026,
+            items=[{"letter": "A", "number": "102"}],
+            dispatcher_name="Диспетчер РУМЕКС",
+            created_at=1_767_225_600.0,
+        )
+        store.mark_er_sent(shipment["id"], accountant_name="Бухгалтер 1")
+
+        with self.assertRaisesRegex(ValueError, "нет номера машины"):
+            store.mark_er_confirmed(shipment["id"], accountant_name="Бухгалтер 1")
+
+        self.assertEqual(store.get_shipment(shipment["id"])["status"], "er_sent")
+        self.assertEqual(store.list_pending_taksimo_snapshots(), [])
 
     def test_audit_events_cannot_be_changed_or_deleted(self) -> None:
         shipment = self._create_shipment()

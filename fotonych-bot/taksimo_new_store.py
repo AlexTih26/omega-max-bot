@@ -1512,9 +1512,11 @@ def mark_wagon_returned_empty(wagon_number: Any, *, operator: Mapping[str, Any])
 
 
 def search(query: Any, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Поиск по новому контуру: блоки, вагоны, приёмки/ТТН (без legacy-справочников)."""
     text = _required_text(query, "поисковый запрос", max_length=80).upper()
-    parsed_limit = max(1, min(int(limit), 100))
+    parsed_limit = max(1, min(int(limit), 120))
     pattern = "%" + text + "%"
+    results: list[dict[str, Any]] = []
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -1526,7 +1528,35 @@ def search(query: Any, *, limit: int = 50) -> list[dict[str, Any]]:
                    ORDER BY b.updated_at DESC LIMIT %s""",
                 (pattern, pattern, pattern, pattern, parsed_limit),
             )
-            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+            for row in cursor.fetchall():
+                item = _row_datetime(dict(row))
+                item["kind"] = "block"
+                item["label"] = f"{item['block_type']} {item['block_number']}"
+                results.append(item)
+            cursor.execute(
+                """SELECT id, wagon_number, status, created_at
+                   FROM tn_wagons WHERE wagon_number LIKE %s ORDER BY created_at DESC LIMIT %s""",
+                (pattern, parsed_limit),
+            )
+            for row in cursor.fetchall():
+                item = _row_datetime(dict(row))
+                item["kind"] = "wagon"
+                item["label"] = "Вагон " + str(item["wagon_number"])
+                results.append(item)
+            cursor.execute(
+                """SELECT public_id, ttn_number, vehicle_plate, driver_name, source_reference, status, expected_blocks_count,
+                          planned_arrival_at, updated_at
+                   FROM tn_intakes
+                   WHERE ttn_number LIKE %s OR vehicle_plate LIKE %s OR driver_name LIKE %s OR source_reference LIKE %s
+                   ORDER BY updated_at DESC LIMIT %s""",
+                (pattern, pattern, pattern, pattern, parsed_limit),
+            )
+            for row in cursor.fetchall():
+                item = _row_datetime(dict(row))
+                item["kind"] = "intake"
+                item["label"] = str(item["ttn_number"] or item["source_reference"] or "Приёмка без номера")
+                results.append(item)
+    return results
 
 
 def list_events(*, limit: int = 100) -> list[dict[str, Any]]:

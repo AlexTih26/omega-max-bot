@@ -7,7 +7,9 @@ from typing import Any
 import hmac
 import os
 from datetime import datetime, timezone
+from io import BytesIO
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
@@ -314,15 +316,149 @@ async def handle_wagon_returned_empty(request: web.Request) -> web.Response:
     return await _handle_wagon_transition(request, store.mark_wagon_returned_empty)
 
 
+_SEARCH_KINDS = {"block", "wagon", "intake", "slab", "vehicle"}
+
+
+def _legacy_search_results(text: str, kind: str) -> list[dict[str, Any]]:
+    """Read-only поиск по справочникам старой Таксимо (плиты, машины, вагоны)."""
+    upper = text.upper()
+    results: list[dict[str, Any]] = []
+    if not kind or kind == "slab":
+        for slab in legacy.list_legacy_slabs():
+            needle = (str(slab.get("letter") or "") + str(slab.get("number") or "")).upper()
+            if upper in needle:
+                results.append({
+                    "kind": "slab",
+                    "label": f'{slab.get("letter") or ""} {slab.get("number") or ""}'.strip(),
+                    "letter": slab.get("letter"), "number": slab.get("number"),
+                    "platform_zone": slab.get("platform_zone"), "wagon_number": slab.get("wagon_number"),
+                    "on_yard": slab.get("on_yard"), "legacy": True,
+                })
+    if not kind or kind == "vehicle":
+        for vehicle in legacy.list_legacy_vehicles():
+            needle = " ".join(str(vehicle.get(f) or "") for f in ("plate", "brand", "driver")).upper()
+            if upper in needle:
+                results.append({
+                    "kind": "vehicle",
+                    "label": str(vehicle.get("plate") or "—"),
+                    "plate": vehicle.get("plate"), "brand": vehicle.get("brand"), "driver": vehicle.get("driver"),
+                    "active": vehicle.get("active"), "legacy": True,
+                })
+    if not kind or kind == "wagon":
+        for wagon in legacy.list_legacy_wagons():
+            if upper in str(wagon.get("number") or "").upper():
+                results.append({
+                    "kind": "wagon",
+                    "label": "Вагон " + str(wagon.get("number") or ""),
+                    "number": wagon.get("number"), "stage": wagon.get("stage"),
+                    "planned_zone": wagon.get("planned_zone"), "legacy": True,
+                })
+    return results
+
+
 async def handle_search(request: web.Request) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    query = (request.query.get("q") or "").strip()
+    if not query:
+        return _json({"results": []})
+    kind = (request.query.get("kind") or "").strip().lower()
+    if kind and kind not in _SEARCH_KINDS:
+        return _json({"error": "Некорректная категория поиска"}, 400)
     try:
-        return _json({"results": store.search(request.query.get("q"), limit=request.query.get("limit", 50))})
+        results = store.search(query, limit=request.query.get("limit", 50))
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
+    results.extend(_legacy_search_results(query, kind))
+    if kind:
+        results = [item for item in results if item.get("kind") == kind]
+    return _json({"results": results[:50]})
 
 
 async def handle_events(request: web.Request) -> web.Response:
     return _json({"events": store.list_events(limit=request.query.get("limit", 100))})
+
+
+_EVENT_LABELS_RU = {
+    "intake_expected_imported": "Получена ожидаемая приёмка из моста РУМЕКС",
+    "intake_draft_created": "Создана ручная ожидаемая приёмка",
+    "intake_locked": "Приёмка взята в работу",
+    "intake_arrived": "Машина прибыла на площадку",
+    "intake_crane_started": "Кран начал работу",
+    "intake_crane_ended": "Кран завершил работу",
+    "intake_confirmed": "Приёмка подтверждена",
+    "intake_discrepancy": "Приёмка подтверждена с расхождением",
+    "intake_draft_saved": "Сохранён черновик приёмки",
+    "intake_cancelled": "Отменена подтверждённая приёмка",
+    "block_loaded_to_wagon": "Блок загружен в вагон",
+    "wagon_loaded": "Загрузка вагона зафиксирована",
+    "wagon_dispatched": "Вагон отправлен",
+    "wagon_in_transit": "Вагон в пути",
+    "wagon_arrived_kodar": "Вагон прибыл в Кодар",
+    "wagon_unloaded_bts_east": "Вагон выгружен у БТС Восток",
+    "wagon_returned_empty": "Вагон вернулся порожним",
+    "operation_corrected": "Создана корректировка",
+    "operation_cancelled": "Отменена подтверждённая операция",
+    "daily_report": "Ежедневный отчёт",
+}
+
+
+def _journal_datetime(value: Any) -> str:
+    if not value:
+        return ""
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        try:
+            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return str(value)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ZoneInfo("Asia/Irkutsk")).strftime("%d.%m.%Y %H:%M")
+
+
+def _journal_details(payload: Any) -> str:
+    if not isinstance(payload, dict):
+        return str(payload) if payload else ""
+    keys = ("wagon_number", "block", "block_id", "external_reference", "ttn_number",
+            "vehicle_plate", "blocks_count", "expected_blocks_count", "reason", "status")
+    parts = []
+    for key in keys:
+        if key in payload and payload[key] not in (None, ""):
+            parts.append(f"{key}={payload[key]}")
+    return "; ".join(parts)
+
+
+async def handle_events_export(request: web.Request) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        from openpyxl import Workbook
+    except Exception:
+        return _json({"error": "Экспорт в Excel не настроен на сервере"}, 503)
+    events = store.list_events(limit=1000)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Журнал"
+    sheet.append(["Время (Иркутск)", "Событие", "Исполнитель", "Объект", "Детали"])
+    for event in events:
+        sheet.append([
+            _journal_datetime(event.get("occurred_at")),
+            _EVENT_LABELS_RU.get(event.get("event_type"), event.get("event_type")),
+            event.get("actor_name") or "",
+            event.get("subject_public_id") or "",
+            _journal_details(event.get("payload")),
+        ])
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return web.Response(
+        body=buffer.getvalue(),
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''taksimo-journal.xlsx"},
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 async def handle_report(request: web.Request) -> web.Response:
@@ -532,6 +668,7 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/returned-empty", _with_database_errors(handle_wagon_returned_empty))
     app.router.add_get("/api/taksimo-new/search", _with_database_errors(handle_search))
     app.router.add_get("/api/taksimo-new/events", _with_database_errors(handle_events))
+    app.router.add_get("/api/taksimo-new/events/export", _with_database_errors(handle_events_export))
     app.router.add_get("/api/taksimo-new/reports/summary", _with_database_errors(handle_report))
     app.router.add_get("/api/taksimo-new/catalog/vehicles", handle_legacy_vehicles)
     app.router.add_get("/api/taksimo-new/catalog/wagons", handle_legacy_wagons)

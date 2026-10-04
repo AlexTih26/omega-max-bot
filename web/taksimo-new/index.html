@@ -108,13 +108,16 @@
 
       <section class="tn-panel" data-panel="search" hidden>
         <div class="tn-panel-heading"><div><p class="tn-kicker">Блок, вагон или ТТН</p><h2>Поиск</h2><p class="tn-subtitle">Поиск ведётся только по данным нового контура.</p></div></div>
-        <label class="tn-field tn-search-field">Запрос<input id="searchInput" type="search" maxlength="80" placeholder="Например: A 4495, вагон или ТТН" autocomplete="off" autocapitalize="characters"></label>
+        <div class="tn-search-row">
+          <label class="tn-field tn-search-field">Запрос<input id="searchInput" type="search" maxlength="80" placeholder="Блок, вагон, ТТН, машина, плита" autocomplete="off" autocapitalize="characters"></label>
+          <label class="tn-field">Категория<select id="searchKind"><option value="">Все категории</option><option value="block">Блоки</option><option value="wagon">Вагоны</option><option value="intake">ТТН / рейсы</option><option value="vehicle">Машины</option><option value="slab">Плиты (старая)</option></select></label>
+        </div>
         <p class="tn-empty" id="searchEmpty" hidden>Ничего не найдено.</p>
         <div class="tn-card-list" id="searchResults"></div>
       </section>
 
       <section class="tn-panel" data-panel="journal" hidden>
-        <div class="tn-panel-heading"><div><p class="tn-kicker">Неизменяемая история</p><h2>Журнал</h2><p class="tn-subtitle">Подтверждённые факты не редактируются и не удаляются.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Неизменяемая история</p><h2>Журнал</h2><p class="tn-subtitle">Подтверждённые факты не редактируются и не удаляются.</p></div><div class="tn-heading-actions"><a class="tn-button tn-button--secondary" href="/api/taksimo-new/events/export" download>Сохранить в Excel</a><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div></div>
         <p class="tn-empty" id="eventsEmpty" hidden>Событий пока нет.</p>
         <ol class="tn-timeline" id="eventsList"></ol>
       </section>

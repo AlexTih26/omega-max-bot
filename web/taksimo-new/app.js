@@ -315,21 +315,38 @@
     });
   }
 
+  var kindLabels = { block: "Блок", wagon: "Вагон", intake: "ТТН/рейс", slab: "Плита (старая)", vehicle: "Машина" };
+
+  function resultMeta(item) {
+    if (item.kind === "block") return locationText(item) + (item.ttn_number ? " · ТТН " + item.ttn_number : "");
+    if (item.kind === "wagon") return "статус: " + (item.status || item.stage || "—") + (item.planned_zone ? " · зона " + item.planned_zone : "");
+    if (item.kind === "intake") return [item.vehicle_plate, item.driver_name, item.expected_blocks_count ? "блоков " + item.expected_blocks_count : ""].filter(Boolean).join(" · ");
+    if (item.kind === "vehicle") return [item.brand, item.driver].filter(Boolean).join(" · ");
+    if (item.kind === "slab") return [item.platform_zone ? "зона " + item.platform_zone : "", item.wagon_number ? "вагон " + item.wagon_number : "на площадке"].filter(Boolean).join(" · ");
+    return "";
+  }
+
   function runSearch() {
     var input = document.getElementById("searchInput");
     var query = input.value.trim();
+    var kind = document.getElementById("searchKind").value;
     var results = document.getElementById("searchResults");
     var empty = document.getElementById("searchEmpty");
     clear(results);
     empty.hidden = true;
     if (!query) return Promise.resolve();
-    return request("/search?q=" + encodeURIComponent(query) + "&limit=50").then(function (data) {
+    var url = "/search?q=" + encodeURIComponent(query) + "&limit=50" + (kind ? "&kind=" + encodeURIComponent(kind) : "");
+    return request(url).then(function (data) {
       var items = data.results || [];
       empty.hidden = items.length > 0;
-      items.forEach(function (block) {
+      items.forEach(function (item) {
         var card = element("article", "tn-card");
-        card.appendChild(element("p", "tn-card-title", "#" + block.id + " · " + block.block_type + " " + block.block_number));
-        card.appendChild(element("p", "tn-card-meta", locationText(block) + (block.ttn_number ? " · ТТН " + block.ttn_number : "")));
+        var row = element("div", "tn-card-title-row");
+        row.appendChild(element("p", "tn-card-title", item.label || "#" + item.id));
+        row.appendChild(element("span", "tn-badge tn-badge--soft", kindLabels[item.kind] || item.kind || "—"));
+        card.appendChild(row);
+        var meta = resultMeta(item);
+        if (meta) card.appendChild(element("p", "tn-card-meta", meta));
         results.appendChild(card);
       });
     });
@@ -1142,6 +1159,9 @@
     document.getElementById("searchInput").addEventListener("input", function () {
       clearTimeout(state.searchTimer);
       state.searchTimer = setTimeout(function () { runSearch().catch(function (error) { setError(error.message || "Не удалось выполнить поиск"); }); }, 280);
+    });
+    document.getElementById("searchKind").addEventListener("change", function () {
+      runSearch().catch(function (error) { setError(error.message || "Не удалось выполнить поиск"); });
     });
     document.getElementById("logoutButton").addEventListener("click", function () {
       request("/auth/logout", { method: "POST" }).catch(function () {}).finally(function () { location.replace("/taksimo-new/login.html"); });

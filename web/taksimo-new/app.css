@@ -191,3 +191,9 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
   .tn-inline-form .tn-button { width: 100%; }
   .tn-card-title-row { align-items: flex-start; flex-direction: column; gap: 7px; }
 }
+
+.tn-search-field { flex: 1 1 100%; }
+.tn-search-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+.tn-search-row .tn-field { flex: 1 1 auto; min-width: 180px; }
+.tn-heading-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.tn-badge--soft { border: 1px solid var(--tn-border); background: var(--tn-surface-alt); color: var(--tn-muted); font-weight: 700; }

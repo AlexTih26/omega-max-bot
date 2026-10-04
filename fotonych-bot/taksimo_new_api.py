@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from aiohttp import web
@@ -226,6 +227,11 @@ async def handle_wagon_history(request: web.Request) -> web.Response:
         trip for trip in legacy.list_legacy_wagon_history()
         if str(trip.get("wagon_number") or "") == str(number)
     ]
+    for trip in legacy_trips:
+        for field in ("dispatched_at", "received_at"):
+            value = trip.get(field)
+            if isinstance(value, (int, float)):
+                trip[field] = datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
     history["trips"] = legacy_trips
     history["circles"] = len(legacy_trips)
     return _json({"history": history})

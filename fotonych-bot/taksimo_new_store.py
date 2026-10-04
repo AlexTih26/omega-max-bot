@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import base64
+from collections.abc import Callable, Iterable, Mapping
+
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 import json
@@ -475,6 +478,88 @@ def import_expected_intake(payload: Mapping[str, Any], *, idempotency_key: str) 
             if intake is None:
                 raise RuntimeError("Не удалось прочитать импортированный рейс")
             return _intake_payload(cursor, intake)
+
+
+def import_expected_document(payload: Mapping[str, Any], *, idempotency_key: str) -> dict[str, Any]:
+    """Приложить документ (копию ТТН) к рейсу РУМЕКС из доверенного моста."""
+    key = _required_text(idempotency_key, "ключ идемпотентности", max_length=160)
+    rumex_shipment_id = _as_int(payload.get("rumex_shipment_id"), "идентификатор отгрузки РУМЕКС", minimum=1)
+    document_kind = _required_text(payload.get("document_kind"), "вид документа", max_length=16).upper()
+    if document_kind not in ("TN", "ER"):
+        raise ValueError("Неподдерживаемый вид документа")
+    copy_number = _as_int(payload.get("copy_number"), "номер копии", minimum=1, maximum=4)
+    filename = _required_text(payload.get("filename"), "имя файла", max_length=255)
+    content_type = _required_text(payload.get("content_type"), "тип содержимого", max_length=128)
+    content_b64 = _required_text(payload.get("content_base64"), "содержимое документа", max_length=20_000_000)
+    try:
+        content = base64.b64decode(content_b64, validate=True)
+    except Exception as exc:
+        raise ValueError("Некорректное base64-содержимое документа") from exc
+    if not content:
+        raise ValueError("Пустое содержимое документа")
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT id, public_id FROM tn_intakes WHERE source_system = 'rumex' AND rumex_shipment_id = %s LIMIT 1",
+                (rumex_shipment_id,),
+            )
+            intake = cursor.fetchone()
+            if intake is None:
+                raise TaksimoNewConflictError("Рейс РУМЕКС для документа ещё не принят")
+            intake_id = int(intake["id"])
+            public_id = str(intake["public_id"])
+            cursor.execute("SELECT id FROM tn_intake_documents WHERE idempotency_key = %s", (key,))
+            if cursor.fetchone() is not None:
+                return {"public_id": public_id, "document_kind": document_kind, "copy_number": copy_number, "imported": True}
+            cursor.execute(
+                "SELECT id FROM tn_intake_documents WHERE intake_id = %s AND document_kind = %s AND copy_number = %s",
+                (intake_id, document_kind, copy_number),
+            )
+            if cursor.fetchone() is not None:
+                raise TaksimoNewConflictError("Копия документа уже приложена к рейсу")
+            cursor.execute(
+                """INSERT INTO tn_intake_documents
+                   (intake_id, document_kind, copy_number, filename, content_type, content, idempotency_key, created_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                (intake_id, document_kind, copy_number, filename, content_type, content, key, now),
+            )
+            return {"public_id": public_id, "document_kind": document_kind, "copy_number": copy_number, "filename": filename, "imported": True}
+
+
+def list_intake_documents(public_id: str) -> list[dict[str, Any]]:
+    """Метаданные вложений приёмки (без содержимого файлов)."""
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_intakes WHERE public_id = %s", (public_id,))
+            intake = cursor.fetchone()
+            if intake is None:
+                return []
+            cursor.execute(
+                """SELECT id, document_kind, copy_number, filename, content_type, created_at
+                   FROM tn_intake_documents WHERE intake_id = %s ORDER BY document_kind, copy_number""",
+                (intake["id"],),
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def get_intake_document(public_id: str, copy_number: int) -> dict[str, Any] | None:
+    """Содержимое копии ТТН для скачивания оператором."""
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_intakes WHERE public_id = %s", (public_id,))
+            intake = cursor.fetchone()
+            if intake is None:
+                return None
+            cursor.execute(
+                """SELECT d.filename, d.content_type, d.content, i.source_reference
+                   FROM tn_intake_documents AS d
+                   JOIN tn_intakes AS i ON i.id = d.intake_id
+                   WHERE d.intake_id = %s AND d.document_kind = 'TN' AND d.copy_number = %s LIMIT 1""",
+                (intake["id"], copy_number),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row is not None else None
 
 
 def create_manual_intake(payload: Mapping[str, Any], *, operator: Mapping[str, Any]) -> dict[str, Any]:

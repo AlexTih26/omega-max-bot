@@ -105,6 +105,47 @@ async def _post_snapshot(session: Any, entry: Mapping[str, Any], *, record_deliv
     )
 
 
+async def _post_document(session: Any, entry: Mapping[str, Any]) -> None:
+    """Передать одну копию ТТН и записать попытку доставки в очереди РУМЕКС."""
+    outbox_id = int(entry["outbox_id"])
+    key = str(entry["idempotency_key"])
+    try:
+        async with session.post(
+            _base_url() + "/api/taksimo-new/integration/rumex/expected-documents",
+            headers=_headers(idempotency_key=key),
+            json=entry["document"],
+        ) as response:
+            try:
+                body = await response.json(content_type=None)
+            except Exception:
+                body = await response.text()
+            status = response.status
+    except (ClientError, asyncio.TimeoutError) as exc:
+        rumex_store.record_test_taksimo_document_delivery(
+            outbox_id, success=False, result_note=f"Ошибка сети: {type(exc).__name__}"
+        )
+        return
+    success = status in {200, 201}
+    document = body.get("document") if isinstance(body, Mapping) else None
+    reference = str(document.get("public_id") or "") if isinstance(document, Mapping) else ""
+    rumex_store.record_test_taksimo_document_delivery(
+        outbox_id,
+        success=success,
+        http_status=status,
+        result_note=_response_note(status, body),
+        delivery_reference=reference,
+    )
+
+
+async def deliver_rumex_documents(session: Any) -> int:
+    """Передать неподтверждённые копии ТТН нового реестра в новую Таксимо."""
+    delivered = 0
+    for entry in rumex_store.list_pending_test_taksimo_documents():
+        await _post_document(session, entry)
+        delivered += 1
+    return delivered
+
+
 async def deliver_rumex_snapshots(session: Any) -> int:
     """Передать неподтверждённые снимки РУМЕКС и записать каждую попытку.
 
@@ -194,7 +235,9 @@ async def run_bridge_once() -> None:
         return
     timeout = ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
     async with ClientSession(timeout=timeout) as session:
+        rumex_store.enqueue_pending_test_taksimo_documents()
         await deliver_rumex_snapshots(session)
+        await deliver_rumex_documents(session)
         await receive_taksimo_physical_events(session)
 
 

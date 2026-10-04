@@ -495,6 +495,21 @@
     clear(modalContent);
     modalTitle.textContent = intake.ttn_number || intake.source_reference || "Приёмка";
     modalContent.appendChild(intakeSummary(intake));
+    var docsWrap = element("div", "tn-intake-docs");
+    modalContent.appendChild(docsWrap);
+    request("/intakes/" + encodeURIComponent(intake.public_id) + "/documents").then(function (data) {
+      var docs = data.documents || [];
+      if (!docs.length) return;
+      docsWrap.appendChild(element("p", "tn-help", "Копии ТТН:"));
+      var row = element("div", "tn-intake-docs-row");
+      docs.forEach(function (doc) {
+        var btn = element("a", "tn-button tn-button--secondary", "Скачать · копия " + doc.copy_number);
+        btn.href = API + "/intakes/" + encodeURIComponent(intake.public_id) + "/documents/" + doc.copy_number;
+        btn.setAttribute("download", doc.filename || "");
+        row.appendChild(btn);
+      });
+      docsWrap.appendChild(row);
+    }).catch(function () {});
     var isFinal = ["confirmed", "discrepancy"].includes(intake.status) || intake.cancelled;
     if (isFinal) {
       var lines = renderReadOnlyLines(intake.lines);

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
@@ -17,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
+
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "rumex_registry.db"
 FLEET_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "data" / "drivers_registry.json"
@@ -861,6 +863,84 @@ def init_rumex_registry_db() -> None:
             BEFORE DELETE ON rumex_taksimo_physical_events
             BEGIN
                 SELECT RAISE(ABORT, 'Физический факт новой Таксимо нельзя удалять');
+            END;
+
+            -- Копии ТТН нового диспетчерского реестра, передаваемые в новую Таксимо
+            -- как вложения после присвоения номера ТТН (бухгалтером или таймаутом).
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_test_documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                test_shipment_id INTEGER NOT NULL,
+                registry_number TEXT NOT NULL,
+                document_kind TEXT NOT NULL CHECK (document_kind IN ('TN', 'ER')),
+                copy_number INTEGER NOT NULL CHECK (copy_number BETWEEN 1 AND 4),
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                content_base64 TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE (test_shipment_id, document_kind, copy_number),
+                FOREIGN KEY (test_shipment_id) REFERENCES test_shipments(id) ON DELETE RESTRICT
+            );
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_documents_no_update
+            BEFORE UPDATE ON rumex_taksimo_test_documents
+            BEGIN
+                SELECT RAISE(ABORT, 'Копию ТТН для новой Таксимо нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_documents_no_delete
+            BEFORE DELETE ON rumex_taksimo_test_documents
+            BEGIN
+                SELECT RAISE(ABORT, 'Копию ТТН для новой Таксимо нельзя удалять');
+            END;
+
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_test_document_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL UNIQUE,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                created_at REAL NOT NULL,
+                delivered_at REAL,
+                delivery_reference TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (document_id) REFERENCES rumex_taksimo_test_documents(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_test_document_outbox_pending
+                ON rumex_taksimo_test_document_outbox(delivered_at, created_at, id);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_document_outbox_delivery_only
+            BEFORE UPDATE ON rumex_taksimo_test_document_outbox
+            WHEN NOT (
+                NEW.id = OLD.id
+                AND NEW.document_id = OLD.document_id
+                AND NEW.idempotency_key = OLD.idempotency_key
+                AND NEW.created_at = OLD.created_at
+                AND OLD.delivered_at IS NULL
+                AND NEW.delivered_at IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Копию ТТН можно только подтвердить доставкой');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_document_outbox_no_delete
+            BEFORE DELETE ON rumex_taksimo_test_document_outbox
+            BEGIN
+                SELECT RAISE(ABORT, 'Копию ТТН для новой Таксимо нельзя удалять');
+            END;
+
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_test_document_outbox_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                outbox_id INTEGER NOT NULL,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                http_status INTEGER,
+                result_note TEXT NOT NULL DEFAULT '',
+                attempted_at REAL NOT NULL,
+                FOREIGN KEY (outbox_id) REFERENCES rumex_taksimo_test_document_outbox(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_test_document_outbox_attempts
+                ON rumex_taksimo_test_document_outbox_attempts(outbox_id, attempted_at DESC, id DESC);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_document_outbox_attempts_no_update
+            BEFORE UPDATE ON rumex_taksimo_test_document_outbox_attempts
+            BEGIN
+                SELECT RAISE(ABORT, 'Попытку доставки копии ТТН нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_document_outbox_attempts_no_delete
+            BEFORE DELETE ON rumex_taksimo_test_document_outbox_attempts
+            BEGIN
+                SELECT RAISE(ABORT, 'Попытку доставки копии ТТН нельзя удалять');
             END;
 
             CREATE TABLE IF NOT EXISTS accountant_login_attempts (
@@ -3482,6 +3562,169 @@ def record_test_taksimo_snapshot_delivery(
             if success and row["delivered_at"] is None:
                 conn.execute(
                     """UPDATE rumex_taksimo_test_outbox
+                       SET delivered_at = ?, delivery_reference = ? WHERE id = ?""",
+                    (now, reference, int(outbox_id)),
+                )
+            conn.commit()
+            return row["delivered_at"] is None
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def enqueue_pending_test_taksimo_documents() -> int:
+    """Сформировать и поставить в очередь копии ТТН готовых рейсов.
+
+    Вызывается мостом при каждом проходе; идемпотентно за счёт уникальности
+    (test_shipment_id, document_kind, copy_number) в неизменяемой таблице.
+    """
+    init_rumex_registry_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT ts.id FROM test_shipments AS ts
+               WHERE ts.status IN ('documents_ready', 'documents_handed_to_driver')
+                 AND COALESCE(ts.ttn_number, '') != ''
+                 AND EXISTS (
+                     SELECT 1 FROM rumex_taksimo_test_snapshots AS s
+                     JOIN rumex_taksimo_test_outbox AS o ON o.snapshot_id = s.id
+                     WHERE s.test_shipment_id = ts.id AND o.delivered_at IS NOT NULL
+                 )"""
+        ).fetchall()
+    created = 0
+    for row in rows:
+        shipment = get_test_shipment(int(row["id"]))
+        if shipment is None:
+            continue
+        created += _enqueue_test_taksimo_document_row(shipment)
+    return created
+
+
+def _enqueue_test_taksimo_document_row(shipment: Mapping[str, Any]) -> int:
+    """Поставить недостающие копии ТТН рейса в очередь для новой Таксимо (1..4)."""
+    shipment_id = int(shipment["id"])
+    registry_number = str(shipment.get("registry_number") or "")
+    try:
+        from rumex_registry_documents import build_test_ttn_workbook, test_ttn_filename
+    except Exception:
+        return 0
+    now = _now()
+    created = 0
+    for copy_number in (1, 2, 3, 4):
+        try:
+            workbook = build_test_ttn_workbook(shipment, copy_number=copy_number)
+            filename = test_ttn_filename(shipment, copy_number=copy_number)
+        except ValueError:
+            continue
+        content_base64 = base64.b64encode(workbook).decode("ascii")
+        idem = f"test-ttn:{shipment_id}:{copy_number}"
+        with _connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                existing = conn.execute(
+                    """SELECT 1 FROM rumex_taksimo_test_documents
+                       WHERE test_shipment_id = ? AND document_kind = 'TN' AND copy_number = ?""",
+                    (shipment_id, copy_number),
+                ).fetchone()
+                if existing is not None:
+                    conn.rollback()
+                    continue
+                cursor = conn.execute(
+                    """INSERT INTO rumex_taksimo_test_documents
+                       (test_shipment_id, registry_number, document_kind, copy_number,
+                        filename, content_type, content_base64, created_at)
+                       VALUES (?, ?, 'TN', ?, ?, ?, ?, ?)""",
+                    (
+                        shipment_id, registry_number, copy_number, filename,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        content_base64, now,
+                    ),
+                )
+                document_id = int(cursor.lastrowid)
+                conn.execute(
+                    """INSERT INTO rumex_taksimo_test_document_outbox
+                       (document_id, idempotency_key, created_at) VALUES (?, ?, ?)""",
+                    (document_id, idem, now),
+                )
+                conn.commit()
+                created += 1
+            except Exception:
+                conn.rollback()
+                raise
+    return created
+
+
+def list_pending_test_taksimo_documents(*, limit: int = 25) -> list[dict[str, Any]]:
+    """Вернуть недоставленные копии ТТН нового реестра для моста."""
+    init_rumex_registry_db()
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = 25
+    parsed_limit = max(1, min(parsed_limit, 100))
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT outbox.id AS outbox_id, outbox.idempotency_key,
+                      doc.test_shipment_id, doc.document_kind, doc.copy_number,
+                      doc.filename, doc.content_type, doc.content_base64
+               FROM rumex_taksimo_test_document_outbox AS outbox
+               JOIN rumex_taksimo_test_documents AS doc ON doc.id = outbox.document_id
+               JOIN rumex_taksimo_test_snapshots AS s ON s.test_shipment_id = doc.test_shipment_id
+               JOIN rumex_taksimo_test_outbox AS so
+                 ON so.snapshot_id = s.id AND so.delivered_at IS NOT NULL
+               WHERE outbox.delivered_at IS NULL
+               ORDER BY outbox.created_at, outbox.id LIMIT ?""",
+            (parsed_limit,),
+        ).fetchall()
+    return [
+        {
+            "outbox_id": int(row["outbox_id"]),
+            "idempotency_key": str(row["idempotency_key"]),
+            "document": {
+                "rumex_shipment_id": int(row["test_shipment_id"]),
+                "document_kind": str(row["document_kind"]),
+                "copy_number": int(row["copy_number"]),
+                "filename": str(row["filename"]),
+                "content_type": str(row["content_type"]),
+                "content_base64": str(row["content_base64"]),
+            },
+        }
+        for row in rows
+    ]
+
+
+def record_test_taksimo_document_delivery(
+    outbox_id: int,
+    *,
+    success: bool,
+    http_status: int | None = None,
+    result_note: str = "",
+    delivery_reference: str = "",
+    attempted_at: float | None = None,
+) -> bool:
+    """Зафиксировать попытку и при успехе подтвердить доставку копии ТТН."""
+    init_rumex_registry_db()
+    now = float(attempted_at) if attempted_at is not None else _now()
+    note = " ".join(str(result_note or "").split())[:500]
+    reference = " ".join(str(delivery_reference or "").split())[:200]
+    parsed_status = None if http_status is None else int(http_status)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT delivered_at FROM rumex_taksimo_test_document_outbox WHERE id = ?",
+                (int(outbox_id),),
+            ).fetchone()
+            if row is None:
+                raise ValueError("Исходящая копия ТТН для новой Таксимо не найдена")
+            conn.execute(
+                """INSERT INTO rumex_taksimo_test_document_outbox_attempts
+                   (outbox_id, success, http_status, result_note, attempted_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (int(outbox_id), int(bool(success)), parsed_status, note, now),
+            )
+            if success and row["delivered_at"] is None:
+                conn.execute(
+                    """UPDATE rumex_taksimo_test_document_outbox
                        SET delivered_at = ?, delivery_reference = ? WHERE id = ?""",
                     (now, reference, int(outbox_id)),
                 )

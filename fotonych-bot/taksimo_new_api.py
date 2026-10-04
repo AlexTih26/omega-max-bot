@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from urllib.parse import quote
 
 from aiohttp import web
 
@@ -344,6 +345,51 @@ async def handle_attachment_placeholder(_request: web.Request) -> web.Response:
     )
 
 
+async def handle_integration_documents(request: web.Request) -> web.Response:
+    unavailable = _service_unavailable_response()
+    if unavailable:
+        return unavailable
+    if not _service_authorized(request):
+        return _json({"error": "Интеграция не авторизована"}, 401)
+    key = (request.headers.get("Idempotency-Key") or "").strip()
+    try:
+        document = store.import_expected_document(await _body(request), idempotency_key=key)
+        return _json({"document": document}, 201)
+    except store.TaksimoNewConflictError as exc:
+        return _json({"error": str(exc)}, 409)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+
+
+async def handle_intake_documents(request: web.Request) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    return _json({"documents": store.list_intake_documents(request.match_info["public_id"])})
+
+
+async def handle_intake_document_download(request: web.Request) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        copy_number = int(request.match_info["copy_number"])
+    except (TypeError, ValueError):
+        return _json({"error": "Некорректный номер копии"}, 400)
+    document = store.get_intake_document(request.match_info["public_id"], copy_number)
+    if document is None:
+        return _json({"error": "Документ не найден"}, 404)
+    return web.Response(
+        body=document["content"],
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(str(document["filename"]))},
+        content_type=str(document["content_type"]),
+    )
+    return _json(
+        {"error": "Архив фото ещё не настроен: нужен отдельный Object Storage и закрытая выдача файлов."},
+        503,
+    )
+
+
 async def handle_integration_expected(request: web.Request) -> web.Response:
     unavailable = _service_unavailable_response()
     if unavailable:
@@ -440,6 +486,9 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo-new/catalog/wagon-history", handle_legacy_wagon_history)
     app.router.add_get("/api/taksimo-new/catalog/dead-ends", _with_database_errors(handle_dead_ends))
     app.router.add_post("/api/taksimo-new/attachments", _with_database_errors(handle_attachment_placeholder))
+    app.router.add_get("/api/taksimo-new/intakes/{public_id}/documents", _with_database_errors(handle_intake_documents))
+    app.router.add_get("/api/taksimo-new/intakes/{public_id}/documents/{copy_number}", _with_database_errors(handle_intake_document_download))
+    app.router.add_post("/api/taksimo-new/integration/rumex/expected-documents", _with_database_errors(handle_integration_documents))
     app.router.add_post("/api/taksimo-new/integration/rumex/expected-intakes", _with_database_errors(handle_integration_expected))
     app.router.add_get("/api/taksimo-new/integration/outbox", _with_database_errors(handle_integration_outbox))
     app.router.add_post("/api/taksimo-new/integration/outbox/{public_id}/ack", _with_database_errors(handle_integration_ack))

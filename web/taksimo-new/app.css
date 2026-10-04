@@ -172,6 +172,8 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
 .tn-wagon-picker-free { margin-top: 8px; }
 .tn-wagon-picker-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .tn-wagon-picker-row .tn-wagon-pick { min-height: auto; padding: 6px 10px; font-size: .75rem; }
+.tn-intake-docs { margin-top: 12px; }
+.tn-intake-docs-row { display: flex; flex-wrap: wrap; gap: 8px; }
 
 @media (max-width: 680px) {
   .tn-app { padding-left: 14px; padding-right: 14px; }

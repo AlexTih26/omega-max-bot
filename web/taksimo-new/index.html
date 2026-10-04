@@ -12,9 +12,9 @@
   <link rel="manifest" href="/taksimo-new/manifest.json">
   <link rel="icon" href="/taksimo-new/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/taksimo-new/icon.svg">
-  <link rel="stylesheet" href="/taksimo-new/app.css">
+  <link rel="stylesheet" href="/taksimo-new/app.css?v=7">
   <script src="/taksimo-new/pwa.js" defer></script>
-  <script src="/taksimo-new/app.js" defer></script>
+  <script src="/taksimo-new/app.js?v=7" defer></script>
 </head>
 <body>
   <div class="tn-app">
@@ -107,7 +107,7 @@
       </section>
 
       <section class="tn-panel" data-panel="search" hidden>
-        <div class="tn-panel-heading"><div><p class="tn-kicker">Блок, вагон или ТТН</p><h2>Поиск</h2><p class="tn-subtitle">Поиск ведётся только по данным нового контура.</p></div></div>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Блок, вагон или ТТН</p><h2>Поиск</h2><p class="tn-subtitle">Поиск по блокам, вагонам, ТТН, машинам и плитам — новый контур + старая Таксимо.</p></div></div>
         <div class="tn-search-row">
           <label class="tn-field tn-search-field">Запрос<input id="searchInput" type="search" maxlength="80" placeholder="Блок, вагон, ТТН, машина, плита" autocomplete="off" autocapitalize="characters"></label>
           <label class="tn-field">Категория<select id="searchKind"><option value="">Все категории</option><option value="block">Блоки</option><option value="wagon">Вагоны</option><option value="intake">ТТН / рейсы</option><option value="vehicle">Машины</option><option value="slab">Плиты (старая)</option></select></label>

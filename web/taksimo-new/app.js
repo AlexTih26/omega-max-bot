@@ -605,6 +605,10 @@
 
   function loadWagonPicker(onPick, selected) {
     var wrap = element("div", "tn-wagon-picker");
+    var parkPanel = element("div", "tn-wagon-picker-park");
+    parkPanel.hidden = true;
+    wrap.appendChild(parkPanel);
+
     function pickButton(number, selectedNumber) {
       var btn = element("button", "tn-wagon-pick" + (String(number) === String(selectedNumber) ? " tn-wagon-pick--sel" : ""));
       btn.type = "button";
@@ -612,12 +616,40 @@
       btn.addEventListener("click", function () {
         wrap.querySelectorAll(".tn-wagon-pick").forEach(function (b) { b.classList.remove("tn-wagon-pick--sel"); });
         btn.classList.add("tn-wagon-pick--sel");
+        parkPanel.hidden = true;
         onPick(number);
       });
       return btn;
     }
-    request("/catalog/dead-ends").then(function (data) {
-      (data.dead_ends || []).forEach(function (deadEnd) {
+
+    function openPark(targetCell, deadEndName, slotIndex, parkWagons) {
+      clear(parkPanel);
+      parkPanel.hidden = false;
+      parkPanel.appendChild(element("p", "tn-help", "Выберите вагон в " + deadEndName + " · слот " + slotIndex + ":"));
+      var row = element("div", "tn-wagon-picker-row");
+      parkWagons.forEach(function (w) {
+        var btn = element("button", "tn-wagon-pick", "Вагон " + w.number);
+        btn.type = "button";
+        if (w.stage) btn.title = "этап: " + w.stage;
+        btn.addEventListener("click", function () {
+          targetCell.textContent = "Вагон " + w.number;
+          targetCell.classList.add("tn-slot--occupied");
+          targetCell.classList.remove("tn-slot--empty");
+          targetCell.title = deadEndName + " · слот " + slotIndex + " · вагон " + w.number;
+          clear(parkPanel);
+          parkPanel.hidden = true;
+          wrap.querySelectorAll(".tn-wagon-pick").forEach(function (b) { b.classList.remove("tn-wagon-pick--sel"); });
+          if (targetCell.classList) targetCell.classList.add("tn-wagon-pick--sel");
+          onPick(w.number);
+        });
+        row.appendChild(btn);
+      });
+      parkPanel.appendChild(row);
+    }
+
+    Promise.all([request("/catalog/dead-ends"), request("/catalog/wagons")]).then(function (results) {
+      var parkWagons = (results[1].wagons || []).filter(function (w) { return w.active !== false; });
+      (results[0].dead_ends || []).forEach(function (deadEnd) {
         var box = element("section", "tn-wagon-picker-dead-end");
         box.appendChild(element("p", "tn-wagon-picker-title", deadEnd.name || "Тупик"));
         var grid = element("div", "tn-slot-grid");
@@ -627,16 +659,22 @@
             cell.title = (deadEnd.name || "Тупик") + " · слот " + pos.slot_index + " · вагон " + pos.wagon_number;
             grid.appendChild(cell);
           } else {
-            var empty = element("div", "tn-slot tn-slot--empty");
-            empty.textContent = String(pos.slot_index);
-            empty.title = "Слот " + pos.slot_index + " · пусто";
-            grid.appendChild(empty);
+            (function (slotIndex) {
+              var cell = element("button", "tn-slot tn-slot--empty");
+              cell.type = "button";
+              cell.textContent = "+" + slotIndex;
+              cell.title = "Слот " + slotIndex + " · пусто — выбрать вагон из парка";
+              cell.addEventListener("click", function () {
+                openPark(cell, deadEnd.name || "Тупик", slotIndex, parkWagons);
+              });
+              grid.appendChild(cell);
+            })(pos.slot_index);
           }
         });
         box.appendChild(grid);
         wrap.appendChild(box);
       });
-      var free = data.free_wagons || [];
+      var free = results[0].free_wagons || [];
       if (free.length) {
         var freeBox = element("div", "tn-wagon-picker-free");
         freeBox.appendChild(element("p", "tn-help", "Вагоны без тупика (новый контур):"));
@@ -726,6 +764,10 @@
     wagonField.hidden = true;
     placeWrap.appendChild(yardPicker); placeWrap.appendChild(x); placeWrap.appendChild(y); placeWrap.appendChild(wagonField);
     body.appendChild(placeWrap);
+    var saveBtn = element("button", "tn-button tn-button--primary tn-block-save", "Сохранить блок");
+    saveBtn.type = "button";
+    saveBtn.addEventListener("click", function () { saveBlock(); });
+    body.appendChild(saveBtn);
 
     head.addEventListener("click", function () {
       var open = body.hidden;
@@ -759,6 +801,30 @@
       yardPicker.hidden = !yardRadio.checked;
       wagonField.hidden = !wagonRadio.checked;
       updateLine();
+    }
+    function saveBlock() {
+      var missing = receiptControl.value === "missing";
+      if (!missing && yardRadio.checked && (!xControl.value || !yControl.value)) {
+        body.hidden = false;
+        showToast("Выберите место блока на площадке — тап по ячейке.");
+        return;
+      }
+      if (!missing && wagonRadio.checked && !wagonNumber.value) {
+        body.hidden = false;
+        showToast("Выберите вагон — тап по слоту тупика.");
+        return;
+      }
+      if ((missing || receiptControl.value === "damaged" || conditionControl.value === "damage") && !noteControl.value.trim()) {
+        body.hidden = false;
+        showToast("Для недостачи или повреждения обязательно укажите примечание.");
+        return;
+      }
+      line.dataset.saved = "1";
+      body.hidden = true;
+      head.setAttribute("aria-expanded", "false");
+      head.querySelector(".tn-block-chevron").textContent = "▾";
+      head.querySelector(".tn-block-id").textContent = "✓ " + label;
+      showToast("Блок сохранён: " + label + ".");
     }
     yardRadio.addEventListener("change", updatePlace);
     wagonRadio.addEventListener("change", updatePlace);
@@ -802,6 +868,14 @@
         return !(wagon && wagon.value.trim());
       });
       if (invalidWagon) { showToast("Для каждого блока выберите вагон тапом по сетке тупиков или переключите на площадку."); return; }
+      var unsaved = Array.from(linesWrap.querySelectorAll(".tn-block-card")).filter(function (card) {
+        return card.dataset.saved !== "1";
+      });
+      if (unsaved.length) {
+        unsaved[0].querySelector(".tn-block-body").hidden = false;
+        showToast("Сохраните каждый блок кнопкой «Сохранить блок», затем подтвердите приёмку.");
+        return;
+      }
       var lines = Array.from(linesWrap.querySelectorAll(".tn-block-card")).map(function (card) {
         var get = function (name) { var el = card.querySelector("[name='" + name + "']"); return el ? el.value.trim() : ""; };
         var place = card.querySelector("input[name='place']:checked");

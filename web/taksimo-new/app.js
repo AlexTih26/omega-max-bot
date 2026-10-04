@@ -40,6 +40,9 @@
   var modal = document.getElementById("intakeModal");
   var modalTitle = document.getElementById("intakeModalTitle");
   var modalContent = document.getElementById("intakeModalContent");
+  var wagonModal = document.getElementById("wagonModal");
+  var wagonModalTitle = document.getElementById("wagonModalTitle");
+  var wagonModalContent = document.getElementById("wagonModalContent");
 
   function element(tag, className, text) {
     var node = document.createElement(tag);
@@ -291,6 +294,7 @@
         if (wagon.arrived_kodar_at) card.appendChild(element("p", "tn-card-meta", "Кодар: " + formatDate(wagon.arrived_kodar_at)));
         if (wagon.unloaded_bts_east_at) card.appendChild(element("p", "tn-card-meta", "БТС Восток: " + formatDate(wagon.unloaded_bts_east_at)));
         if (isOperator1()) appendWagonAction(card, wagon);
+        card.addEventListener("click", function () { openWagonHistory(wagon.wagon_number); });
         list.appendChild(card);
       });
       legacyWagons.forEach(function (wagon) {
@@ -304,6 +308,7 @@
         if (slot) meta.push(slot.zone + " · слот " + slot.slot_index);
         if (wagon.stage) meta.push("этап: " + wagon.stage);
         card.appendChild(element("p", "tn-card-meta", meta.join(" · ") || "—"));
+        card.addEventListener("click", function () { openWagonHistory(wagon.number); });
         list.appendChild(card);
       });
       document.getElementById("wagonsEmpty").hidden = (wagons.length + legacyWagons.length) > 0;
@@ -422,6 +427,7 @@
       if (zone) parts.push("зона: " + zone);
       if (position) parts.push("слот " + position.slot_index);
       card.appendChild(element("p", "tn-card-meta", parts.length ? parts.join(" · ") : "позиция не задана"));
+      card.addEventListener("click", function () { openWagonHistory(wagon.number); });
       list.appendChild(card);
     });
   }
@@ -457,6 +463,71 @@
   function closeModal() {
     modal.hidden = true;
     clear(modalContent);
+    wagonModal.hidden = true;
+    clear(wagonModalContent);
+  }
+
+  function openWagonHistory(number) {
+    wagonModal.hidden = false;
+    wagonModalTitle.textContent = "Вагон " + number;
+    clear(wagonModalContent);
+    wagonModalContent.appendChild(element("p", "tn-help", "Загрузка…"));
+    request("/wagons/" + encodeURIComponent(number) + "/history").then(function (data) {
+      renderWagonHistory(data.history);
+    }).catch(function (error) {
+      wagonModal.hidden = true;
+      showToast(error.message || "Не удалось открыть историю вагона");
+    });
+  }
+
+  function renderWagonHistory(history) {
+    clear(wagonModalContent);
+    var wagon = history.wagon;
+    if (wagon) {
+      var statusCard = element("section", "tn-form-card");
+      statusCard.appendChild(element("p", "tn-card-title", "Этап: " + (statusLabels[wagon.status] || wagon.status)));
+      var meta = [];
+      if (wagon.loaded_at) meta.push("загрузка " + formatDate(wagon.loaded_at));
+      if (wagon.dispatched_at) meta.push("отправлен " + formatDate(wagon.dispatched_at));
+      if (wagon.arrived_kodar_at) meta.push("Кодар " + formatDate(wagon.arrived_kodar_at));
+      if (wagon.unloaded_bts_east_at) meta.push("БТС Восток " + formatDate(wagon.unloaded_bts_east_at));
+      if (wagon.returned_empty_at) meta.push("порожний " + formatDate(wagon.returned_empty_at));
+      statusCard.appendChild(element("p", "tn-card-meta", meta.join(" · ") || "цикл ещё не начат"));
+      wagonModalContent.appendChild(statusCard);
+    }
+    var circles = element("section", "tn-section");
+    circles.appendChild(element("h3", "", "Круги (история отправок)"));
+    var trips = history.trips || [];
+    circles.appendChild(element("p", "tn-help", "Сходил кругов: " + trips.length));
+    var tripsList = element("div", "tn-card-list");
+    if (!trips.length) tripsList.appendChild(element("p", "tn-empty", "В истории старой Таксимо отправок нет."));
+    trips.forEach(function (trip) {
+      var card = element("article", "tn-card tn-card--legacy");
+      card.appendChild(element("p", "tn-card-title", (trip.customer || "—") + " · плит " + (trip.slab_count || 0)));
+      var m = [];
+      if (trip.slot_zone) m.push(trip.slot_zone + " · слот " + trip.slot_index);
+      if (trip.status) m.push("этап: " + trip.status);
+      if (trip.return_status) m.push("возврат: " + trip.return_status);
+      if (trip.dispatched_at) m.push("отправка " + formatDate(trip.dispatched_at));
+      if (trip.received_at) m.push("возврат " + formatDate(trip.received_at));
+      card.appendChild(element("p", "tn-card-meta", m.join(" · ") || "—"));
+      tripsList.appendChild(card);
+    });
+    circles.appendChild(tripsList);
+    wagonModalContent.appendChild(circles);
+    var loads = history.loads || [];
+    var loadsSection = element("section", "tn-section");
+    loadsSection.appendChild(element("h3", "", "Блоки в вагоне (" + loads.length + ")"));
+    var loadsList = element("div", "tn-card-list");
+    if (!loads.length) loadsList.appendChild(element("p", "tn-empty", "Сейчас блоков нет."));
+    loads.forEach(function (load) {
+      var card = element("article", "tn-card");
+      card.appendChild(element("p", "tn-card-title", load.block_type + " " + load.block_number));
+      card.appendChild(element("p", "tn-card-meta", "загружен " + formatDate(load.loaded_at) + " · " + load.weight_kg + " кг"));
+      loadsList.appendChild(card);
+    });
+    loadsSection.appendChild(loadsList);
+    wagonModalContent.appendChild(loadsSection);
   }
 
   function openIntake(publicId) {

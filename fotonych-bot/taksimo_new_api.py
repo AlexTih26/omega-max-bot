@@ -216,6 +216,21 @@ async def handle_wagons(_request: web.Request) -> web.Response:
     return _json({"wagons": store.list_wagons()})
 
 
+async def handle_wagon_history(request: web.Request) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    number = request.match_info["wagon_number"]
+    history = store.wagon_history(number)
+    legacy_trips = [
+        trip for trip in legacy.list_legacy_wagon_history()
+        if str(trip.get("wagon_number") or "") == str(number)
+    ]
+    history["trips"] = legacy_trips
+    history["circles"] = len(legacy_trips)
+    return _json({"history": history})
+
+
 async def handle_wagon_load(request: web.Request) -> web.Response:
     operator, denied = _operator(request)
     if denied:
@@ -489,6 +504,7 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo-new/yard", _with_database_errors(handle_yard))
     app.router.add_get("/api/taksimo-new/wagons", _with_database_errors(handle_wagons))
     app.router.add_post("/api/taksimo-new/wagons/load", _with_database_errors(handle_wagon_load))
+    app.router.add_get("/api/taksimo-new/wagons/{wagon_number}/history", _with_database_errors(handle_wagon_history))
     app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/loaded", _with_database_errors(handle_wagon_loaded))
     app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/dispatch", _with_database_errors(handle_wagon_dispatch))
     app.router.add_post("/api/taksimo-new/wagons/{wagon_number}/arrived-kodar", _with_database_errors(handle_wagon_arrived_kodar))

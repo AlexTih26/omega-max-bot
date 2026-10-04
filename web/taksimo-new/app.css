@@ -72,6 +72,7 @@ h3 { margin: 0; font-size: 1rem; }
 .tn-section { display: grid; gap: 10px; }
 .tn-card-list { display: grid; gap: 10px; }
 .tn-card { border: 1px solid var(--tn-border); border-radius: 14px; background: var(--tn-surface); padding: 14px; box-shadow: 0 3px 9px rgba(30, 51, 69, .025); }
+.tn-card[role='button'], .tn-card--clickable, #wagonsList .tn-card, #catalogWagons .tn-card { cursor: pointer; }
 .tn-card--legacy { border-style: dashed; opacity: .88; }
 .tn-card-title-row { justify-content: space-between; align-items: flex-start; }
 .tn-card-title { margin: 0; font-weight: 780; line-height: 1.35; }

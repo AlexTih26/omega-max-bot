@@ -1202,6 +1202,36 @@ def list_wagons() -> list[dict[str, Any]]:
             return [_row_datetime(dict(row)) for row in cursor.fetchall()]
 
 
+def wagon_history(wagon_number: Any) -> dict[str, Any]:
+    """История одного вагона: текущее состояние, блоки в вагоне и этапы цикла."""
+    number = _required_text(wagon_number, "номер вагона", max_length=40).upper()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM tn_wagons WHERE wagon_number = %s", (number,))
+            wagon_row = cursor.fetchone()
+            wagon = _row_datetime(dict(wagon_row)) if wagon_row is not None else None
+            cursor.execute(
+                """SELECT loads.id AS load_id, loads.loaded_at,
+                          b.block_type, b.block_number, b.product_name, b.weight_kg, b.condition_code
+                   FROM tn_wagon_loads AS loads
+                   JOIN tn_blocks AS b ON b.id = loads.block_id
+                   JOIN tn_wagons AS w ON w.id = loads.wagon_id
+                   WHERE w.wagon_number = %s
+                   ORDER BY loads.loaded_at, loads.id""",
+                (number,),
+            )
+            loads = [_row_datetime(dict(row)) for row in cursor.fetchall()]
+            cursor.execute(
+                """SELECT e.event_type, e.occurred_at, e.payload_json, e.actor_name
+                   FROM tn_events AS e
+                   WHERE e.subject_public_id = %s AND e.subject_type IN ('wagon', 'wagon_dispatch')
+                   ORDER BY e.occurred_at, e.id""",
+                (number,),
+            )
+            events = [_row_datetime(dict(row)) for row in cursor.fetchall()]
+    return {"wagon": wagon, "loads": loads, "events": events}
+
+
 def _wagon_rumex_contexts(cursor: Any, wagon_id: int) -> list[dict[str, Any]]:
     cursor.execute(
         """SELECT DISTINCT i.rumex_shipment_id, i.rumex_document_version

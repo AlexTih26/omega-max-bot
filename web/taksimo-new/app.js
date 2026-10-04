@@ -927,6 +927,14 @@
     xControl.addEventListener("input", updateLine);
     yControl.addEventListener("input", updateLine);
     updatePlace();
+    if (data._saved) {
+      if (data.wagon_number) { wagonRadio.checked = true; yardRadio.checked = false; }
+      updatePlace();
+      line.dataset.saved = "1";
+      body.hidden = true;
+      head.querySelector(".tn-block-chevron").textContent = "▾";
+      head.querySelector(".tn-block-id").textContent = "✓ " + label;
+    }
     line.appendChild(head);
     line.appendChild(body);
     return line;
@@ -938,8 +946,26 @@
     form.appendChild(element("p", "tn-help", "После подтверждения строки, блоки и журнал не изменяются. Для недостачи, повреждения и незаявленного блока обязательно укажите примечание."));
     var linesWrap = element("div", "tn-intake-lines");
     var expected = intake.source_system === "rumex" ? (intake.expected_lines || []) : [];
+    var savedByKey = {};
+    (intake.lines || []).forEach(function (line) {
+      savedByKey[line.block_type + "|" + line.block_number] = line;
+    });
     var count = expected.length || Number(intake.expected_blocks_count || 0);
-    for (var index = 0; index < count; index += 1) linesWrap.appendChild(makeReceiptLine(expected[index] || {}, expected.length > 0));
+    for (var index = 0; index < count; index += 1) {
+      var expectedLine = expected[index] || {};
+      var saved = savedByKey[expectedLine.block_type + "|" + expectedLine.block_number];
+      var base = saved ? {
+        block_type: expectedLine.block_type, block_number: expectedLine.block_number,
+        product_name: saved.product_name || expectedLine.product_name || "",
+        weight_kg: saved.weight_kg || expectedLine.weight_kg || "",
+        receipt_state: saved.receipt_state, condition_code: saved.condition_code,
+        discrepancy_note: saved.discrepancy_note || "",
+        yard_x: saved.yard_x, yard_y: saved.yard_y,
+        wagon_number: saved.block_wagon_number || saved.wagon_number || "",
+        _saved: true
+      } : expectedLine;
+      linesWrap.appendChild(makeReceiptLine(base, expected.length > 0));
+    }
     form.appendChild(linesWrap);
     if (expected.length) {
       var addExtra = element("button", "tn-button tn-button--secondary", "Добавить незаявленный блок");

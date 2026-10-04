@@ -372,7 +372,13 @@ def _intake_payload(cursor: Any, row: Mapping[str, Any], *, include_lines: bool 
     if include_lines:
         cursor.execute("SELECT * FROM tn_expected_intake_lines WHERE intake_id = %s ORDER BY sort_order", (intake_id,))
         result["expected_lines"] = [_row_datetime(dict(item)) for item in cursor.fetchall()]
-        cursor.execute("SELECT * FROM tn_intake_lines WHERE intake_id = %s ORDER BY sort_order", (intake_id,))
+        cursor.execute(
+            """SELECT l.*, b.wagon_number AS block_wagon_number
+               FROM tn_intake_lines AS l
+               LEFT JOIN tn_blocks AS b ON b.received_line_id = l.id
+               WHERE l.intake_id = %s ORDER BY l.sort_order""",
+            (intake_id,),
+        )
         result["lines"] = [_row_datetime(dict(item)) for item in cursor.fetchall()]
     return result
 

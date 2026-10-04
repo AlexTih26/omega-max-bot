@@ -126,6 +126,10 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
 .tn-block-place { border-top: 1px dashed var(--tn-border); padding-top: 10px; }
 .tn-place-row { display: flex; gap: 18px; margin-bottom: 8px; }
 .tn-place-option { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; }
+.tn-yard-picker { margin-top: 4px; }
+.tn-yard-picker-grid { display: grid; grid-template-columns: repeat(13, 1fr); gap: 3px; max-height: 220px; overflow: auto; padding: 2px; }
+.tn-yard-picker-cell { min-height: 24px; border: 1px solid var(--tn-border); border-radius: 5px; background: var(--tn-surface-alt); color: var(--tn-muted); font-size: .62rem; padding: 2px; cursor: pointer; }
+.tn-yard-picker-cell--sel { border-color: var(--tn-accent); background: var(--tn-accent-soft); color: var(--tn-accent); font-weight: 800; }
 .tn-timeline { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
 .tn-timeline li { border-left: 3px solid var(--tn-accent); border-radius: 0 10px 10px 0; background: var(--tn-surface); padding: 11px 13px; }
 .tn-timeline time { display: block; margin-bottom: 4px; color: var(--tn-muted); font-size: .78rem; }

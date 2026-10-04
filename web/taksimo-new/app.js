@@ -617,6 +617,31 @@
     }).catch(function () {});
   }
 
+  function makeYardPicker(onPick, selX, selY) {
+    var wrap = element("div", "tn-yard-picker");
+    var grid = element("div", "tn-yard-picker-grid");
+    var selected = null;
+    for (var yy = 1; yy <= 25; yy += 1) {
+      for (var xx = 1; xx <= 13; xx += 1) {
+        (function (px, py) {
+          var cell = element("button", "tn-yard-picker-cell" + (px === selX && py === selY ? " tn-yard-picker-cell--sel" : ""));
+          cell.type = "button";
+          cell.textContent = px + "/" + py;
+          cell.title = px + "/" + py;
+          cell.addEventListener("click", function () {
+            if (selected) selected.classList.remove("tn-yard-picker-cell--sel");
+            cell.classList.add("tn-yard-picker-cell--sel");
+            selected = cell;
+            onPick(px, py);
+          });
+          grid.appendChild(cell);
+        })(xx, yy);
+      }
+    }
+    wrap.appendChild(grid);
+    return wrap;
+  }
+
   function makeReceiptLine(data, isExpected) {
     var line = element("section", "tn-block-card");
     var head = element("button", "tn-block-head");
@@ -658,12 +683,16 @@
 
     var x = lineField("Координата X", "number", "yard_x", data.yard_x || "", { min: 1, max: 13 });
     var y = lineField("Координата Y", "number", "yard_y", data.yard_y || "", { min: 1, max: 25 });
+    x.hidden = true; y.hidden = true;
+    var xControl = x.querySelector("input");
+    var yControl = y.querySelector("input");
+    var yardPicker = makeYardPicker(function (px, py) { xControl.value = px; yControl.value = py; updateLine(); }, data.yard_x || 0, data.yard_y || 0);
     var wagonSel = element("select"); wagonSel.name = "wagon_number";
     var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Выберите вагон…";
     wagonSel.appendChild(blank);
     var wagonField = element("label", "tn-field"); wagonField.appendChild(document.createTextNode("Вагон")); wagonField.appendChild(wagonSel);
     wagonField.hidden = true;
-    placeWrap.appendChild(x); placeWrap.appendChild(y); placeWrap.appendChild(wagonField);
+    placeWrap.appendChild(yardPicker); placeWrap.appendChild(x); placeWrap.appendChild(y); placeWrap.appendChild(wagonField);
     loadWagonOptions(wagonSel);
     body.appendChild(placeWrap);
 
@@ -677,8 +706,6 @@
     var receiptControl = receipt.querySelector("select");
     var conditionControl = condition.querySelector("select");
     var noteControl = note.querySelector("textarea");
-    var xControl = x.querySelector("input");
-    var yControl = y.querySelector("input");
     function updateLine() {
       var missing = receiptControl.value === "missing";
       xControl.disabled = missing; yControl.disabled = missing;
@@ -699,7 +726,8 @@
       summary.textContent = s.join(" ") || "—";
     }
     function updatePlace() {
-      x.hidden = !yardRadio.checked; y.hidden = !yardRadio.checked; wagonField.hidden = !wagonRadio.checked;
+      yardPicker.hidden = !yardRadio.checked;
+      wagonField.hidden = !wagonRadio.checked;
       updateLine();
     }
     yardRadio.addEventListener("change", updatePlace);

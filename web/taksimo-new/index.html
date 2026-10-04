@@ -43,6 +43,7 @@
         <button class="tn-tab" type="button" data-tab="search" aria-selected="false">Поиск</button>
         <button class="tn-tab" type="button" data-tab="journal" aria-selected="false">Журнал</button>
         <button class="tn-tab" type="button" data-tab="reports" aria-selected="false">Отчёты</button>
+        <button class="tn-tab" type="button" data-tab="catalog" aria-selected="false">Справочник</button>
         <button class="tn-tab" type="button" data-tab="manage" aria-selected="false" data-operator1-only>Управление</button>
       </nav>
 
@@ -89,6 +90,7 @@
       <section class="tn-panel" data-panel="yard" hidden>
         <div class="tn-panel-heading"><div><p class="tn-kicker">13 × 25</p><h2>Площадка</h2><p class="tn-subtitle">До четырёх блоков в одной ячейке.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
         <div class="tn-yard-legend"><span><i class="tn-dot"></i> блок на площадке</span><span>Цифра — занятых мест в ячейке</span></div>
+        <p class="tn-help" id="yardLegacyNote" hidden></p>
         <div class="tn-yard-scroll"><div class="tn-yard-grid" id="yardGrid" aria-label="Схема площадки"></div></div>
         <div class="tn-card-list" id="yardBlocks"></div>
       </section>
@@ -122,6 +124,27 @@
         <label class="tn-field tn-report-date">Дата<input id="reportDate" type="date"></label>
         <div class="tn-stats" id="reportStats"></div>
         <div class="tn-card-list" id="reportIntakes"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="catalog" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">Справочники площадки</p><h2>Справочник</h2><p class="tn-subtitle">Машины и вагоны подтянуты из старой Таксимо (read-only); тупики — конфигурация новой площадки.</p></div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Машины</h3><p class="tn-help">Госномер · марка · водитель.</p></div></div>
+          <p class="tn-empty" id="catalogVehiclesEmpty" hidden>Машин в справочнике нет.</p>
+          <div class="tn-catalog-grid" id="catalogVehicles"></div>
+        </section>
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Вагоны</h3><p class="tn-help">Справочник вагонов; позиция — из старой площадки.</p></div></div>
+          <p class="tn-empty" id="catalogWagonsEmpty" hidden>Вагонов в справочнике нет.</p>
+          <div class="tn-catalog-grid" id="catalogWagons"></div>
+        </section>
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Тупики новой площадки</h3><p class="tn-help">Три тупика по 10 слотов. Позиции вагонов заполняются в новом контуре по мере загрузки.</p></div></div>
+          <div class="tn-dead-ends" id="catalogDeadEnds"></div>
+        </section>
       </section>
 
       <section class="tn-panel" data-panel="manage" hidden>

@@ -88,6 +88,18 @@ def list_legacy_slabs() -> list[dict[str, Any]]:
     )
 
 
+def list_legacy_yard_slabs() -> list[dict[str, Any]]:
+    """Плиты, лежащие на площадке старой Таксимо (on_yard = 1).
+
+    Используется новой площадкой, чтобы показать живую картину старой площадки,
+    пока операторы ещё работают в старой версии.
+    """
+    return _rows(
+        """SELECT letter, number, pos_x, pos_y, platform_zone, wagon_number
+           FROM slabs WHERE on_yard = 1 ORDER BY platform_zone, pos_y, pos_x"""
+    )
+
+
 def list_legacy_sessions() -> list[dict[str, Any]]:
     """Сессии выгрузки старой Таксимо (текущая работа площадки)."""
     return _rows(

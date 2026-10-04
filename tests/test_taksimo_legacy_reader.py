@@ -131,6 +131,18 @@ class TaksimoLegacyReaderTests(unittest.TestCase):
         self.assertEqual(len(legacy.list_legacy_sessions()), 1)
         self.assertEqual(len(legacy.list_legacy_wagon_history()), 1)
 
+    def test_yard_slabs_filters_to_on_yard(self) -> None:
+        connection = sqlite3.connect(self._path)
+        connection.execute(
+            "INSERT INTO slabs (session_id, letter, number, pos_x, pos_y, platform_zone, on_yard, created_at) "
+            "VALUES (1, 'B', '002', 4, 5, 'В КОДАР', 0, 1700000000)"
+        )
+        connection.commit()
+        connection.close()
+        slabs = legacy.list_legacy_yard_slabs()
+        self.assertEqual(len(slabs), 1)
+        self.assertEqual(slabs[0]["letter"], "A")
+
     def test_connection_is_read_only(self) -> None:
         connection = legacy._connect_ro()
         self.assertIsNotNone(connection)

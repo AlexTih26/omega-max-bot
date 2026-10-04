@@ -147,6 +147,25 @@
     return card;
   }
 
+  function legacyBadge() {
+    return element("span", "tn-badge tn-badge--legacy", "старая");
+  }
+
+  function makeLegacySessionCard(session) {
+    var card = element("article", "tn-card tn-card--legacy");
+    var row = element("div", "tn-card-title-row");
+    row.appendChild(element("p", "tn-card-title", "Сессия #" + session.id + " (старая Таксимо)"));
+    row.appendChild(legacyBadge());
+    card.appendChild(row);
+    var meta = [];
+    if (session.unload_date) meta.push(session.unload_date);
+    if (session.trn) meta.push("ТРН " + session.trn);
+    if (session.driver) meta.push("водитель: " + session.driver);
+    if (session.status) meta.push("статус: " + session.status);
+    card.appendChild(element("p", "tn-card-meta", meta.join(" · ") || "—"));
+    return card;
+  }
+
   function renderIntakes(target, intakes, emptyNode) {
     clear(target);
     emptyNode.hidden = intakes.length > 0;
@@ -174,13 +193,23 @@
       stats.appendChild(statCard(wagons.in_transit || 0, "вагонов в пути"));
       stats.appendChild(statCard((wagons.at_kodar || 0) + (wagons.unloaded_bts_east || 0), "вагонов в Кодаре или выгружено"));
       stats.appendChild(statCard(data.pending_integrations || 0, "неподтверждённых сообщений моста"));
+      var legacy = data.legacy || {};
+      stats.appendChild(statCard(legacy.yard_blocks || 0, "плит в старой Таксимо"));
+      stats.appendChild(statCard(legacy.wagons || 0, "вагонов в старой Таксимо"));
+      stats.appendChild(statCard(legacy.sessions || 0, "сессий в старой Таксимо"));
       renderIntakes(document.getElementById("expectedIntakes"), data.expected_intakes || [], document.getElementById("expectedEmpty"));
     });
   }
 
   function loadIntakes() {
     return request("/intakes?limit=100").then(function (data) {
-      renderIntakes(document.getElementById("intakesList"), data.intakes || [], document.getElementById("intakesEmpty"));
+      var intakes = data.intakes || [];
+      var sessions = data.legacy_sessions || [];
+      renderIntakes(document.getElementById("intakesList"), intakes, document.getElementById("intakesEmpty"));
+      sessions.slice(0, 30).forEach(function (session) {
+        document.getElementById("intakesList").appendChild(makeLegacySessionCard(session));
+      });
+      document.getElementById("intakesEmpty").hidden = (intakes.length + Math.min(sessions.length, 30)) > 0;
     });
   }
 
@@ -192,24 +221,40 @@
   function loadYard() {
     return request("/yard").then(function (data) {
       var blocks = data.blocks || [];
-      var byCell = {};
+      var legacySlabs = data.legacy_slabs || [];
+      var freshByCell = {};
+      var legacyByCell = {};
       blocks.forEach(function (block) {
         var key = block.yard_x + ":" + block.yard_y;
-        if (!byCell[key]) byCell[key] = [];
-        byCell[key].push(block);
+        (freshByCell[key] = freshByCell[key] || []).push(block);
+      });
+      legacySlabs.forEach(function (slab) {
+        var key = slab.yard_x + ":" + slab.yard_y;
+        (legacyByCell[key] = legacyByCell[key] || []).push(slab);
       });
       var grid = document.getElementById("yardGrid");
       clear(grid);
       for (var y = 1; y <= 25; y += 1) {
         for (var x = 1; x <= 13; x += 1) {
-          var items = byCell[x + ":" + y] || [];
-          var cell = element("button", "tn-yard-cell" + (items.length ? " tn-yard-cell--occupied" : ""));
+          var key = x + ":" + y;
+          var fresh = freshByCell[key] || [];
+          var legacyItems = legacyByCell[key] || [];
+          var total = fresh.length + legacyItems.length;
+          var legacyOnly = total > 0 && fresh.length === 0;
+          var cell = element("button", "tn-yard-cell" + (total ? " tn-yard-cell--occupied" + (legacyOnly ? " tn-yard-cell--legacy" : "") : ""));
           cell.type = "button";
           cell.textContent = x + "/" + y;
-          cell.title = items.length ? items.map(function (item) { return item.block_type + " " + item.block_number; }).join(", ") : "Свободная ячейка";
-          if (items.length) cell.appendChild(element("span", "tn-yard-cell-count", String(items.length)));
+          var labels = fresh.map(function (item) { return item.block_type + " " + item.block_number; })
+            .concat(legacyItems.map(function (item) { return item.block_type + " " + item.block_number + " (старая)"; }));
+          cell.title = labels.length ? labels.join(", ") : "Свободная ячейка";
+          if (total) cell.appendChild(element("span", "tn-yard-cell-count", String(total)));
           grid.appendChild(cell);
         }
+      }
+      var note = document.getElementById("yardLegacyNote");
+      if (note) {
+        note.hidden = legacySlabs.length === 0;
+        note.textContent = "Плит из старой Таксимо на площадке: " + legacySlabs.length;
       }
       var list = document.getElementById("yardBlocks");
       clear(list);
@@ -225,9 +270,14 @@
   function loadWagons() {
     return request("/wagons").then(function (data) {
       var wagons = data.wagons || [];
+      var legacyWagons = data.legacy_wagons || [];
+      var legacySlots = data.legacy_slots || [];
+      var legacyByWagon = {};
+      legacySlots.forEach(function (slot) {
+        if (slot.wagon_number) legacyByWagon[slot.wagon_number] = slot;
+      });
       var list = document.getElementById("wagonsList");
       clear(list);
-      document.getElementById("wagonsEmpty").hidden = wagons.length > 0;
       wagons.forEach(function (wagon) {
         var card = element("article", "tn-card");
         var row = element("div", "tn-card-title-row");
@@ -242,6 +292,20 @@
         if (isOperator1()) appendWagonAction(card, wagon);
         list.appendChild(card);
       });
+      legacyWagons.forEach(function (wagon) {
+        var slot = legacyByWagon[wagon.number];
+        var card = element("article", "tn-card tn-card--legacy");
+        var row = element("div", "tn-card-title-row");
+        row.appendChild(element("p", "tn-card-title", "Вагон " + wagon.number));
+        row.appendChild(legacyBadge());
+        card.appendChild(row);
+        var meta = [];
+        if (slot) meta.push(slot.zone + " · слот " + slot.slot_index);
+        if (wagon.stage) meta.push("этап: " + wagon.stage);
+        card.appendChild(element("p", "tn-card-meta", meta.join(" · ") || "—"));
+        list.appendChild(card);
+      });
+      document.getElementById("wagonsEmpty").hidden = (wagons.length + legacyWagons.length) > 0;
     });
   }
 
@@ -311,8 +375,80 @@
     });
   }
 
+  function loadCatalog() {
+    return Promise.all([
+      request("/catalog/vehicles"),
+      request("/catalog/wagons"),
+      request("/catalog/slots"),
+      request("/catalog/dead-ends")
+    ]).then(function (results) {
+      var vehicles = results[0].vehicles || [];
+      var wagons = results[1].wagons || [];
+      var slots = results[2].slots || [];
+      var deadEnds = results[3].dead_ends || [];
+      var positionByWagon = {};
+      slots.forEach(function (slot) { if (slot.wagon_number) positionByWagon[slot.wagon_number] = slot; });
+      renderCatalogVehicles(vehicles);
+      renderCatalogWagons(wagons, positionByWagon);
+      renderCatalogDeadEnds(deadEnds);
+      setError("");
+    });
+  }
+
+  function renderCatalogVehicles(vehicles) {
+    var list = document.getElementById("catalogVehicles");
+    clear(list);
+    document.getElementById("catalogVehiclesEmpty").hidden = vehicles.length > 0;
+    vehicles.forEach(function (vehicle) {
+      var card = element("article", "tn-card");
+      card.appendChild(element("p", "tn-card-title", vehicle.plate || "—"));
+      card.appendChild(element("p", "tn-card-meta", (vehicle.brand || "марка не указана") + " · " + (vehicle.driver || "водитель не назначен")));
+      list.appendChild(card);
+    });
+  }
+
+  function renderCatalogWagons(wagons, positionByWagon) {
+    var list = document.getElementById("catalogWagons");
+    clear(list);
+    document.getElementById("catalogWagonsEmpty").hidden = wagons.length > 0;
+    wagons.forEach(function (wagon) {
+      var card = element("article", "tn-card");
+      card.appendChild(element("p", "tn-card-title", "Вагон " + (wagon.number || "—")));
+      var position = positionByWagon[wagon.number];
+      var parts = [];
+      if (wagon.stage) parts.push("стадия: " + wagon.stage);
+      var zone = position ? position.zone : (wagon.planned_zone || null);
+      if (zone) parts.push("зона: " + zone);
+      if (position) parts.push("слот " + position.slot_index);
+      card.appendChild(element("p", "tn-card-meta", parts.length ? parts.join(" · ") : "позиция не задана"));
+      list.appendChild(card);
+    });
+  }
+
+  function renderCatalogDeadEnds(deadEnds) {
+    var wrap = document.getElementById("catalogDeadEnds");
+    clear(wrap);
+    deadEnds.forEach(function (deadEnd) {
+      var box = element("section", "tn-dead-end");
+      var head = element("div", "tn-dead-end-head");
+      head.appendChild(element("p", "tn-dead-end-name", deadEnd.name || "Тупик"));
+      head.appendChild(element("p", "tn-dead-end-meta", "слотов: " + (deadEnd.slots || 10)));
+      box.appendChild(head);
+      var grid = element("div", "tn-slot-grid");
+      var count = Number(deadEnd.slots || 10);
+      for (var index = 1; index <= count; index += 1) {
+        var cell = element("div", "tn-slot");
+        cell.textContent = String(index);
+        cell.title = "Слот " + index + " · свободен";
+        grid.appendChild(cell);
+      }
+      box.appendChild(grid);
+      wrap.appendChild(box);
+    });
+  }
+
   function loadPanel(name) {
-    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport };
+    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog };
     if (!loaders[name]) return;
     loaders[name]().catch(function (error) { setError(error.message || "Не удалось загрузить данные"); });
   }
@@ -452,14 +588,53 @@
     return field;
   }
 
+  function loadWagonOptions(select) {
+    var seen = {};
+    var add = function (value, label) {
+      if (!value || seen[value]) return;
+      seen[value] = true;
+      var opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = label;
+      select.appendChild(opt);
+    };
+    request("/wagons").then(function (data) {
+      var slots = data.legacy_slots || [];
+      var wagons = data.legacy_wagons || [];
+      var inSlot = {};
+      slots.forEach(function (slot) {
+        if (!slot.wagon_number) return;
+        inSlot[slot.wagon_number] = true;
+        add(slot.wagon_number, slot.zone + " · слот " + slot.slot_index + " · вагон " + slot.wagon_number);
+      });
+      wagons.forEach(function (wagon) {
+        if (inSlot[wagon.number]) return;
+        add(wagon.number, "Вагон " + wagon.number + (wagon.stage ? " · " + wagon.stage : ""));
+      });
+      (data.wagons || []).forEach(function (wagon) {
+        add(wagon.wagon_number, "Вагон " + wagon.wagon_number + " (новый контур)");
+      });
+    }).catch(function () {});
+  }
+
   function makeReceiptLine(data, isExpected) {
-    var line = element("section", "tn-intake-line");
-    line.appendChild(element("h3", "", isExpected ? "Ожидаемый блок" : "Блок"));
-    if (isExpected) line.appendChild(element("p", "tn-line-identity", "Поставлен в ожидание служебным мостом; тип и номер не меняются."));
-    line.appendChild(lineField("Тип *", "text", "block_type", data.block_type || "", { required: true, readOnly: isExpected, maxLength: 30 }));
-    line.appendChild(lineField("Номер *", "text", "block_number", data.block_number || "", { required: true, readOnly: isExpected, maxLength: 80 }));
-    line.appendChild(lineField("Наименование", "text", "product_name", data.product_name || "", { maxLength: 200 }));
-    line.appendChild(lineField("Вес, кг", "number", "weight_kg", data.weight_kg || "", { min: 1 }));
+    var line = element("section", "tn-block-card");
+    var head = element("button", "tn-block-head");
+    head.type = "button";
+    head.setAttribute("aria-expanded", "false");
+    var label = data.block_type && data.block_number ? (data.block_type + " " + data.block_number) : "Новый блок";
+    head.appendChild(element("span", "tn-block-id", label));
+    var summary = element("span", "tn-block-summary", isExpected ? "ожидается" : "новый");
+    head.appendChild(summary);
+    head.appendChild(element("span", "tn-block-chevron", "▾"));
+
+    var body = element("div", "tn-block-body");
+    body.hidden = true;
+    body.appendChild(lineField("Тип *", "text", "block_type", data.block_type || "", { required: true, readOnly: isExpected, maxLength: 30 }));
+    body.appendChild(lineField("Номер *", "text", "block_number", data.block_number || "", { required: true, readOnly: isExpected, maxLength: 80 }));
+    body.appendChild(lineField("Наименование", "text", "product_name", data.product_name || "", { maxLength: 200 }));
+    body.appendChild(lineField("Вес, кг", "number", "weight_kg", data.weight_kg || "", { min: 1 }));
+
     var receipt = lineField("Статус *", "select", "receipt_state", data.receipt_state || "received", {
       items: [{ value: "received", label: "Принят" }, { value: "missing", label: "Недостача" }, { value: "damaged", label: "Повреждён" }]
     });
@@ -467,13 +642,38 @@
       items: [{ value: "ok", label: "Без повреждений" }, { value: "damage", label: "Есть повреждение" }]
     });
     var note = lineField("Примечание", "textarea", "discrepancy_note", data.discrepancy_note || "", { maxLength: 500 });
-    var x = lineField("Координата X *", "number", "yard_x", data.yard_x || "", { min: 1, max: 13 });
-    var y = lineField("Координата Y *", "number", "yard_y", data.yard_y || "", { min: 1, max: 25 });
-    line.appendChild(receipt);
-    line.appendChild(condition);
-    line.appendChild(note);
-    line.appendChild(x);
-    line.appendChild(y);
+    body.appendChild(receipt);
+    body.appendChild(condition);
+    body.appendChild(note);
+
+    var placeWrap = element("div", "tn-block-place");
+    placeWrap.appendChild(element("p", "tn-help", "Куда сохранить блок:"));
+    var placeRow = element("div", "tn-place-row");
+    var yardRadio = element("input"); yardRadio.type = "radio"; yardRadio.name = "place"; yardRadio.value = "yard"; yardRadio.checked = true;
+    var yardLabel = element("label", "tn-place-option"); yardLabel.appendChild(yardRadio); yardLabel.appendChild(document.createTextNode("Площадка"));
+    var wagonRadio = element("input"); wagonRadio.type = "radio"; wagonRadio.name = "place"; wagonRadio.value = "wagon";
+    var wagonLabel = element("label", "tn-place-option"); wagonLabel.appendChild(wagonRadio); wagonLabel.appendChild(document.createTextNode("Вагон"));
+    placeRow.appendChild(yardLabel); placeRow.appendChild(wagonLabel);
+    placeWrap.appendChild(placeRow);
+
+    var x = lineField("Координата X", "number", "yard_x", data.yard_x || "", { min: 1, max: 13 });
+    var y = lineField("Координата Y", "number", "yard_y", data.yard_y || "", { min: 1, max: 25 });
+    var wagonSel = element("select"); wagonSel.name = "wagon_number";
+    var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Выберите вагон…";
+    wagonSel.appendChild(blank);
+    var wagonField = element("label", "tn-field"); wagonField.appendChild(document.createTextNode("Вагон")); wagonField.appendChild(wagonSel);
+    wagonField.hidden = true;
+    placeWrap.appendChild(x); placeWrap.appendChild(y); placeWrap.appendChild(wagonField);
+    loadWagonOptions(wagonSel);
+    body.appendChild(placeWrap);
+
+    head.addEventListener("click", function () {
+      var open = body.hidden;
+      body.hidden = !open;
+      head.setAttribute("aria-expanded", String(open));
+      head.querySelector(".tn-block-chevron").textContent = open ? "▴" : "▾";
+    });
+
     var receiptControl = receipt.querySelector("select");
     var conditionControl = condition.querySelector("select");
     var noteControl = note.querySelector("textarea");
@@ -481,16 +681,37 @@
     var yControl = y.querySelector("input");
     function updateLine() {
       var missing = receiptControl.value === "missing";
-      xControl.disabled = missing;
-      yControl.disabled = missing;
-      xControl.required = !missing;
-      yControl.required = !missing;
+      xControl.disabled = missing; yControl.disabled = missing;
+      xControl.required = !missing && yardRadio.checked;
+      yControl.required = !missing && yardRadio.checked;
+      wagonSel.disabled = missing;
+      wagonSel.required = !missing && wagonRadio.checked;
       noteControl.required = missing || receiptControl.value === "damaged" || conditionControl.value === "damage";
       if (receiptControl.value === "damaged") conditionControl.value = "damage";
+      var s = [];
+      if (missing) s.push("недостача");
+      else if (yardRadio.checked) {
+        var vx = xControl.value, vy = yControl.value;
+        s.push(vx && vy ? ("X=" + vx + ", Y=" + vy) : "выберите место");
+      } else {
+        s.push(wagonSel.value ? ("вагон " + wagonSel.value) : "выберите вагон");
+      }
+      summary.textContent = s.join(" ") || "—";
     }
+    function updatePlace() {
+      x.hidden = !yardRadio.checked; y.hidden = !yardRadio.checked; wagonField.hidden = !wagonRadio.checked;
+      updateLine();
+    }
+    yardRadio.addEventListener("change", updatePlace);
+    wagonRadio.addEventListener("change", updatePlace);
     receiptControl.addEventListener("change", updateLine);
     conditionControl.addEventListener("change", updateLine);
-    updateLine();
+    xControl.addEventListener("input", updateLine);
+    yControl.addEventListener("input", updateLine);
+    wagonSel.addEventListener("change", updateLine);
+    updatePlace();
+    line.appendChild(head);
+    line.appendChild(body);
     return line;
   }
 
@@ -517,12 +738,17 @@
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       if (!form.checkValidity()) { form.reportValidity(); return; }
-      var lines = Array.from(linesWrap.querySelectorAll(".tn-intake-line")).map(function (line) {
-        var get = function (name) { return line.querySelector("[name='" + name + "']").value.trim(); };
+      var lines = Array.from(linesWrap.querySelectorAll(".tn-block-card")).map(function (card) {
+        var get = function (name) { var el = card.querySelector("[name='" + name + "']"); return el ? el.value.trim() : ""; };
+        var place = card.querySelector("input[name='place']:checked");
+        var useWagon = place && place.value === "wagon";
         return {
           block_type: get("block_type"), block_number: get("block_number"), product_name: get("product_name"),
           weight_kg: get("weight_kg") || null, receipt_state: get("receipt_state"), condition_code: get("condition_code"),
-          discrepancy_note: get("discrepancy_note"), yard_x: get("yard_x") || null, yard_y: get("yard_y") || null
+          discrepancy_note: get("discrepancy_note"),
+          yard_x: useWagon ? null : (get("yard_x") || null),
+          yard_y: useWagon ? null : (get("yard_y") || null),
+          wagon_number: useWagon ? get("wagon_number") : ""
         };
       });
       confirm.disabled = true;

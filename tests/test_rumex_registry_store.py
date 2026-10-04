@@ -372,6 +372,15 @@ class RumexRegistryStoreTests(unittest.TestCase):
         history = store.list_test_block_history("A", "3611")
         self.assertEqual(history[0]["registry_number"], shipment["registry_number"])
 
+        pending = store.list_pending_test_taksimo_snapshots()
+        self.assertEqual(len(pending), 1)
+        snap = pending[0]["snapshot"]
+        self.assertEqual(snap["contract_version"], 2)
+        self.assertEqual(snap["vehicle_plate"], "К553НХ 138")
+        self.assertEqual(snap["driver_name"], "Иванов Иван Иванович")
+        self.assertEqual(snap["ttn_number"], "")
+        self.assertEqual(len(snap["expected_blocks"]), 3)
+
         returned = store.return_test_shipment_for_correction(
             shipment["id"],
             accountant_name="Бухгалтер 2",

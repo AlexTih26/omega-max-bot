@@ -764,6 +764,80 @@ def init_rumex_registry_db() -> None:
                 SELECT RAISE(ABORT, 'Попытку доставки нельзя удалять');
             END;
 
+            -- Ожидаемые рейсы нового диспетчерского кабинета (test_shipments), которые
+            -- передаются в новую Таксимо сразу после создания, ещё до подтверждения ЭР
+            -- бухгалтером. Держится отдельно, чтобы не влиять на неизменяемые снимки
+            -- боевого реестра shipments.
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_test_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                test_shipment_id INTEGER NOT NULL,
+                document_version INTEGER NOT NULL CHECK (document_version >= 1),
+                external_reference TEXT NOT NULL UNIQUE,
+                snapshot_json TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                UNIQUE (test_shipment_id, document_version)
+            );
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_snapshots_no_update
+            BEFORE UPDATE ON rumex_taksimo_test_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'Ожидаемый снимок нового реестра нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_snapshots_no_delete
+            BEFORE DELETE ON rumex_taksimo_test_snapshots
+            BEGIN
+                SELECT RAISE(ABORT, 'Ожидаемый снимок нового реестра нельзя удалять');
+            END;
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_test_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL UNIQUE,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                created_at REAL NOT NULL,
+                delivered_at REAL,
+                delivery_reference TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (snapshot_id) REFERENCES rumex_taksimo_test_snapshots(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_test_outbox_pending
+                ON rumex_taksimo_test_outbox(delivered_at, created_at, id);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_outbox_delivery_only
+            BEFORE UPDATE ON rumex_taksimo_test_outbox
+            WHEN NOT (
+                NEW.id = OLD.id
+                AND NEW.snapshot_id = OLD.snapshot_id
+                AND NEW.idempotency_key = OLD.idempotency_key
+                AND NEW.created_at = OLD.created_at
+                AND OLD.delivered_at IS NULL
+                AND NEW.delivered_at IS NOT NULL
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'Исходящий снимок нового реестра можно только подтвердить доставкой');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_outbox_no_delete
+            BEFORE DELETE ON rumex_taksimo_test_outbox
+            BEGIN
+                SELECT RAISE(ABORT, 'Исходящий снимок нового реестра нельзя удалять');
+            END;
+            CREATE TABLE IF NOT EXISTS rumex_taksimo_test_outbox_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                outbox_id INTEGER NOT NULL,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                http_status INTEGER,
+                result_note TEXT NOT NULL DEFAULT '',
+                attempted_at REAL NOT NULL,
+                FOREIGN KEY (outbox_id) REFERENCES rumex_taksimo_test_outbox(id) ON DELETE RESTRICT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rumex_taksimo_test_outbox_attempts
+                ON rumex_taksimo_test_outbox_attempts(outbox_id, attempted_at DESC, id DESC);
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_outbox_attempts_no_update
+            BEFORE UPDATE ON rumex_taksimo_test_outbox_attempts
+            BEGIN
+                SELECT RAISE(ABORT, 'Попытку доставки нового реестра нельзя изменять');
+            END;
+            CREATE TRIGGER IF NOT EXISTS rumex_taksimo_test_outbox_attempts_no_delete
+            BEFORE DELETE ON rumex_taksimo_test_outbox_attempts
+            BEGIN
+                SELECT RAISE(ABORT, 'Попытку доставки нового реестра нельзя удалять');
+            END;
+
             -- Физические факты приходит только из outbox новой Таксимо.
             -- Они не меняют ЭР или ТТН, а лишь дополняют документную историю.
             CREATE TABLE IF NOT EXISTS rumex_taksimo_physical_events (
@@ -2243,6 +2317,15 @@ def create_test_shipment(
                 },
                 occurred_at=now,
             )
+            _enqueue_test_taksimo_snapshot(
+                conn,
+                test_shipment_id=shipment_id,
+                registry_number=registry_number,
+                loaded_at=loaded_timestamp,
+                document_snapshot=document_snapshot,
+                items=normalized_items,
+                created_at=now,
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -3248,6 +3331,157 @@ def record_taksimo_snapshot_delivery(
             if success and row["delivered_at"] is None:
                 conn.execute(
                     """UPDATE rumex_taksimo_outbox
+                       SET delivered_at = ?, delivery_reference = ? WHERE id = ?""",
+                    (now, reference, int(outbox_id)),
+                )
+            conn.commit()
+            return row["delivered_at"] is None
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def _test_taksimo_snapshot_payload(
+    *,
+    test_shipment_id: int,
+    registry_number: str,
+    loaded_at: float,
+    document_snapshot: Mapping[str, Any],
+    items: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Снимок ожидаемого рейса нового реестра: без ТТН и без подтверждения ЭР."""
+    vehicle = document_snapshot.get("vehicle") if isinstance(document_snapshot, dict) else {}
+    driver = document_snapshot.get("driver") if isinstance(document_snapshot, dict) else {}
+    vehicle_plate = str((vehicle or {}).get("full_plate") or (vehicle or {}).get("plate_tail") or "").strip()
+    driver_name = str((driver or {}).get("full_name") or "").strip()
+    reference = str(registry_number or "").strip() or f"rumex-test-shipment:{test_shipment_id}"
+    return {
+        "contract_version": 2,
+        "external_reference": reference,
+        "rumex_shipment_id": test_shipment_id,
+        "document_version": 1,
+        "physical_owner": "taksimo_new",
+        "ttn_number": "",
+        "vehicle_plate": vehicle_plate,
+        "driver_name": driver_name,
+        "planned_arrival_at": datetime.fromtimestamp(loaded_at, timezone.utc).isoformat().replace("+00:00", "Z"),
+        "expected_blocks": [
+            {
+                "block_type": str(item.get("block_type_code") or ""),
+                "block_number": str(item.get("block_number") or ""),
+                "product_name": str(item.get("product_name") or ""),
+                "weight_kg": int(item.get("weight_kg") or 0),
+            }
+            for item in items
+        ],
+        "confirmation": None,
+    }
+
+
+def _enqueue_test_taksimo_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    test_shipment_id: int,
+    registry_number: str,
+    loaded_at: float,
+    document_snapshot: Mapping[str, Any],
+    items: Iterable[Mapping[str, Any]],
+    created_at: float,
+) -> dict[str, Any]:
+    """Положить ожидаемый рейс нового реестра в отдельную очередь для новой Таксимо."""
+    existing = conn.execute(
+        "SELECT * FROM rumex_taksimo_test_snapshots WHERE test_shipment_id = ? AND document_version = 1",
+        (int(test_shipment_id),),
+    ).fetchone()
+    if existing is not None:
+        return json.loads(str(existing["snapshot_json"]))
+    snapshot = _test_taksimo_snapshot_payload(
+        test_shipment_id=int(test_shipment_id),
+        registry_number=registry_number,
+        loaded_at=loaded_at,
+        document_snapshot=document_snapshot,
+        items=items,
+    )
+    cursor = conn.execute(
+        """INSERT INTO rumex_taksimo_test_snapshots (
+               test_shipment_id, document_version, external_reference, snapshot_json, created_at
+           ) VALUES (?, ?, ?, ?, ?)""",
+        (
+            int(test_shipment_id),
+            snapshot["document_version"],
+            snapshot["external_reference"],
+            _json(snapshot),
+            created_at,
+        ),
+    )
+    snapshot_id = int(cursor.lastrowid)
+    conn.execute(
+        """INSERT INTO rumex_taksimo_test_outbox (snapshot_id, idempotency_key, created_at)
+           VALUES (?, ?, ?)""",
+        (snapshot_id, snapshot["external_reference"], created_at),
+    )
+    return snapshot
+
+
+def list_pending_test_taksimo_snapshots(*, limit: int = 25) -> list[dict[str, Any]]:
+    """Вернуть недоставленные ожидаемые снимки нового реестра для моста."""
+    init_rumex_registry_db()
+    try:
+        parsed_limit = int(limit)
+    except (TypeError, ValueError):
+        parsed_limit = 25
+    parsed_limit = max(1, min(parsed_limit, 100))
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT outbox.id AS outbox_id, outbox.idempotency_key, snapshot.snapshot_json
+               FROM rumex_taksimo_test_outbox AS outbox
+               JOIN rumex_taksimo_test_snapshots AS snapshot ON snapshot.id = outbox.snapshot_id
+               WHERE outbox.delivered_at IS NULL
+               ORDER BY outbox.created_at, outbox.id LIMIT ?""",
+            (parsed_limit,),
+        ).fetchall()
+    return [
+        {
+            "outbox_id": int(row["outbox_id"]),
+            "idempotency_key": str(row["idempotency_key"]),
+            "snapshot": json.loads(str(row["snapshot_json"])),
+        }
+        for row in rows
+    ]
+
+
+def record_test_taksimo_snapshot_delivery(
+    outbox_id: int,
+    *,
+    success: bool,
+    http_status: int | None = None,
+    result_note: str = "",
+    delivery_reference: str = "",
+    attempted_at: float | None = None,
+) -> bool:
+    """Зафиксировать попытку и при успехе подтвердить доставку очереди нового реестра."""
+    init_rumex_registry_db()
+    now = float(attempted_at) if attempted_at is not None else _now()
+    note = " ".join(str(result_note or "").split())[:500]
+    reference = " ".join(str(delivery_reference or "").split())[:200]
+    parsed_status = None if http_status is None else int(http_status)
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT delivered_at FROM rumex_taksimo_test_outbox WHERE id = ?", (int(outbox_id),)
+            ).fetchone()
+            if row is None:
+                raise ValueError("Исходящий снимок нового реестра не найден")
+            conn.execute(
+                """INSERT INTO rumex_taksimo_test_outbox_attempts
+                   (outbox_id, success, http_status, result_note, attempted_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (int(outbox_id), int(bool(success)), parsed_status, note, now),
+            )
+            if success and row["delivered_at"] is None:
+                conn.execute(
+                    """UPDATE rumex_taksimo_test_outbox
                        SET delivered_at = ?, delivery_reference = ? WHERE id = ?""",
                     (now, reference, int(outbox_id)),
                 )

@@ -191,16 +191,25 @@ def _intake_line_payload(line: Mapping[str, Any], *, require_location: bool) -> 
         raise ValueError("Для недостачи или повреждения укажите примечание")
     yard_x = line.get("yard_x")
     yard_y = line.get("yard_y")
+    wagon_number = _optional_text(line.get("wagon_number"), "номер вагона", max_length=40).upper() or None
     if receipt_state == "missing":
-        if yard_x not in (None, "") or yard_y not in (None, ""):
-            raise ValueError("Для недостающего блока нельзя указывать место на площадке")
+        if yard_x not in (None, "") or yard_y not in (None, "") or wagon_number:
+            raise ValueError("Для недостающего блока нельзя указывать место размещения")
         parsed_x = parsed_y = None
     elif require_location:
-        parsed_x = _as_int(yard_x, "координата X", minimum=1, maximum=13)
-        parsed_y = _as_int(yard_y, "координата Y", minimum=1, maximum=25)
+        if wagon_number:
+            if yard_x not in (None, "") or yard_y not in (None, ""):
+                raise ValueError("Укажите либо вагон, либо место на площадке")
+            parsed_x = parsed_y = None
+        else:
+            parsed_x = _as_int(yard_x, "координата X", minimum=1, maximum=13)
+            parsed_y = _as_int(yard_y, "координата Y", minimum=1, maximum=25)
     else:
-        parsed_x = None if yard_x in (None, "") else _as_int(yard_x, "координата X", minimum=1, maximum=13)
-        parsed_y = None if yard_y in (None, "") else _as_int(yard_y, "координата Y", minimum=1, maximum=25)
+        if wagon_number:
+            parsed_x = parsed_y = None
+        else:
+            parsed_x = None if yard_x in (None, "") else _as_int(yard_x, "координата X", minimum=1, maximum=13)
+            parsed_y = None if yard_y in (None, "") else _as_int(yard_y, "координата Y", minimum=1, maximum=25)
     return {
         "block_type": block_type,
         "block_number": block_number,
@@ -211,6 +220,7 @@ def _intake_line_payload(line: Mapping[str, Any], *, require_location: bool) -> 
         "discrepancy_note": note,
         "yard_x": parsed_x,
         "yard_y": parsed_y,
+        "wagon_number": wagon_number,
     }
 
 
@@ -369,23 +379,26 @@ def _intake_payload(cursor: Any, row: Mapping[str, Any], *, include_lines: bool 
 def import_expected_intake(payload: Mapping[str, Any], *, idempotency_key: str) -> dict[str, Any]:
     """Принять новый ожидаемый рейс только из доверенного одностороннего моста."""
     key = _required_text(idempotency_key, "ключ идемпотентности", max_length=160)
-    if payload.get("contract_version") != 1:
+    contract_version = payload.get("contract_version")
+    if contract_version not in (1, 2):
         raise ValueError("Неподдерживаемая версия контракта РУМЕКС")
     reference = _required_text(payload.get("external_reference"), "внешний номер рейса", max_length=160)
     rumex_shipment_id = _as_int(payload.get("rumex_shipment_id"), "идентификатор отгрузки РУМЕКС", minimum=1)
     document_version = _as_int(payload.get("document_version"), "версия документа РУМЕКС", minimum=1)
     if payload.get("physical_owner") != "taksimo_new":
         raise ValueError("Физическим владельцем рейса должна быть новая Таксимо")
-    ttn_number = _required_text(payload.get("ttn_number"), "номер ТТН", max_length=120)
+    ttn_number = _optional_text(payload.get("ttn_number"), "номер ТТН", max_length=120)
     vehicle_plate = _required_text(payload.get("vehicle_plate"), "номер машины", max_length=40).upper()
     driver_name = _required_text(payload.get("driver_name"), "имя водителя", max_length=200)
     confirmation = payload.get("confirmation")
-    if not isinstance(confirmation, Mapping):
-        raise ValueError("Передайте реквизиты подтверждения ЭР")
-    er_confirmed_at = _datetime_from_external(confirmation.get("er_confirmed_at"), "время подтверждения ЭР")
-    if er_confirmed_at is None:
+    er_confirmed_at = None
+    if isinstance(confirmation, Mapping):
+        er_confirmed_at = _datetime_from_external(confirmation.get("er_confirmed_at"), "время подтверждения ЭР")
+        _optional_text(confirmation.get("er_external_reference"), "внешнюю ссылку подтверждённого ЭР", max_length=200)
+    if contract_version == 1 and er_confirmed_at is None:
         raise ValueError("Передайте время подтверждения ЭР")
-    _optional_text(confirmation.get("er_external_reference"), "внешнюю ссылку подтверждённого ЭР", max_length=200)
+    if contract_version == 1 and not ttn_number:
+        raise ValueError("Передайте номер ТТН")
     expected_raw = payload.get("expected_blocks")
     if not isinstance(expected_raw, list) or not expected_raw:
         raise ValueError("Передайте ожидаемые блоки рейса")
@@ -605,6 +618,9 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                 if item["receipt_state"] == "missing":
                     item["yard_slot"] = None
                     continue
+                if item["wagon_number"]:
+                    item["yard_slot"] = None
+                    continue
                 cell = (int(item["yard_x"]), int(item["yard_y"]))
                 if cell not in slots_by_cell:
                     cursor.execute(
@@ -639,20 +655,65 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
             )
             cursor.execute("SELECT id, block_type, block_number FROM tn_intake_lines WHERE intake_id = %s", (intake_id,))
             saved_lines = {(str(item["block_type"]), str(item["block_number"])): int(item["id"]) for item in cursor.fetchall()}
+            wagon_ids: dict[str, int] = {}
             for item in normalized:
                 if item["receipt_state"] == "missing":
                     continue
-                cursor.execute(
-                    """INSERT INTO tn_blocks
-                       (block_type, block_number, product_name, weight_kg, condition_code, current_location_kind,
-                        yard_x, yard_y, yard_slot, received_intake_id, received_line_id, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, 'yard', %s, %s, %s, %s, %s, %s, %s)""",
-                    (
-                        item["block_type"], item["block_number"], item["product_name"], item["weight_kg"], item["condition_code"],
-                        item["yard_x"], item["yard_y"], item["yard_slot"], intake_id,
-                        saved_lines[(item["block_type"], item["block_number"])], now, now,
-                    ),
-                )
+                line_id = saved_lines[(item["block_type"], item["block_number"])]
+                if item["wagon_number"]:
+                    wagon_number = item["wagon_number"]
+                    if wagon_number not in wagon_ids:
+                        cursor.execute(
+                            "SELECT id, status FROM tn_wagons WHERE wagon_number = %s FOR UPDATE", (wagon_number,)
+                        )
+                        wagon_row = cursor.fetchone()
+                        if wagon_row is None:
+                            cursor.execute(
+                                "INSERT INTO tn_wagons (wagon_number, status, created_at) VALUES (%s, 'forming', %s)",
+                                (wagon_number, now),
+                            )
+                            wagon_ids[wagon_number] = int(cursor.lastrowid)
+                        elif str(wagon_row["status"]) in {"forming", "returned_empty"}:
+                            if str(wagon_row["status"]) == "returned_empty":
+                                cursor.execute(
+                                    """UPDATE tn_wagons SET status = 'forming', loaded_at = NULL,
+                                       loaded_by_operator_id = NULL, dispatched_at = NULL,
+                                       dispatched_by_operator_id = NULL, arrived_kodar_at = NULL,
+                                       arrived_kodar_by_operator_id = NULL, unloaded_bts_east_at = NULL,
+                                       unloaded_bts_east_by_operator_id = NULL, returned_empty_at = NULL,
+                                       returned_empty_by_operator_id = NULL WHERE id = %s""",
+                                    (int(wagon_row["id"]),),
+                                )
+                            wagon_ids[wagon_number] = int(wagon_row["id"])
+                        else:
+                            raise TaksimoNewConflictError(f"Вагон {wagon_number} нельзя догружать на текущем этапе")
+                    cursor.execute(
+                        """INSERT INTO tn_blocks
+                           (block_type, block_number, product_name, weight_kg, condition_code, current_location_kind,
+                            yard_x, yard_y, yard_slot, wagon_number, received_intake_id, received_line_id, created_at, updated_at)
+                           VALUES (%s, %s, %s, %s, %s, 'wagon', NULL, NULL, NULL, %s, %s, %s, %s, %s)""",
+                        (
+                            item["block_type"], item["block_number"], item["product_name"], item["weight_kg"], item["condition_code"],
+                            wagon_number, intake_id, line_id, now, now,
+                        ),
+                    )
+                    block_id = int(cursor.lastrowid)
+                    cursor.execute(
+                        """INSERT INTO tn_wagon_loads (wagon_id, block_id, loaded_by_operator_id, loaded_at)
+                           VALUES (%s, %s, %s, %s)""",
+                        (wagon_ids[wagon_number], block_id, int(operator["id"]), now),
+                    )
+                else:
+                    cursor.execute(
+                        """INSERT INTO tn_blocks
+                           (block_type, block_number, product_name, weight_kg, condition_code, current_location_kind,
+                            yard_x, yard_y, yard_slot, received_intake_id, received_line_id, created_at, updated_at)
+                           VALUES (%s, %s, %s, %s, %s, 'yard', %s, %s, %s, %s, %s, %s, %s)""",
+                        (
+                            item["block_type"], item["block_number"], item["product_name"], item["weight_kg"], item["condition_code"],
+                            item["yard_x"], item["yard_y"], item["yard_slot"], intake_id, line_id, now, now,
+                        ),
+                    )
             discrepancy = any(
                 item["receipt_state"] != "received"
                 or item["condition_code"] != "ok"

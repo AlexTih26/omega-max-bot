@@ -62,7 +62,7 @@ class RumexTaksimoBridgeTests(unittest.TestCase):
             "snapshot": {"contract_version": 1, "rumex_shipment_id": 1},
         }
         with patch.object(bridge.rumex_store, "record_taksimo_snapshot_delivery") as recorded:
-            asyncio.run(bridge._post_snapshot(session, entry))
+            asyncio.run(bridge._post_snapshot(session, entry, record_delivery=bridge.rumex_store.record_taksimo_snapshot_delivery))
 
         self.assertTrue(session.calls[0]["url"].endswith("/integration/rumex/expected-intakes"))
         self.assertEqual(session.calls[0]["headers"]["Idempotency-Key"], "rumex-shipment:1:v1")
@@ -74,6 +74,34 @@ class RumexTaksimoBridgeTests(unittest.TestCase):
             result_note="HTTP 201",
             delivery_reference="intake-1",
         )
+
+    def test_test_shipment_snapshot_uses_new_queue_recorder(self) -> None:
+        session = _Session([_Response(201, {"intake": {"public_id": "intake-t"}})])
+        entry = {
+            "outbox_id": 7,
+            "idempotency_key": "rumex-test-shipment:7",
+            "snapshot": {"contract_version": 2, "rumex_shipment_id": 7},
+        }
+        with patch.object(bridge.rumex_store, "record_test_taksimo_snapshot_delivery") as recorded:
+            asyncio.run(bridge._post_snapshot(session, entry, record_delivery=bridge.rumex_store.record_test_taksimo_snapshot_delivery))
+        recorded.assert_called_once_with(
+            7, success=True, http_status=201, result_note="HTTP 201", delivery_reference="intake-t"
+        )
+
+    def test_deliver_rumex_snapshots_handles_both_queues(self) -> None:
+        entry = {"outbox_id": 3, "idempotency_key": "rumex-test-shipment:3", "snapshot": {"contract_version": 2}}
+        calls: list[object] = []
+
+        async def fake_post(_session, _entry, *, record_delivery) -> None:
+            calls.append(record_delivery)
+
+        with patch.object(bridge.rumex_store, "list_pending_taksimo_snapshots", return_value=[]), \
+             patch.object(bridge.rumex_store, "list_pending_test_taksimo_snapshots", return_value=[entry]), \
+             patch.object(bridge, "_post_snapshot", new=fake_post):
+            delivered = asyncio.run(bridge.deliver_rumex_snapshots(None))
+
+        self.assertEqual(delivered, 1)
+        self.assertEqual(calls, [bridge.rumex_store.record_test_taksimo_snapshot_delivery])
 
     def test_physical_event_is_acknowledged_only_after_rumex_write(self) -> None:
         order: list[str] = []

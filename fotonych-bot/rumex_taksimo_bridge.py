@@ -74,7 +74,7 @@ def _iso_to_timestamp(value: Any) -> float | None:
     return parsed.astimezone(timezone.utc).timestamp()
 
 
-async def _post_snapshot(session: Any, entry: Mapping[str, Any]) -> None:
+async def _post_snapshot(session: Any, entry: Mapping[str, Any], *, record_delivery) -> None:
     outbox_id = int(entry["outbox_id"])
     key = str(entry["idempotency_key"])
     try:
@@ -89,14 +89,14 @@ async def _post_snapshot(session: Any, entry: Mapping[str, Any]) -> None:
                 body = await response.text()
             status = response.status
     except (ClientError, asyncio.TimeoutError) as exc:
-        rumex_store.record_taksimo_snapshot_delivery(
+        record_delivery(
             outbox_id, success=False, result_note=f"Ошибка сети: {type(exc).__name__}"
         )
         return
     success = status in {200, 201}
     intake = body.get("intake") if isinstance(body, Mapping) else None
     delivery_reference = str(intake.get("public_id") or "") if isinstance(intake, Mapping) else ""
-    rumex_store.record_taksimo_snapshot_delivery(
+    record_delivery(
         outbox_id,
         success=success,
         http_status=status,
@@ -106,10 +106,18 @@ async def _post_snapshot(session: Any, entry: Mapping[str, Any]) -> None:
 
 
 async def deliver_rumex_snapshots(session: Any) -> int:
-    """Передать неподтверждённые снимки РУМЕКС и записать каждую попытку."""
+    """Передать неподтверждённые снимки РУМЕКС и записать каждую попытку.
+
+    Отдельно из боевого реестра (shipments) и отдельно из нового диспетчерского
+    реестра (test_shipments) — обе очереди идут на один и тот же endpoint новой
+    Таксимо, но хранятся независимо и не мешают друг другу.
+    """
     delivered = 0
     for entry in rumex_store.list_pending_taksimo_snapshots():
-        await _post_snapshot(session, entry)
+        await _post_snapshot(session, entry, record_delivery=rumex_store.record_taksimo_snapshot_delivery)
+        delivered += 1
+    for entry in rumex_store.list_pending_test_taksimo_snapshots():
+        await _post_snapshot(session, entry, record_delivery=rumex_store.record_test_taksimo_snapshot_delivery)
         delivered += 1
     return delivered
 

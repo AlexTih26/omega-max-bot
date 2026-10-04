@@ -163,6 +163,15 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
 .tn-slot-grid { display: grid; grid-template-columns: repeat(10, minmax(26px, 1fr)); gap: 4px; }
 .tn-slot { min-height: 28px; border: 1px solid var(--tn-border); border-radius: 6px; background: var(--tn-surface-alt); color: var(--tn-muted); font-size: .66rem; display: grid; place-items: center; }
 .tn-slot--occupied { border-color: var(--tn-accent); background: var(--tn-accent-soft); color: var(--tn-accent); font-weight: 700; }
+.tn-slot--empty { opacity: .32; }
+.tn-wagon-picker { margin-top: 4px; }
+.tn-wagon-picker-dead-end { margin-bottom: 12px; }
+.tn-wagon-picker-title { margin: 0 0 6px; font-weight: 720; font-size: .86rem; }
+.tn-wagon-pick { min-height: 28px; border: 1px solid var(--tn-accent); border-radius: 6px; background: var(--tn-accent-soft); color: var(--tn-accent); font-weight: 700; font-size: .66rem; padding: 2px 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tn-wagon-pick--sel { background: var(--tn-accent); color: #fff; }
+.tn-wagon-picker-free { margin-top: 8px; }
+.tn-wagon-picker-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.tn-wagon-picker-row .tn-wagon-pick { min-height: auto; padding: 6px 10px; font-size: .75rem; }
 
 @media (max-width: 680px) {
   .tn-app { padding-left: 14px; padding-right: 14px; }

@@ -306,8 +306,35 @@ async def handle_legacy_wagon_history(_request: web.Request) -> web.Response:
     return _json({"history": legacy.list_legacy_wagon_history()})
 
 
+_LEGACY_ZONE_TO_DEAD_END = {
+    "ГРУЗОВОЙ": "gruzovoy_1",
+    "ТУРАН": "gruzovoy_2",
+}
+
+
 async def handle_dead_ends(_request: web.Request) -> web.Response:
-    return _json({"dead_ends": store.wagon_dead_ends()})
+    """Карта тупиков новой площадки для выбора вагона тапом.
+
+    Пока операторы ещё работают в старой Таксимо, вагоны в слотах читаются из
+    старого ``wagon_slots`` (зона ГРУЗОВОЙ -> Грузовой 1, ТУРАН -> Грузовой 2
+    (Туран)); новые вагоны контура без слота попадают в ``free_wagons``.
+    """
+    positions_by_code: dict[str, dict[int, str]] = {}
+    for slot in legacy.list_legacy_wagon_slots():
+        code = _LEGACY_ZONE_TO_DEAD_END.get((slot.get("zone") or "").strip().upper())
+        if code is None or not isinstance(slot.get("slot_index"), int):
+            continue
+        positions_by_code.setdefault(code, {})[slot["slot_index"]] = (slot.get("wagon_number") or "")
+    free_wagons = [wagon["wagon_number"] for wagon in store.list_wagons()]
+    dead_ends = store.wagon_dead_ends()
+    for dead_end in dead_ends:
+        slot_map = positions_by_code.get(dead_end["code"], {})
+        slot_count = int(dead_end["slots"])
+        dead_end["positions"] = [
+            {"slot_index": index, "wagon_number": slot_map.get(index, "")}
+            for index in range(1, slot_count + 1)
+        ]
+    return _json({"dead_ends": dead_ends, "free_wagons": free_wagons})
 
 
 async def handle_attachment_placeholder(_request: web.Request) -> web.Response:
@@ -411,7 +438,7 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo-new/catalog/slabs", handle_legacy_slabs)
     app.router.add_get("/api/taksimo-new/catalog/sessions", handle_legacy_sessions)
     app.router.add_get("/api/taksimo-new/catalog/wagon-history", handle_legacy_wagon_history)
-    app.router.add_get("/api/taksimo-new/catalog/dead-ends", handle_dead_ends)
+    app.router.add_get("/api/taksimo-new/catalog/dead-ends", _with_database_errors(handle_dead_ends))
     app.router.add_post("/api/taksimo-new/attachments", _with_database_errors(handle_attachment_placeholder))
     app.router.add_post("/api/taksimo-new/integration/rumex/expected-intakes", _with_database_errors(handle_integration_expected))
     app.router.add_get("/api/taksimo-new/integration/outbox", _with_database_errors(handle_integration_outbox))

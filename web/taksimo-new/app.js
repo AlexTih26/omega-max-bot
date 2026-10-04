@@ -588,35 +588,51 @@
     return field;
   }
 
-  function loadWagonOptions(select) {
-    var seen = {};
-    var add = function (value, label) {
-      if (!value || seen[value]) return;
-      seen[value] = true;
-      var opt = document.createElement("option");
-      opt.value = value;
-      opt.textContent = label;
-      select.appendChild(opt);
-    };
-    request("/wagons").then(function (data) {
-      var slots = data.legacy_slots || [];
-      var wagons = data.legacy_wagons || [];
-      var inSlot = {};
-      slots.forEach(function (slot) {
-        if (!slot.wagon_number) return;
-        inSlot[slot.wagon_number] = true;
-        add(slot.wagon_number, slot.zone + " · слот " + slot.slot_index + " · вагон " + slot.wagon_number);
+  function loadWagonPicker(onPick, selected) {
+    var wrap = element("div", "tn-wagon-picker");
+    function pickButton(number, selectedNumber) {
+      var btn = element("button", "tn-wagon-pick" + (String(number) === String(selectedNumber) ? " tn-wagon-pick--sel" : ""));
+      btn.type = "button";
+      btn.textContent = "Вагон " + number;
+      btn.addEventListener("click", function () {
+        wrap.querySelectorAll(".tn-wagon-pick").forEach(function (b) { b.classList.remove("tn-wagon-pick--sel"); });
+        btn.classList.add("tn-wagon-pick--sel");
+        onPick(number);
       });
-      wagons.forEach(function (wagon) {
-        if (inSlot[wagon.number]) return;
-        add(wagon.number, "Вагон " + wagon.number + (wagon.stage ? " · " + wagon.stage : ""));
+      return btn;
+    }
+    request("/catalog/dead-ends").then(function (data) {
+      (data.dead_ends || []).forEach(function (deadEnd) {
+        var box = element("section", "tn-wagon-picker-dead-end");
+        box.appendChild(element("p", "tn-wagon-picker-title", deadEnd.name || "Тупик"));
+        var grid = element("div", "tn-slot-grid");
+        (deadEnd.positions || []).forEach(function (pos) {
+          if (pos.wagon_number) {
+            var cell = pickButton(pos.wagon_number, selected);
+            cell.title = (deadEnd.name || "Тупик") + " · слот " + pos.slot_index + " · вагон " + pos.wagon_number;
+            grid.appendChild(cell);
+          } else {
+            var empty = element("div", "tn-slot tn-slot--empty");
+            empty.textContent = String(pos.slot_index);
+            empty.title = "Слот " + pos.slot_index + " · пусто";
+            grid.appendChild(empty);
+          }
+        });
+        box.appendChild(grid);
+        wrap.appendChild(box);
       });
-      (data.wagons || []).forEach(function (wagon) {
-        add(wagon.wagon_number, "Вагон " + wagon.wagon_number + " (новый контур)");
-      });
+      var free = data.free_wagons || [];
+      if (free.length) {
+        var freeBox = element("div", "tn-wagon-picker-free");
+        freeBox.appendChild(element("p", "tn-help", "Вагоны без тупика (новый контур):"));
+        var row = element("div", "tn-wagon-picker-row");
+        free.forEach(function (number) { row.appendChild(pickButton(number, selected)); });
+        freeBox.appendChild(row);
+        wrap.appendChild(freeBox);
+      }
     }).catch(function () {});
+    return wrap;
   }
-
   function makeYardPicker(onPick, selX, selY) {
     var wrap = element("div", "tn-yard-picker");
     var grid = element("div", "tn-yard-picker-grid");
@@ -687,13 +703,13 @@
     var xControl = x.querySelector("input");
     var yControl = y.querySelector("input");
     var yardPicker = makeYardPicker(function (px, py) { xControl.value = px; yControl.value = py; updateLine(); }, data.yard_x || 0, data.yard_y || 0);
-    var wagonSel = element("select"); wagonSel.name = "wagon_number";
-    var blank = document.createElement("option"); blank.value = ""; blank.textContent = "Выберите вагон…";
-    wagonSel.appendChild(blank);
-    var wagonField = element("label", "tn-field"); wagonField.appendChild(document.createTextNode("Вагон")); wagonField.appendChild(wagonSel);
+    var wagonNumber = element("input"); wagonNumber.type = "hidden"; wagonNumber.name = "wagon_number"; wagonNumber.value = data.wagon_number || "";
+    var wagonField = element("div", "tn-wagon-picker-field");
+    wagonField.appendChild(wagonNumber);
+    wagonField.appendChild(element("p", "tn-help", "Выберите вагон тапом в тупике:"));
+    wagonField.appendChild(loadWagonPicker(function (number) { wagonNumber.value = number; updateLine(); }, data.wagon_number || ""));
     wagonField.hidden = true;
     placeWrap.appendChild(yardPicker); placeWrap.appendChild(x); placeWrap.appendChild(y); placeWrap.appendChild(wagonField);
-    loadWagonOptions(wagonSel);
     body.appendChild(placeWrap);
 
     head.addEventListener("click", function () {
@@ -711,8 +727,7 @@
       xControl.disabled = missing; yControl.disabled = missing;
       xControl.required = !missing && yardRadio.checked;
       yControl.required = !missing && yardRadio.checked;
-      wagonSel.disabled = missing;
-      wagonSel.required = !missing && wagonRadio.checked;
+      // вагон задаётся тапом по сетке тупиков, обязательность проверяется при отправке
       noteControl.required = missing || receiptControl.value === "damaged" || conditionControl.value === "damage";
       if (receiptControl.value === "damaged") conditionControl.value = "damage";
       var s = [];
@@ -721,7 +736,7 @@
         var vx = xControl.value, vy = yControl.value;
         s.push(vx && vy ? ("X=" + vx + ", Y=" + vy) : "выберите место");
       } else {
-        s.push(wagonSel.value ? ("вагон " + wagonSel.value) : "выберите вагон");
+        s.push(wagonNumber.value ? ("вагон " + wagonNumber.value) : "выберите вагон");
       }
       summary.textContent = s.join(" ") || "—";
     }
@@ -736,7 +751,6 @@
     conditionControl.addEventListener("change", updateLine);
     xControl.addEventListener("input", updateLine);
     yControl.addEventListener("input", updateLine);
-    wagonSel.addEventListener("change", updateLine);
     updatePlace();
     line.appendChild(head);
     line.appendChild(body);
@@ -766,6 +780,13 @@
     form.addEventListener("submit", function (event) {
       event.preventDefault();
       if (!form.checkValidity()) { form.reportValidity(); return; }
+      var invalidWagon = Array.from(linesWrap.querySelectorAll(".tn-block-card")).some(function (card) {
+        var place = card.querySelector("input[name='place']:checked");
+        if (!place || place.value !== "wagon") return false;
+        var wagon = card.querySelector("input[name='wagon_number']");
+        return !(wagon && wagon.value.trim());
+      });
+      if (invalidWagon) { showToast("Для каждого блока выберите вагон тапом по сетке тупиков или переключите на площадку."); return; }
       var lines = Array.from(linesWrap.querySelectorAll(".tn-block-card")).map(function (card) {
         var get = function (name) { var el = card.querySelector("[name='" + name + "']"); return el ? el.value.trim() : ""; };
         var place = card.querySelector("input[name='place']:checked");

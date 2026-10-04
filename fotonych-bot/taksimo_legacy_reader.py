@@ -109,6 +109,14 @@ def list_legacy_sessions() -> list[dict[str, Any]]:
     )
 
 
+def list_legacy_dispatch_slabs() -> list[dict[str, Any]]:
+    """Плиты, привязанные к отправкам (wagon_dispatch_id), для истории кругов вагонов."""
+    return _rows(
+        """SELECT wagon_dispatch_id, wagon_number, letter, number, weight, loading_date, customer
+           FROM slabs WHERE wagon_dispatch_id IS NOT NULL ORDER BY wagon_dispatch_id, id"""
+    )
+
+
 def list_legacy_wagon_history() -> list[dict[str, Any]]:
     """Стартовый слепок истории отправок вагонов (цикл Таксимо -> Кодар -> БТС).
 

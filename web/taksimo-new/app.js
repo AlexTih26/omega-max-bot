@@ -511,6 +511,11 @@
       if (trip.dispatched_at) m.push("отправка " + formatDate(trip.dispatched_at));
       if (trip.received_at) m.push("возврат " + formatDate(trip.received_at));
       card.appendChild(element("p", "tn-card-meta", m.join(" · ") || "—"));
+      var blocks = trip.blocks || [];
+      if (blocks.length) {
+        var labels = blocks.map(function (b) { return b.letter + " " + b.number; });
+        card.appendChild(element("p", "tn-card-meta", "Блоки: " + labels.join(", ")));
+      }
       tripsList.appendChild(card);
     });
     circles.appendChild(tripsList);

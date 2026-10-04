@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import hmac
 import os
 from datetime import datetime, timezone
@@ -227,7 +229,19 @@ async def handle_wagon_history(request: web.Request) -> web.Response:
         trip for trip in legacy.list_legacy_wagon_history()
         if str(trip.get("wagon_number") or "") == str(number)
     ]
+    blocks_by_dispatch: dict[int, list[dict[str, Any]]] = {}
+    for slab in legacy.list_legacy_dispatch_slabs():
+        if str(slab.get("wagon_number") or "") != str(number):
+            continue
+        dispatch_id = slab.get("wagon_dispatch_id")
+        if not isinstance(dispatch_id, int):
+            continue
+        blocks_by_dispatch.setdefault(dispatch_id, []).append(
+            {"letter": slab.get("letter") or "", "number": slab.get("number") or "",
+             "weight": slab.get("weight") or "", "loading_date": slab.get("loading_date") or ""}
+        )
     for trip in legacy_trips:
+        trip["blocks"] = blocks_by_dispatch.get(int(trip["id"]), [])
         for field in ("dispatched_at", "received_at"):
             value = trip.get(field)
             if isinstance(value, (int, float)):

@@ -241,10 +241,11 @@
           var legacyItems = legacyByCell[key] || [];
           var total = fresh.length + legacyItems.length;
           var legacyOnly = total > 0 && fresh.length === 0;
-          var cell = element("button", "tn-yard-cell" + (total ? " tn-yard-cell--occupied" + (legacyOnly ? " tn-yard-cell--legacy" : "") : ""));
+          var hasDraft = fresh.some(function (item) { return item.draft; });
+          var cell = element("button", "tn-yard-cell" + (total ? " tn-yard-cell--occupied" + (legacyOnly ? " tn-yard-cell--legacy" : "") + (hasDraft ? " tn-yard-cell--draft" : "") : ""));
           cell.type = "button";
           cell.textContent = x + "/" + y;
-          var labels = fresh.map(function (item) { return item.block_type + " " + item.block_number; })
+          var labels = fresh.map(function (item) { return item.block_type + " " + item.block_number + (item.draft ? " (черновик)" : ""); })
             .concat(legacyItems.map(function (item) { return item.block_type + " " + item.block_number + " (старая)"; }));
           cell.title = labels.length ? labels.join(", ") : "Свободная ячейка";
           if (total) cell.appendChild(element("span", "tn-yard-cell-count", String(total)));
@@ -261,7 +262,7 @@
       blocks.forEach(function (block) {
         var card = element("article", "tn-card");
         card.appendChild(element("p", "tn-card-title", "#" + block.id + " · " + block.block_type + " " + block.block_number));
-        card.appendChild(element("p", "tn-card-meta", locationText(block) + (block.condition_code === "damage" ? " · повреждение" : "")));
+        card.appendChild(element("p", "tn-card-meta", locationText(block) + (block.draft ? " · черновик" : "") + (block.condition_code === "damage" ? " · повреждение" : "")));
         list.appendChild(card);
       });
     });
@@ -854,6 +855,34 @@
       form.appendChild(addExtra);
     }
     var actions = element("div", "tn-form-actions");
+    var draftBtn = element("button", "tn-button tn-button--secondary", "Сохранить черновик");
+    draftBtn.type = "button";
+    draftBtn.addEventListener("click", function () {
+      var lines = Array.from(linesWrap.querySelectorAll(".tn-block-card"))
+        .filter(function (card) { return card.dataset.saved === "1"; })
+        .map(function (card) {
+          var get = function (name) { var el = card.querySelector("[name='" + name + "']"); return el ? el.value.trim() : ""; };
+          var place = card.querySelector("input[name='place']:checked");
+          var useWagon = place && place.value === "wagon";
+          return {
+            block_type: get("block_type"), block_number: get("block_number"), product_name: get("product_name"),
+            weight_kg: get("weight_kg") || null, receipt_state: get("receipt_state"), condition_code: get("condition_code"),
+            discrepancy_note: get("discrepancy_note"),
+            yard_x: useWagon ? null : (get("yard_x") || null),
+            yard_y: useWagon ? null : (get("yard_y") || null),
+            wagon_number: useWagon ? get("wagon_number") : ""
+          };
+        });
+      if (!lines.length) { showToast("Сначала сохраните хотя бы один блок кнопкой «Сохранить блок»."); return; }
+      draftBtn.disabled = true;
+      jsonRequest("/intakes/" + encodeURIComponent(intake.public_id) + "/draft", "POST", { lines: lines })
+        .then(function () {
+          showToast("Черновик сохранён — блоки видны на площадке.");
+          loadYard().catch(function () {});
+        })
+        .catch(function (error) { showToast(error.message || "Не удалось сохранить черновик"); })
+        .finally(function () { draftBtn.disabled = false; });
+    });
     var confirm = element("button", "tn-button tn-button--primary", "Подтвердить приёмку");
     confirm.type = "submit";
     actions.appendChild(confirm);

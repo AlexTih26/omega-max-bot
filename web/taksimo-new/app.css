@@ -116,6 +116,7 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
 .tn-yard-cell { position: relative; min-height: 37px; border: 1px solid var(--tn-border); border-radius: 6px; background: var(--tn-surface-alt); color: var(--tn-muted); font-size: .69rem; text-align: left; padding: 4px; }
 .tn-yard-cell--occupied { border-color: var(--tn-accent); background: var(--tn-accent-soft); color: var(--tn-accent); font-weight: 800; }
 .tn-yard-cell--legacy { border-color: var(--tn-border); background: var(--tn-surface-alt); color: var(--tn-muted); font-weight: 700; }
+.tn-yard-cell--draft { border-color: var(--tn-accent); background: repeating-linear-gradient(45deg, var(--tn-accent-soft), var(--tn-accent-soft) 6px, #fff 6px, #fff 12px); color: var(--tn-accent); font-weight: 800; }
 .tn-yard-cell-count { position: absolute; right: 5px; bottom: 3px; font-size: .75rem; }
 .tn-block-card { border: 1px solid var(--tn-border); border-radius: 12px; background: var(--tn-surface); }
 .tn-block-head { width: 100%; display: flex; align-items: center; gap: 10px; background: transparent; border: 0; padding: 10px 12px; cursor: pointer; font: inherit; text-align: left; }

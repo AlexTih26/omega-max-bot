@@ -105,6 +105,24 @@ async def handle_intake_confirm(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
+async def handle_intake_draft(request: web.Request) -> web.Response:
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        body = await _body(request)
+        lines = body.get("lines")
+        if not isinstance(lines, list):
+            raise ValueError("Передайте список блоков")
+        return _json({"intake": store.save_intake_draft(request.match_info["public_id"], lines=lines, operator=operator)})
+    except KeyError:
+        return _json({"error": "Приёмка не найдена"}, 404)
+    except store.TaksimoNewConflictError as exc:
+        return _json({"error": str(exc)}, 409)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+
+
 async def _handle_intake_fact(request: web.Request, recorder) -> web.Response:
     operator, denied = _operator(request)
     if denied:
@@ -464,6 +482,7 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/crane-started", _with_database_errors(handle_intake_crane_started))
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/crane-ended", _with_database_errors(handle_intake_crane_ended))
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/confirm", _with_database_errors(handle_intake_confirm))
+    app.router.add_post("/api/taksimo-new/intakes/{public_id}/draft", _with_database_errors(handle_intake_draft))
     app.router.add_post("/api/taksimo-new/intakes/{public_id}/cancel", _with_database_errors(handle_intake_cancel))
     app.router.add_post("/api/taksimo-new/corrections", _with_database_errors(handle_corrections))
     app.router.add_post("/api/taksimo-new/operations/{subject_type}/{subject_id}/cancel", _with_database_errors(handle_operation_cancel))

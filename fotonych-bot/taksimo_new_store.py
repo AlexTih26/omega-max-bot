@@ -630,6 +630,21 @@ def claim_intake(public_id: str, *, operator: Mapping[str, Any]) -> dict[str, An
 
 
 def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operator: Mapping[str, Any]) -> dict[str, Any]:
+    return _save_intake(public_id, lines=lines, operator=operator, finalize=True)
+
+
+def save_intake_draft(public_id: str, *, lines: Iterable[Mapping[str, Any]], operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Сохранить раскладку блоков как черновик, не подтверждая приёмку."""
+    return _save_intake(public_id, lines=lines, operator=operator, finalize=False)
+
+
+def _save_intake(
+    public_id: str,
+    *,
+    lines: Iterable[Mapping[str, Any]],
+    operator: Mapping[str, Any],
+    finalize: bool,
+) -> dict[str, Any]:
     normalized = [_intake_line_payload(item, require_location=True) for item in lines]
     if not normalized:
         raise ValueError("Добавьте хотя бы один блок")
@@ -665,7 +680,7 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                     raise TaksimoNewConflictError(
                         "Перед приёмкой рейса РУМЕКС зафиксируйте: " + ", ".join(missing_facts)
                     )
-            if str(row["source_system"]) != "rumex" and len(normalized) != int(row["expected_blocks_count"]):
+            if str(row["source_system"]) != "rumex" and finalize and len(normalized) != int(row["expected_blocks_count"]):
                 raise ValueError("Число фактических блоков должно совпадать с ожидаемым")
             expected_identities: set[tuple[str, str]] = set()
             if str(row["source_system"]) == "rumex":
@@ -677,16 +692,17 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                     (str(item["block_type"]), str(item["block_number"]))
                     for item in cursor.fetchall()
                 }
-                if not expected_identities:
-                    raise TaksimoNewConflictError("Для рейса РУМЕКС не сохранен ожидаемый состав")
-                absent = expected_identities - identities
-                if absent:
-                    labels = ", ".join(f"{kind} {number}" for kind, number in sorted(absent))
-                    raise ValueError("Отметьте каждый ожидаемый блок, включая недостачу: " + labels)
-                for item in normalized:
-                    identity = (item["block_type"], item["block_number"])
-                    if identity not in expected_identities and not item["discrepancy_note"]:
-                        raise ValueError("Для незаявленного блока укажите причину расхождения")
+                if finalize:
+                    if not expected_identities:
+                        raise TaksimoNewConflictError("Для рейса РУМЕКС не сохранен ожидаемый состав")
+                    absent = expected_identities - identities
+                    if absent:
+                        labels = ", ".join(f"{kind} {number}" for kind, number in sorted(absent))
+                        raise ValueError("Отметьте каждый ожидаемый блок, включая недостачу: " + labels)
+                    for item in normalized:
+                        identity = (item["block_type"], item["block_number"])
+                        if identity not in expected_identities and not item["discrepancy_note"]:
+                            raise ValueError("Для незаявленного блока укажите причину расхождения")
             for item in normalized:
                 if item["receipt_state"] == "missing":
                     continue
@@ -723,6 +739,16 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                     )
                 slots_by_cell[cell].add(free_slot)
                 item["yard_slot"] = free_slot
+            # Перезаписать предыдущую версию этой приёмки (черновик или повтор сохранения):
+            # старые строки и блоки удаляются заново, чтобы ничего не задвоилось.
+            cursor.execute(
+                """DELETE wl FROM tn_wagon_loads AS wl
+                   JOIN tn_blocks AS b ON b.id = wl.block_id
+                   WHERE b.received_intake_id = %s""",
+                (intake_id,),
+            )
+            cursor.execute("DELETE FROM tn_blocks WHERE received_intake_id = %s", (intake_id,))
+            cursor.execute("DELETE FROM tn_intake_lines WHERE intake_id = %s", (intake_id,))
             cursor.executemany(
                 """INSERT INTO tn_intake_lines
                    (intake_id, sort_order, block_type, block_number, product_name, weight_kg, receipt_state,
@@ -797,53 +823,60 @@ def confirm_intake(public_id: str, *, lines: Iterable[Mapping[str, Any]], operat
                             item["yard_x"], item["yard_y"], item["yard_slot"], intake_id, line_id, now, now,
                         ),
                     )
-            discrepancy = any(
-                item["receipt_state"] != "received"
-                or item["condition_code"] != "ok"
-                or (expected_identities and (item["block_type"], item["block_number"]) not in expected_identities)
-                for item in normalized
-            )
-            status = "discrepancy" if discrepancy else "confirmed"
-            cursor.execute(
-                """UPDATE tn_intakes SET status = %s, confirmed_by_operator_id = %s, confirmed_at = %s,
-                   locked_by_operator_id = NULL, locked_until = NULL, updated_at = %s WHERE id = %s""",
-                (status, int(operator["id"]), now, now, intake_id),
-            )
-            outgoing_payload = {
-                "event": "intake_confirmed" if not discrepancy else "intake_discrepancy",
-                "intake_id": public_id,
-                "source_system": str(row["source_system"]),
-                "external_reference": str(row["source_reference"] or ""),
-                "ttn_number": str(row["ttn_number"]),
-                "vehicle_plate": str(row["vehicle_plate"]),
-                "status": status,
-                "confirmed_at": iso_utc(now),
-                "operator": {"role": str(operator["role"]), "name": str(operator["name"])},
-                "blocks": normalized,
-                "expected_blocks": len(expected_identities) if expected_identities else int(row["expected_blocks_count"]),
-                **_rumex_context(row),
-            }
-            _append_event(
-                cursor, event_type="intake_confirmed" if not discrepancy else "intake_discrepancy",
-                subject_type="intake", subject_public_id=public_id,
-                actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name,
-                payload=outgoing_payload, occurred_at=now,
-            )
-            _append_notification(
-                cursor,
-                event_type="intake_confirmed" if not discrepancy else "intake_discrepancy",
-                idempotency_key=f"intake:{public_id}:notification:{status}",
-                payload=outgoing_payload,
-                created_at=now,
-            )
-            if _rumex_context(row):
-                _append_outbox(
-                    cursor, event_type="taksimo.intake.confirmed" if not discrepancy else "taksimo.intake.discrepancy",
-                    idempotency_key=f"intake:{public_id}:{status}", payload=outgoing_payload, created_at=now,
+            if finalize:
+                discrepancy = any(
+                    item["receipt_state"] != "received"
+                    or item["condition_code"] != "ok"
+                    or (expected_identities and (item["block_type"], item["block_number"]) not in expected_identities)
+                    for item in normalized
+                )
+                status = "discrepancy" if discrepancy else "confirmed"
+                cursor.execute(
+                    """UPDATE tn_intakes SET status = %s, confirmed_by_operator_id = %s, confirmed_at = %s,
+                       locked_by_operator_id = NULL, locked_until = NULL, updated_at = %s WHERE id = %s""",
+                    (status, int(operator["id"]), now, now, intake_id),
+                )
+                outgoing_payload = {
+                    "event": "intake_confirmed" if not discrepancy else "intake_discrepancy",
+                    "intake_id": public_id,
+                    "source_system": str(row["source_system"]),
+                    "external_reference": str(row["source_reference"] or ""),
+                    "ttn_number": str(row["ttn_number"]),
+                    "vehicle_plate": str(row["vehicle_plate"]),
+                    "status": status,
+                    "confirmed_at": iso_utc(now),
+                    "operator": {"role": str(operator["role"]), "name": str(operator["name"])},
+                    "blocks": normalized,
+                    "expected_blocks": len(expected_identities) if expected_identities else int(row["expected_blocks_count"]),
+                    **_rumex_context(row),
+                }
+                _append_event(
+                    cursor, event_type="intake_confirmed" if not discrepancy else "intake_discrepancy",
+                    subject_type="intake", subject_public_id=public_id,
+                    actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name,
+                    payload=outgoing_payload, occurred_at=now,
+                )
+                _append_notification(
+                    cursor,
+                    event_type="intake_confirmed" if not discrepancy else "intake_discrepancy",
+                    idempotency_key=f"intake:{public_id}:notification:{status}",
+                    payload=outgoing_payload,
+                    created_at=now,
+                )
+                if _rumex_context(row):
+                    _append_outbox(
+                        cursor, event_type="taksimo.intake.confirmed" if not discrepancy else "taksimo.intake.discrepancy",
+                        idempotency_key=f"intake:{public_id}:{status}", payload=outgoing_payload, created_at=now,
+                    )
+            else:
+                _append_event(
+                    cursor, event_type="intake_draft_saved", subject_type="intake", subject_public_id=public_id,
+                    actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name,
+                    payload={"draft_blocks_count": len(normalized)}, occurred_at=now,
                 )
             updated = _fetch_intake(cursor, intake_id)
             if updated is None:
-                raise RuntimeError("Не удалось прочитать подтверждённую приёмку")
+                raise RuntimeError("Не удалось прочитать приёмку после сохранения")
             return _intake_payload(cursor, updated)
 
 
@@ -1140,10 +1173,19 @@ def yard_map() -> dict[str, Any]:
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """SELECT id, block_type, block_number, product_name, weight_kg, condition_code, yard_x, yard_y, yard_slot,
-                          updated_at FROM tn_blocks WHERE current_location_kind = 'yard' ORDER BY yard_y, yard_x, block_type, block_number"""
+                """SELECT b.id, b.block_type, b.block_number, b.product_name, b.weight_kg, b.condition_code,
+                          b.yard_x, b.yard_y, b.yard_slot, b.updated_at,
+                          i.status AS intake_status, i.public_id AS intake_public_id
+                   FROM tn_blocks AS b
+                   LEFT JOIN tn_intakes AS i ON i.id = b.received_intake_id
+                   WHERE b.current_location_kind = 'yard'
+                   ORDER BY b.yard_y, b.yard_x, b.block_type, b.block_number"""
             )
-            blocks = [_row_datetime(dict(row)) for row in cursor.fetchall()]
+            blocks = []
+            for row in cursor.fetchall():
+                item = _row_datetime(dict(row))
+                item["draft"] = row["intake_status"] not in ("confirmed", "discrepancy") if row["intake_status"] is not None else False
+                blocks.append(item)
     return {"grid": {"x": 13, "y": 25, "max_blocks_per_cell": 4}, "blocks": blocks}
 
 

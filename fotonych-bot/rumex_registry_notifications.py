@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
+from typing import Mapping
 from zoneinfo import ZoneInfo
 
 from rumex_registry_store import get_accountant_availability, release_due_test_shipments
@@ -46,6 +47,75 @@ def _format_time(timestamp: object) -> str:
     except Exception:
         timezone = ZoneInfo("Asia/Irkutsk")
     return datetime.fromtimestamp(value, tz=timezone).strftime("%d.%m.%Y %H:%M")
+
+
+def _format_datetime(timestamp: object) -> str:
+    try:
+        value = float(timestamp)
+    except (TypeError, ValueError):
+        return "—"
+    try:
+        timezone = ZoneInfo((os.getenv("RUMEX_TIMEZONE") or "Asia/Irkutsk").strip())
+    except Exception:
+        timezone = ZoneInfo("Asia/Irkutsk")
+    return datetime.fromtimestamp(value, tz=timezone).strftime("%d.%m.%Y, %H:%M")
+
+
+def _format_weight(value: object) -> str:
+    try:
+        weight = int(value)
+    except (TypeError, ValueError):
+        return "—"
+    return f"{weight:,}".replace(",", " ")
+
+
+def _vehicle_plate(snapshot: object) -> str:
+    vehicle = snapshot.get("vehicle") if isinstance(snapshot, Mapping) else None
+    if not isinstance(vehicle, Mapping):
+        return "—"
+    return str(vehicle.get("full_plate") or vehicle.get("plate_tail") or "—").strip()
+
+
+def _driver_name(snapshot: object) -> str:
+    driver = snapshot.get("driver") if isinstance(snapshot, Mapping) else None
+    if not isinstance(driver, Mapping):
+        return "—"
+    return str(driver.get("full_name") or "—").strip()
+
+
+def _block_lines(items: object) -> list[str]:
+    lines: list[str] = []
+    if not isinstance(items, list):
+        return lines
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        letter = str(item.get("block_type_code") or "—").strip()
+        number = str(item.get("block_number") or "—").strip()
+        lines.append(f"• {letter}-{number} — {_format_weight(item.get('weight_kg'))} кг")
+    return lines
+
+
+def _available_accountants(*, exclude: str | None = None) -> list[tuple[str, int]]:
+    result: list[tuple[str, int]] = []
+    for name, user_id in _recipients().items():
+        if exclude is not None and name == exclude:
+            continue
+        if not get_accountant_availability(name).get("available_now"):
+            continue
+        result.append((name, user_id))
+    return result
+
+
+async def _send_accountant_messages(text: str, *, event_name: str, exclude: str | None = None) -> None:
+    if _bot is None:
+        return
+    for name, user_id in _available_accountants(exclude=exclude):
+        try:
+            await _bot.send_message(user_id=user_id, text=text)
+            logger.info("РУМЕКС: уведомление %s доставлено бухгалтеру %s", event_name, name)
+        except Exception:
+            logger.exception("РУМЕКС: не удалось отправить уведомление %s бухгалтеру %s", event_name, name)
 
 
 async def _notify_accountant_one(text: str, *, event_name: str) -> None:
@@ -96,26 +166,67 @@ async def notify_document_vehicle_binding_confirmed(binding: dict) -> None:
 
 
 async def notify_new_test_shipment(shipment: dict) -> None:
-    """Уведомить только доступных бухгалтеров; ошибка DM не ломает реестр."""
+    """Подробно сообщить доступным бухгалтерам о новой погрузке; ошибка DM не ломает реестр."""
     if _bot is None:
         return
     number = str(shipment.get("registry_number") or "погрузка")
-    for accountant_name, user_id in _recipients().items():
-        if not get_accountant_availability(accountant_name).get("available_now"):
-            continue
-        try:
-            await _bot.send_message(
-                user_id=user_id,
-                text=(
-                    "🚚 РУМЕКС · новая погрузка\n"
-                    "📄 " + number + "\n\n"
-                    "👤 Откройте кабинет бухгалтера и при необходимости нажмите «Взять в работу».\n"
-                    "⏱️ Если статус не изменится за 10 минут, ТТН откроется автоматически."
-                ),
-            )
-            logger.info("РУМЕКС: уведомление о погрузке %s доставлено бухгалтеру %s", number, accountant_name)
-        except Exception:
-            logger.exception("РУМЕКС: не удалось отправить уведомление бухгалтеру")
+    snapshot = shipment.get("document_snapshot") or {}
+    items = shipment.get("items") or []
+    lines = [
+        "🚚 РУМЕКС · новая погрузка",
+        "📄 " + number,
+        "📅 " + _format_datetime(shipment.get("loaded_at")),
+        "🚛 Машина: " + _vehicle_plate(snapshot),
+        "👤 Водитель: " + _driver_name(snapshot),
+        f"🧱 Блоки ({len(items)}):",
+        *_block_lines(items),
+        f"⚖️ Итого: {_format_weight(shipment.get('total_weight_kg'))} кг",
+        "👤 Зайдите в кабинет — проверьте погрузку и передайте ЭР в ЭДО",
+    ]
+    await _send_accountant_messages("\n".join(lines), event_name="новая погрузка")
+
+
+async def notify_shipment_claimed(shipment: dict, *, accountant_name: str) -> None:
+    """Сообщить остальным доступным бухгалтерам, кто взял погрузку в работу."""
+    if _bot is None:
+        return
+    number = str(shipment.get("registry_number") or "погрузка")
+    lines = [
+        "✅ РУМЕКС · погрузка взята в работу",
+        "📄 " + number,
+        "👤 Бухгалтер: " + (accountant_name or "—"),
+        "📅 " + _format_datetime(shipment.get("loaded_at")),
+    ]
+    await _send_accountant_messages("\n".join(lines), event_name="взятие в работу", exclude=accountant_name)
+
+
+async def notify_shipment_ttn_auto_opened(shipment: dict) -> None:
+    """Повторно сообщить бухгалтерам, что ТТН открылась автоматически, но проверка всё равно нужна."""
+    if _bot is None:
+        return
+    number = str(shipment.get("registry_number") or "погрузка")
+    ttn = str(shipment.get("ttn_number") or "—")
+    lines = [
+        "⏱️ РУМЕКС · погрузка не взята в работу",
+        "📄 " + number,
+        f"🧾 ТТН {ttn} открыта автоматически",
+        "❗ Всё равно проверьте погрузку и передайте ЭР в ЭДО",
+    ]
+    await _send_accountant_messages("\n".join(lines), event_name="автооткрытие ТТН")
+
+
+async def notify_shipment_er_sent(shipment: dict) -> None:
+    """Сообщить бухгалтерам, что ЭР отправлена в ЭДО, и показать номер ТТН."""
+    if _bot is None:
+        return
+    number = str(shipment.get("registry_number") or "погрузка")
+    ttn = str(shipment.get("ttn_number") or "—")
+    lines = [
+        "📨 РУМЕКС · ЭР отправлены в ЭДО",
+        "📄 " + number,
+        f"🧾 ТТН {ttn}",
+    ]
+    await _send_accountant_messages("\n".join(lines), event_name="ЭР отправлена в ЭДО")
 
 
 async def rumex_registry_deadline_loop() -> None:
@@ -123,6 +234,8 @@ async def rumex_registry_deadline_loop() -> None:
     while True:
         try:
             released = release_due_test_shipments()
+            for shipment in released:
+                await notify_shipment_ttn_auto_opened(shipment)
             if released:
                 from rumex_registry_backup import backup_rumex_registry_db
 

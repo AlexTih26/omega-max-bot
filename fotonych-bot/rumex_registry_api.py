@@ -23,6 +23,9 @@ from rumex_registry_notifications import (
     notify_carrier_created,
     notify_document_vehicle_binding_confirmed,
     notify_new_test_shipment,
+    notify_shipment_claimed,
+    notify_shipment_er_sent,
+    notify_shipment_ttn_auto_opened,
 )
 from rumex_test_dispatcher_auth import user_from_request as test_dispatcher_user_from_request
 from rumex_registry_store import (
@@ -654,6 +657,7 @@ async def _test_accountant_action(request: web.Request, action: str) -> web.Resp
                 external_reference=body.get("external_reference"),
             )
             message = "Расписка отмечена как отправленная в ЭДО Контур. Документы открыты диспетчеру."
+            asyncio.create_task(notify_shipment_er_sent(shipment))
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
     _backup_after_registry_write(f"test_shipment_{action}")
@@ -668,11 +672,13 @@ async def handle_test_shipment_claim(request: web.Request) -> web.Response:
     if not accountant:
         return _json({"error": "Требуется вход"}, 401)
     try:
-        release_due_test_shipments()
+        for released in release_due_test_shipments():
+            asyncio.create_task(notify_shipment_ttn_auto_opened(released))
         shipment = claim_test_shipment(shipment_id, accountant_name=accountant)
     except ValueError as exc:
         return _json({"error": str(exc)}, 409)
     _backup_after_registry_write("test_shipment_claimed")
+    asyncio.create_task(notify_shipment_claimed(shipment, accountant_name=accountant))
     return _json({"ok": True, "message": "Погрузка взята в работу.", "shipment": shipment})
 
 

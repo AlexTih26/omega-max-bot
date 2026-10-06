@@ -120,6 +120,12 @@ class TaksimoLegacyReaderTests(unittest.TestCase):
         self.assertEqual(wagons[0]["stage"], "ready")
         self.assertEqual(wagons[0]["slot_id"], 3)
 
+    def test_snapshot_returns_the_same_active_catalogs_as_live_views(self) -> None:
+        snapshot = legacy.read_legacy_snapshot()
+        self.assertEqual(snapshot["vehicles"], legacy.list_legacy_vehicles())
+        self.assertEqual(snapshot["wagons"], legacy.list_legacy_wagons())
+        self.assertEqual(snapshot["dispatch_slabs"], [])
+
     def test_slots(self) -> None:
         slots = legacy.list_legacy_wagon_slots()
         self.assertEqual(len(slots), 2)

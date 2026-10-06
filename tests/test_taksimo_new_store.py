@@ -30,6 +30,7 @@ class _Cursor:
         self.lastrowid = 0
         self._row: dict | None = None
         self.wagon_status: str | None = None
+        self.active_position: dict | None = None
 
     def __enter__(self) -> _Cursor:
         return self
@@ -54,6 +55,8 @@ class _Cursor:
                 self._row["physical_owner"] = "taksimo_new"
         elif query.startswith("SELECT * FROM tn_wagons"):
             self._row = {"id": 41, "status": self.wagon_status} if self.wagon_status else None
+        elif "FROM tn_wagon_position_history" in query and "WHERE wagon_id = %s AND active_marker = 1" in query:
+            self._row = self.active_position
         elif "COUNT(*) AS count" in query:
             self._row = {"count": 5}
         elif query.startswith("INSERT INTO tn_wagons"):
@@ -88,8 +91,12 @@ class TaksimoNewStoreTests(unittest.TestCase):
 
         with patch.object(store, "transaction", transaction), patch.object(
             store, "utc_now", return_value=datetime(2026, 1, 1, 12, 0, 0)
-        ), patch.object(store, "_append_event"), patch.object(store, "_append_outbox") as append_outbox:
-            result = store.load_block_to_wagon(block_id=7, wagon_number="123", operator=operator)
+        ), patch.object(store, "_ensure_wagon_position") as ensure_position, patch.object(
+            store, "_append_event"
+        ), patch.object(store, "_append_outbox") as append_outbox:
+            result = store.load_block_to_wagon(
+                block_id=7, wagon_number="123", dead_end_code="gruzovoy_1", slot_index=2, operator=operator
+            )
 
         self.assertEqual(result["id"], 42)
         self.assertEqual(result["wagon_number"], "123")
@@ -100,6 +107,9 @@ class TaksimoNewStoreTests(unittest.TestCase):
         self.assertEqual(payload["rumex_shipment_id"], 55)
         self.assertEqual(payload["rumex_document_version"], 1)
         self.assertEqual(payload["physical_owner"], "taksimo_new")
+        self.assertEqual(payload["dead_end_code"], "gruzovoy_1")
+        self.assertEqual(payload["slot_index"], 2)
+        ensure_position.assert_called_once()
 
     def test_mark_wagon_returned_empty(self) -> None:
         cursor = _Cursor()
@@ -113,14 +123,19 @@ class TaksimoNewStoreTests(unittest.TestCase):
 
         with patch.object(store, "transaction", transaction), patch.object(
             store, "utc_now", return_value=datetime(2026, 1, 1, 12, 0, 0)
-        ), patch.object(store, "_append_event"), patch.object(
+        ), patch.object(store, "_ensure_wagon_position") as ensure_position, patch.object(store, "_append_event"), patch.object(
             store, "_append_wagon_physical_facts"
         ), patch.object(store, "_append_notification"):
-            result = store.mark_wagon_returned_empty(wagon_number="123", operator=operator)
+            result = store.mark_wagon_returned_empty(
+                wagon_number="123", dead_end_code="gruzovoy_2", slot_index=4, operator=operator
+            )
 
         self.assertEqual(result["wagon_number"], "123")
         self.assertEqual(result["status"], "returned_empty")
         self.assertEqual(result["blocks_count"], 5)
+        self.assertEqual(result["dead_end_code"], "gruzovoy_2")
+        self.assertEqual(result["slot_index"], 4)
+        ensure_position.assert_called_once()
         self.assertTrue(
             any(
                 query.startswith("UPDATE tn_wagons SET status")
@@ -142,8 +157,12 @@ class TaksimoNewStoreTests(unittest.TestCase):
 
         with patch.object(store, "transaction", transaction), patch.object(
             store, "utc_now", return_value=datetime(2026, 1, 1, 12, 0, 0)
-        ), patch.object(store, "_append_event"), patch.object(store, "_append_outbox"):
-            result = store.load_block_to_wagon(block_id=7, wagon_number="123", operator=operator)
+        ), patch.object(store, "_ensure_wagon_position"), patch.object(
+            store, "_append_event"
+        ), patch.object(store, "_append_outbox"):
+            result = store.load_block_to_wagon(
+                block_id=7, wagon_number="123", dead_end_code="gruzovoy_3", slot_index=8, operator=operator
+            )
 
         self.assertEqual(result["wagon_number"], "123")
         self.assertTrue(
@@ -153,3 +172,35 @@ class TaksimoNewStoreTests(unittest.TestCase):
             )
         )
 
+    def test_intake_line_in_wagon_requires_own_position(self) -> None:
+        line = {
+            "block_type": "A", "block_number": "001", "receipt_state": "received",
+            "condition_code": "ok", "wagon_number": "123",
+        }
+
+        with self.assertRaisesRegex(ValueError, "Укажите тупик"):
+            store._intake_line_payload(line, require_location=True)
+
+    def test_unpositioned_forming_wagon_can_receive_position_when_marked_loaded(self) -> None:
+        cursor = _Cursor()
+        cursor.wagon_status = "forming"
+        connection = _Connection(cursor)
+        operator = {"id": 3, "role": "operator1", "name": "Оператор 1"}
+
+        @contextmanager
+        def transaction():
+            yield connection
+
+        with patch.object(store, "transaction", transaction), patch.object(
+            store, "utc_now", return_value=datetime(2026, 1, 1, 12, 0, 0)
+        ), patch.object(store, "_ensure_wagon_position") as ensure_position, patch.object(
+            store, "_append_event"
+        ), patch.object(store, "_append_wagon_physical_facts"), patch.object(store, "_append_notification"):
+            result = store.mark_wagon_loaded(
+                "123", dead_end_code="gruzovoy_1", slot_index=6, operator=operator
+            )
+
+        self.assertEqual(result["status"], "loaded")
+        self.assertEqual(result["dead_end_code"], "gruzovoy_1")
+        self.assertEqual(result["slot_index"], 6)
+        ensure_position.assert_called_once()

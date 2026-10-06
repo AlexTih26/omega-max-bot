@@ -12,9 +12,9 @@
   <link rel="manifest" href="/taksimo-new/manifest.json">
   <link rel="icon" href="/taksimo-new/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/taksimo-new/icon.svg">
-  <link rel="stylesheet" href="/taksimo-new/app.css?v=7">
+  <link rel="stylesheet" href="/taksimo-new/app.css?v=8">
   <script src="/taksimo-new/pwa.js" defer></script>
-  <script src="/taksimo-new/app.js?v=7" defer></script>
+  <script src="/taksimo-new/app.js?v=8" defer></script>
 </head>
 <body>
   <div class="tn-app">
@@ -96,10 +96,12 @@
       </section>
 
       <section class="tn-panel" data-panel="wagons" hidden>
-        <div class="tn-panel-heading"><div><p class="tn-kicker">Физический жизненный цикл</p><h2>Вагоны</h2><p class="tn-subtitle">Формируется → загружен в тупиках, в вагонах → в пути → в Кодаре → выгружен у БТС Восток. Этапы фиксирует только Оператор 1.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
+        <div class="tn-panel-heading"><div><p class="tn-kicker">Физический жизненный цикл</p><h2>Вагоны</h2><p class="tn-subtitle">Формируется в обязательном слоте → загружен → в пути → Кодар → БТС Восток → возврат порожним в выбранный слот. Этапы фиксирует только Оператор 1.</p></div><button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button></div>
         <form class="tn-form-card tn-inline-form" id="wagonLoadForm">
           <label class="tn-field">ID блока *<input name="block_id" type="number" min="1" required></label>
           <label class="tn-field">Номер вагона *<input name="wagon_number" maxlength="40" required autocapitalize="characters"></label>
+          <label class="tn-field">Тупик *<select name="dead_end_code" required><option value="">Выберите</option><option value="gruzovoy_1">Грузовой 1</option><option value="gruzovoy_2">Грузовой 2 (Туран)</option><option value="gruzovoy_3">Грузовой 3</option></select></label>
+          <label class="tn-field">Слот *<input name="slot_index" type="number" min="1" max="10" required></label>
           <button class="tn-button tn-button--primary" type="submit">Загрузить блок</button>
         </form>
         <p class="tn-empty" id="wagonsEmpty" hidden>Вагонов пока нет.</p>
@@ -131,7 +133,7 @@
 
       <section class="tn-panel" data-panel="catalog" hidden>
         <div class="tn-panel-heading">
-          <div><p class="tn-kicker">Справочники площадки</p><h2>Справочник</h2><p class="tn-subtitle">Машины и вагоны подтянуты из старой Таксимо (read-only); тупики — конфигурация новой площадки.</p></div>
+          <div><p class="tn-kicker">Справочники площадки</p><h2>Справочник</h2><p class="tn-subtitle">Машины и вагоны — только для просмотра из старой Таксимо; тупики и позиции — собственные данные нового контура.</p></div>
           <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
         </div>
         <section class="tn-section">
@@ -140,7 +142,7 @@
           <div class="tn-catalog-grid" id="catalogVehicles"></div>
         </section>
         <section class="tn-section">
-          <div class="tn-section-heading"><div><h3>Вагоны</h3><p class="tn-help">Справочник вагонов; позиция — из старой площадки.</p></div></div>
+          <div class="tn-section-heading"><div><h3>Вагоны</h3><p class="tn-help">Справочник вагонов старой Таксимо без изменения её позиций.</p></div></div>
           <p class="tn-empty" id="catalogWagonsEmpty" hidden>Вагонов в справочнике нет.</p>
           <div class="tn-catalog-grid" id="catalogWagons"></div>
         </section>

@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "taksimo.db"
 
 
+class LegacyReadError(RuntimeError):
+    """Старая SQLite-база временно недоступна или не соответствует схеме."""
+
+
 def _connect_ro() -> sqlite3.Connection | None:
     """Открыть короткое read-only подключение; None, если базы нет.
 
@@ -33,12 +37,16 @@ def _connect_ro() -> sqlite3.Connection | None:
     if not DB_PATH.is_file():
         logger.warning("Таксимо legacy: база %s не найдена", DB_PATH)
         return None
-    connection = sqlite3.connect(
-        f"file:{DB_PATH}?mode=ro",
-        uri=True,
-        timeout=2,
-        check_same_thread=False,
-    )
+    try:
+        connection = sqlite3.connect(
+            f"file:{DB_PATH}?mode=ro",
+            uri=True,
+            timeout=2,
+            check_same_thread=False,
+        )
+    except sqlite3.Error as exc:
+        logger.warning("Таксимо legacy: не удалось открыть SQLite: %s", exc)
+        return None
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -49,6 +57,45 @@ def _rows(query: str, params: tuple = ()) -> list[dict[str, Any]]:
         return []
     try:
         return [dict(row) for row in connection.execute(query, params)]
+    except sqlite3.Error as exc:
+        logger.warning("Таксимо legacy: не удалось прочитать SQLite: %s", exc)
+        return []
+    finally:
+        connection.close()
+
+
+def read_legacy_snapshot() -> dict[str, list[dict[str, Any]]]:
+    """Прочитать согласованный снимок всех разрешённых legacy-проекций.
+
+    Открывается одно короткое SQLite ``mode=ro`` соединение. Любая ошибка схемы
+    или файла отменяет весь снимок: архив не должен незаметно сохраниться
+    частично пустым.
+    """
+    connection = _connect_ro()
+    if connection is None:
+        raise LegacyReadError("файл старой SQLite-базы недоступен")
+    queries = {
+        "vehicles": "SELECT plate, brand, driver, active, sort_order FROM vehicles WHERE active = 1 ORDER BY sort_order, id",
+        "wagons": "SELECT number, active, sort_order, stage, planned_zone, slot_id FROM wagon_pool WHERE active = 1 ORDER BY sort_order, id",
+        "slots": "SELECT zone, slot_index, wagon_number, scheme_code, has_box FROM wagon_slots ORDER BY zone, slot_index",
+        "slabs": """SELECT id, letter, number, suffix, pos_x, pos_y, platform_zone, wagon_number, on_yard
+                    FROM slabs ORDER BY platform_zone, pos_y, pos_x""",
+        "yard_slabs": """SELECT letter, number, pos_x, pos_y, platform_zone, wagon_number
+                         FROM slabs WHERE on_yard = 1 ORDER BY platform_zone, pos_y, pos_x""",
+        "sessions": """SELECT id, unload_date, trn, vehicle_id, driver, status, operator, crane_start, crane_end
+                       FROM unload_sessions ORDER BY id DESC""",
+        "dispatch_slabs": """SELECT wagon_dispatch_id, wagon_number, letter, number, weight, loading_date, customer
+                             FROM slabs WHERE wagon_dispatch_id > 0 ORDER BY wagon_dispatch_id, id""",
+        "wagon_history": """SELECT id, wagon_number, slot_zone, slot_index, slab_count, customer, status,
+                            return_status, return_target_zone, return_actual_zone, dispatched_at, received_at
+                            FROM wagon_dispatches ORDER BY dispatched_at DESC, id DESC""",
+    }
+    try:
+        connection.execute("BEGIN")
+        return {name: [dict(row) for row in connection.execute(query)] for name, query in queries.items()}
+    except sqlite3.Error as exc:
+        logger.warning("Таксимо legacy: снимок не прочитан: %s", exc)
+        raise LegacyReadError("не удалось прочитать структуру старой SQLite-базы") from exc
     finally:
         connection.close()
 
@@ -113,7 +160,7 @@ def list_legacy_dispatch_slabs() -> list[dict[str, Any]]:
     """Плиты, привязанные к отправкам (wagon_dispatch_id), для истории кругов вагонов."""
     return _rows(
         """SELECT wagon_dispatch_id, wagon_number, letter, number, weight, loading_date, customer
-           FROM slabs WHERE wagon_dispatch_id IS NOT NULL ORDER BY wagon_dispatch_id, id"""
+           FROM slabs WHERE wagon_dispatch_id > 0 ORDER BY wagon_dispatch_id, id"""
     )
 
 

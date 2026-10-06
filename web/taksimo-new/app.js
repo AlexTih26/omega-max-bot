@@ -13,7 +13,8 @@
     loaded: "Загружен в тупиках, в вагонах",
     in_transit: "В пути",
     at_kodar: "В Кодаре",
-    unloaded_bts_east: "Выгружен у БТС Восток"
+    unloaded_bts_east: "Выгружен у БТС Восток",
+    returned_empty: "Вернулся порожним"
   };
   var eventLabels = {
     intake_expected_imported: "Получена ожидаемая приёмка из служебного моста",
@@ -30,6 +31,9 @@
     wagon_dispatched: "Вагон отправлен",
     wagon_arrived_kodar: "Вагон прибыл в Кодар",
     wagon_unloaded_bts_east: "Вагон выгружен у БТС Восток",
+    wagon_returned_empty: "Вагон вернулся порожним",
+    wagon_position_assigned: "Вагон поставлен в тупик",
+    wagon_position_released: "Вагон освободил слот тупика",
     operation_corrected: "Создана корректировка подтверждённой операции",
     operation_cancelled: "Оператор 1 отменил подтверждённую операцию"
   };
@@ -288,7 +292,8 @@
         row.appendChild(element("p", "tn-card-title", "Вагон " + wagon.wagon_number));
         row.appendChild(statusBadge(wagon.status));
         card.appendChild(row);
-        card.appendChild(element("p", "tn-card-meta", "Блоков: " + wagon.blocks_count + " · создан: " + formatDate(wagon.created_at)));
+        var position = wagon.dead_end_code ? (wagon.dead_end_code + " · слот " + wagon.slot_index) : "позиция не задана";
+        card.appendChild(element("p", "tn-card-meta", "Блоков: " + wagon.blocks_count + " · " + position + " · создан: " + formatDate(wagon.created_at)));
         if (wagon.loaded_at) card.appendChild(element("p", "tn-card-meta", "Загрузка: " + formatDate(wagon.loaded_at)));
         if (wagon.dispatched_at) card.appendChild(element("p", "tn-card-meta", "Отправлен: " + formatDate(wagon.dispatched_at)));
         if (wagon.arrived_kodar_at) card.appendChild(element("p", "tn-card-meta", "Кодар: " + formatDate(wagon.arrived_kodar_at)));
@@ -459,13 +464,13 @@
       head.appendChild(element("p", "tn-dead-end-meta", "слотов: " + (deadEnd.slots || 10)));
       box.appendChild(head);
       var grid = element("div", "tn-slot-grid");
-      var count = Number(deadEnd.slots || 10);
-      for (var index = 1; index <= count; index += 1) {
-        var cell = element("div", "tn-slot");
-        cell.textContent = String(index);
-        cell.title = "Слот " + index + " · свободен";
+      (deadEnd.positions || []).forEach(function (position) {
+        var occupied = Boolean(position.wagon_number);
+        var cell = element("div", "tn-slot" + (occupied ? " tn-slot--occupied" : ""));
+        cell.textContent = occupied ? position.wagon_number : String(position.slot_index);
+        cell.title = "Слот " + position.slot_index + (occupied ? " · вагон " + position.wagon_number : " · свободен");
         grid.appendChild(cell);
-      }
+      });
       box.appendChild(grid);
       wrap.appendChild(box);
     });
@@ -703,38 +708,44 @@
     parkPanel.hidden = true;
     wrap.appendChild(parkPanel);
 
-    function pickButton(number, selectedNumber) {
-      var btn = element("button", "tn-wagon-pick" + (String(number) === String(selectedNumber) ? " tn-wagon-pick--sel" : ""));
+    function isSelected(position) {
+      return selected && String(position.wagon_number) === String(selected.wagon_number)
+        && position.dead_end_code === selected.dead_end_code && Number(position.slot_index) === Number(selected.slot_index);
+    }
+
+    function pickButton(position) {
+      var btn = element("button", "tn-wagon-pick" + (isSelected(position) ? " tn-wagon-pick--sel" : ""));
       btn.type = "button";
-      btn.textContent = "Вагон " + number;
+      btn.textContent = "Вагон " + position.wagon_number;
       btn.addEventListener("click", function () {
         wrap.querySelectorAll(".tn-wagon-pick").forEach(function (b) { b.classList.remove("tn-wagon-pick--sel"); });
         btn.classList.add("tn-wagon-pick--sel");
         parkPanel.hidden = true;
-        onPick(number);
+        onPick(position);
       });
       return btn;
     }
 
-    function openPark(targetCell, deadEndName, slotIndex, parkWagons) {
+    function openPark(targetCell, deadEnd, slotIndex, parkWagons) {
       clear(parkPanel);
       parkPanel.hidden = false;
-      parkPanel.appendChild(element("p", "tn-help", "Выберите вагон в " + deadEndName + " · слот " + slotIndex + ":"));
+      parkPanel.appendChild(element("p", "tn-help", "Выберите вагон в " + deadEnd.name + " · слот " + slotIndex + ":"));
       var row = element("div", "tn-wagon-picker-row");
       parkWagons.forEach(function (w) {
-        var btn = element("button", "tn-wagon-pick", "Вагон " + w.number);
+        var btn = element("button", "tn-wagon-pick", "Вагон " + w.wagon_number);
         btn.type = "button";
-        if (w.stage) btn.title = "этап: " + w.stage;
+        if (w.stage || w.status) btn.title = "этап: " + (w.stage || w.status);
         btn.addEventListener("click", function () {
-          targetCell.textContent = "Вагон " + w.number;
+          var position = { wagon_number: w.wagon_number, dead_end_code: deadEnd.code, slot_index: slotIndex };
+          targetCell.textContent = "Вагон " + w.wagon_number;
           targetCell.classList.add("tn-slot--occupied");
           targetCell.classList.remove("tn-slot--empty");
-          targetCell.title = deadEndName + " · слот " + slotIndex + " · вагон " + w.number;
+          targetCell.title = deadEnd.name + " · слот " + slotIndex + " · вагон " + w.wagon_number;
           clear(parkPanel);
           parkPanel.hidden = true;
           wrap.querySelectorAll(".tn-wagon-pick").forEach(function (b) { b.classList.remove("tn-wagon-pick--sel"); });
           if (targetCell.classList) targetCell.classList.add("tn-wagon-pick--sel");
-          onPick(w.number);
+          onPick(position);
         });
         row.appendChild(btn);
       });
@@ -742,14 +753,29 @@
     }
 
     Promise.all([request("/catalog/dead-ends"), request("/catalog/wagons")]).then(function (results) {
-      var parkWagons = (results[1].wagons || []).filter(function (w) { return w.active !== false; });
+      var occupied = {};
+      (results[0].dead_ends || []).forEach(function (deadEnd) {
+        (deadEnd.positions || []).forEach(function (position) {
+          if (position.wagon_number) occupied[position.wagon_number] = true;
+        });
+      });
+      var parkWagons = (results[1].wagons || []).filter(function (w) {
+        return w.active !== false && w.number && !occupied[w.number];
+      }).map(function (w) {
+        return { wagon_number: w.number, stage: w.stage || "" };
+      });
+      (results[0].free_wagons || []).forEach(function (wagon) {
+        if (wagon.wagon_number && !occupied[wagon.wagon_number]) parkWagons.push(wagon);
+      });
       (results[0].dead_ends || []).forEach(function (deadEnd) {
         var box = element("section", "tn-wagon-picker-dead-end");
         box.appendChild(element("p", "tn-wagon-picker-title", deadEnd.name || "Тупик"));
         var grid = element("div", "tn-slot-grid");
         (deadEnd.positions || []).forEach(function (pos) {
           if (pos.wagon_number) {
-            var cell = pickButton(pos.wagon_number, selected);
+            var cell = pickButton({
+              wagon_number: pos.wagon_number, dead_end_code: deadEnd.code, slot_index: pos.slot_index
+            });
             cell.title = (deadEnd.name || "Тупик") + " · слот " + pos.slot_index + " · вагон " + pos.wagon_number;
             grid.appendChild(cell);
           } else {
@@ -759,7 +785,7 @@
               cell.textContent = "+" + slotIndex;
               cell.title = "Слот " + slotIndex + " · пусто — выбрать вагон из парка";
               cell.addEventListener("click", function () {
-                openPark(cell, deadEnd.name || "Тупик", slotIndex, parkWagons);
+                openPark(cell, deadEnd, slotIndex, parkWagons);
               });
               grid.appendChild(cell);
             })(pos.slot_index);
@@ -773,13 +799,58 @@
         var freeBox = element("div", "tn-wagon-picker-free");
         freeBox.appendChild(element("p", "tn-help", "Вагоны без тупика (новый контур):"));
         var row = element("div", "tn-wagon-picker-row");
-        free.forEach(function (number) { row.appendChild(pickButton(number, selected)); });
+        free.forEach(function (wagon) { row.appendChild(element("span", "tn-help", "Вагон " + wagon.wagon_number)); });
         freeBox.appendChild(row);
         wrap.appendChild(freeBox);
       }
     }).catch(function () {});
     return wrap;
   }
+
+  function loadVacantSlotPicker(wagonNumber, onPick, selected) {
+    var wrap = element("div", "tn-wagon-picker");
+    var selectedButton = null;
+
+    function isSelected(position) {
+      return selected && position.dead_end_code === selected.dead_end_code
+        && Number(position.slot_index) === Number(selected.slot_index);
+    }
+
+    request("/catalog/dead-ends").then(function (data) {
+      (data.dead_ends || []).forEach(function (deadEnd) {
+        var box = element("section", "tn-wagon-picker-dead-end");
+        box.appendChild(element("p", "tn-wagon-picker-title", deadEnd.name || "Тупик"));
+        var grid = element("div", "tn-slot-grid");
+        (deadEnd.positions || []).forEach(function (position) {
+          var occupied = Boolean(position.wagon_number);
+          var cell = element(
+            "button",
+            "tn-slot" + (occupied ? " tn-slot--occupied" : " tn-slot--empty") + (isSelected(position) ? " tn-wagon-pick--sel" : "")
+          );
+          cell.type = "button";
+          cell.disabled = occupied;
+          cell.textContent = occupied ? position.wagon_number : String(position.slot_index);
+          cell.title = occupied
+            ? "Слот " + position.slot_index + " · занят вагоном " + position.wagon_number
+            : "Слот " + position.slot_index + " · поставить вагон " + wagonNumber;
+          if (!occupied) {
+            cell.addEventListener("click", function () {
+              if (selectedButton) selectedButton.classList.remove("tn-wagon-pick--sel");
+              cell.classList.add("tn-wagon-pick--sel");
+              selectedButton = cell;
+              onPick({ dead_end_code: deadEnd.code, slot_index: position.slot_index });
+            });
+          }
+          if (isSelected(position)) selectedButton = cell;
+          grid.appendChild(cell);
+        });
+        box.appendChild(grid);
+        wrap.appendChild(box);
+      });
+    }).catch(function () {});
+    return wrap;
+  }
+
   function makeYardPicker(onPick, selX, selY) {
     var wrap = element("div", "tn-yard-picker");
     var grid = element("div", "tn-yard-picker-grid");
@@ -851,10 +922,23 @@
     var yControl = y.querySelector("input");
     var yardPicker = makeYardPicker(function (px, py) { xControl.value = px; yControl.value = py; updateLine(); }, data.yard_x || 0, data.yard_y || 0);
     var wagonNumber = element("input"); wagonNumber.type = "hidden"; wagonNumber.name = "wagon_number"; wagonNumber.value = data.wagon_number || "";
+    var deadEndCode = element("input"); deadEndCode.type = "hidden"; deadEndCode.name = "dead_end_code"; deadEndCode.value = data.dead_end_code || "";
+    var slotIndex = element("input"); slotIndex.type = "hidden"; slotIndex.name = "slot_index"; slotIndex.value = data.slot_index || "";
     var wagonField = element("div", "tn-wagon-picker-field");
     wagonField.appendChild(wagonNumber);
+    wagonField.appendChild(deadEndCode);
+    wagonField.appendChild(slotIndex);
     wagonField.appendChild(element("p", "tn-help", "Выберите вагон тапом в тупике:"));
-    wagonField.appendChild(loadWagonPicker(function (number) { wagonNumber.value = number; updateLine(); }, data.wagon_number || ""));
+    wagonField.appendChild(loadWagonPicker(function (position) {
+      wagonNumber.value = position.wagon_number;
+      deadEndCode.value = position.dead_end_code;
+      slotIndex.value = position.slot_index;
+      updateLine();
+    }, data.wagon_number ? {
+      wagon_number: data.wagon_number,
+      dead_end_code: data.dead_end_code,
+      slot_index: data.slot_index
+    } : null));
     wagonField.hidden = true;
     placeWrap.appendChild(yardPicker); placeWrap.appendChild(x); placeWrap.appendChild(y); placeWrap.appendChild(wagonField);
     body.appendChild(placeWrap);
@@ -887,7 +971,9 @@
         var vx = xControl.value, vy = yControl.value;
         s.push(vx && vy ? ("X=" + vx + ", Y=" + vy) : "выберите место");
       } else {
-        s.push(wagonNumber.value ? ("вагон " + wagonNumber.value) : "выберите вагон");
+        s.push(wagonNumber.value && deadEndCode.value && slotIndex.value
+          ? ("вагон " + wagonNumber.value + " · слот " + slotIndex.value)
+          : "выберите вагон и слот");
       }
       summary.textContent = s.join(" ") || "—";
     }
@@ -903,9 +989,9 @@
         showToast("Выберите место блока на площадке — тап по ячейке.");
         return;
       }
-      if (!missing && wagonRadio.checked && !wagonNumber.value) {
+      if (!missing && wagonRadio.checked && (!wagonNumber.value || !deadEndCode.value || !slotIndex.value)) {
         body.hidden = false;
-        showToast("Выберите вагон — тап по слоту тупика.");
+        showToast("Выберите вагон и обязательный слот — тап по сетке тупиков.");
         return;
       }
       if ((missing || receiptControl.value === "damaged" || conditionControl.value === "damage") && !noteControl.value.trim()) {
@@ -962,6 +1048,7 @@
         discrepancy_note: saved.discrepancy_note || "",
         yard_x: saved.yard_x, yard_y: saved.yard_y,
         wagon_number: saved.block_wagon_number || saved.wagon_number || "",
+        dead_end_code: saved.dead_end_code || "", slot_index: saved.slot_index || "",
         _saved: true
       } : expectedLine;
       linesWrap.appendChild(makeReceiptLine(base, expected.length > 0));
@@ -989,7 +1076,9 @@
             discrepancy_note: get("discrepancy_note"),
             yard_x: useWagon ? null : (get("yard_x") || null),
             yard_y: useWagon ? null : (get("yard_y") || null),
-            wagon_number: useWagon ? get("wagon_number") : ""
+            wagon_number: useWagon ? get("wagon_number") : "",
+            dead_end_code: useWagon ? get("dead_end_code") : "",
+            slot_index: useWagon ? get("slot_index") : ""
           };
         });
       if (!lines.length) { showToast("Сначала сохраните хотя бы один блок кнопкой «Сохранить блок»."); return; }
@@ -1013,9 +1102,11 @@
         var place = card.querySelector("input[name='place']:checked");
         if (!place || place.value !== "wagon") return false;
         var wagon = card.querySelector("input[name='wagon_number']");
-        return !(wagon && wagon.value.trim());
+        var deadEnd = card.querySelector("input[name='dead_end_code']");
+        var slot = card.querySelector("input[name='slot_index']");
+        return !(wagon && wagon.value.trim() && deadEnd && deadEnd.value.trim() && slot && slot.value.trim());
       });
-      if (invalidWagon) { showToast("Для каждого блока выберите вагон тапом по сетке тупиков или переключите на площадку."); return; }
+      if (invalidWagon) { showToast("Для каждого блока выберите вагон и обязательный слот тупика или переключите на площадку."); return; }
       var unsaved = Array.from(linesWrap.querySelectorAll(".tn-block-card")).filter(function (card) {
         return card.dataset.saved !== "1";
       });
@@ -1034,7 +1125,9 @@
           discrepancy_note: get("discrepancy_note"),
           yard_x: useWagon ? null : (get("yard_x") || null),
           yard_y: useWagon ? null : (get("yard_y") || null),
-          wagon_number: useWagon ? get("wagon_number") : ""
+          wagon_number: useWagon ? get("wagon_number") : "",
+          dead_end_code: useWagon ? get("dead_end_code") : "",
+          slot_index: useWagon ? get("slot_index") : ""
         };
       });
       confirm.disabled = true;
@@ -1073,9 +1166,110 @@
       .catch(function (error) { showToast(error.message || "Не удалось зафиксировать этап вагона"); button.disabled = false; });
   }
 
+  function returnWagonEmpty(wagon) {
+    wagonModal.hidden = false;
+    wagonModalTitle.textContent = "Возврат порожнего вагона " + wagon.wagon_number;
+    clear(wagonModalContent);
+    wagonModalContent.appendChild(element("p", "tn-help", "Выберите свободный обязательный слот новой площадки для возврата вагона."));
+    var selected = null;
+    var choice = element("p", "tn-help", "Слот ещё не выбран.");
+    wagonModalContent.appendChild(choice);
+    wagonModalContent.appendChild(loadVacantSlotPicker(wagon.wagon_number, function (position) {
+      selected = position;
+      choice.textContent = "Выбрано: " + position.dead_end_code + " · слот " + position.slot_index + ".";
+    }));
+    var actions = element("div", "tn-card-actions");
+    var cancel = element("button", "tn-button tn-button--secondary", "Отмена");
+    cancel.type = "button";
+    cancel.addEventListener("click", closeModal);
+    var confirm = element("button", "tn-button tn-button--primary", "Подтвердить возврат");
+    confirm.type = "button";
+    confirm.addEventListener("click", function () {
+      if (!selected) { showToast("Выберите свободный слот новой площадки."); return; }
+      if (!window.confirm("Зафиксировать возврат порожнего вагона " + wagon.wagon_number + " в выбранный слот?")) return;
+      confirm.disabled = true;
+      jsonRequest("/wagons/" + encodeURIComponent(wagon.wagon_number) + "/returned-empty", "POST", selected)
+        .then(function () {
+          closeModal();
+          showToast("Возврат порожнего вагона зафиксирован.");
+          return Promise.all([loadWagons(), loadDashboard()]);
+        })
+        .catch(function (error) { showToast(error.message || "Не удалось зафиксировать возврат вагона"); confirm.disabled = false; });
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(confirm);
+    wagonModalContent.appendChild(actions);
+  }
+
+  function markWagonLoaded(wagon, button) {
+    if (wagon.dead_end_code && wagon.slot_index) {
+      wagonTransition(wagon.wagon_number, "loaded", "Зафиксировать загрузку?", "Загрузка вагона зафиксирована.", button);
+      return;
+    }
+    wagonModal.hidden = false;
+    wagonModalTitle.textContent = "Позиция вагона " + wagon.wagon_number;
+    clear(wagonModalContent);
+    wagonModalContent.appendChild(element("p", "tn-help", "Перед фиксацией загрузки выберите обязательный свободный слот новой площадки."));
+    var selected = null;
+    var choice = element("p", "tn-help", "Слот ещё не выбран.");
+    wagonModalContent.appendChild(choice);
+    wagonModalContent.appendChild(loadVacantSlotPicker(wagon.wagon_number, function (position) {
+      selected = position;
+      choice.textContent = "Выбрано: " + position.dead_end_code + " · слот " + position.slot_index + ".";
+    }));
+    var actions = element("div", "tn-card-actions");
+    var cancel = element("button", "tn-button tn-button--secondary", "Отмена");
+    cancel.type = "button";
+    cancel.addEventListener("click", closeModal);
+    var confirm = element("button", "tn-button tn-button--primary", "Указать слот и зафиксировать загрузку");
+    confirm.type = "button";
+    confirm.addEventListener("click", function () {
+      if (!selected) { showToast("Выберите свободный слот новой площадки."); return; }
+      if (!window.confirm("Указать выбранный слот и зафиксировать загрузку вагона " + wagon.wagon_number + "?")) return;
+      confirm.disabled = true;
+      jsonRequest("/wagons/" + encodeURIComponent(wagon.wagon_number) + "/loaded", "POST", selected)
+        .then(function () {
+          closeModal();
+          showToast("Позиция и загрузка вагона зафиксированы.");
+          return Promise.all([loadWagons(), loadDashboard()]);
+        })
+        .catch(function (error) { showToast(error.message || "Не удалось зафиксировать загрузку вагона"); confirm.disabled = false; });
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(confirm);
+    wagonModalContent.appendChild(actions);
+  }
+
   function appendWagonAction(card, wagon) {
+    if (wagon.status === "unloaded_bts_east") {
+      var returnActions = element("div", "tn-card-actions");
+      var returnButton = element("button", "tn-button tn-button--primary", "Вернуть порожним в слот");
+      returnButton.type = "button";
+      returnButton.addEventListener("click", function (event) {
+        event.stopPropagation();
+        returnWagonEmpty(wagon);
+      });
+      returnActions.appendChild(returnButton);
+      card.appendChild(returnActions);
+      return;
+    }
+    if (wagon.status === "forming") {
+      var loadActions = element("div", "tn-card-actions");
+      var loadButton = element(
+        "button",
+        "tn-button tn-button--primary",
+        wagon.dead_end_code ? "Зафиксировать загрузку" : "Указать слот и зафиксировать загрузку"
+      );
+      loadButton.type = "button";
+      loadButton.addEventListener("click", function (event) {
+        event.stopPropagation();
+        markWagonLoaded(wagon, loadButton);
+      });
+      loadActions.appendChild(loadButton);
+      card.appendChild(loadActions);
+      return;
+    }
     var actionsByStatus = {
-      forming: { endpoint: "loaded", label: "Зафиксировать загрузку", question: "Зафиксировать загрузку?", success: "Загрузка вагона зафиксирована." },
       loaded: { endpoint: "dispatch", label: "Отправить в путь", question: "Отправить в путь?", success: "Вагон отправлен в путь." },
       in_transit: { endpoint: "arrived-kodar", label: "Подтвердить прибытие в Кодар", question: "Подтвердить прибытие в Кодар?", success: "Прибытие в Кодар зафиксировано." },
       at_kodar: { endpoint: "unloaded-bts-east", label: "Подтвердить выгрузку у БТС Восток", question: "Подтвердить выгрузку у БТС Восток?", success: "Выгрузка у БТС Восток зафиксирована." }
@@ -1085,7 +1279,8 @@
     var actions = element("div", "tn-card-actions");
     var button = element("button", "tn-button tn-button--primary", action.label);
     button.type = "button";
-    button.addEventListener("click", function () {
+    button.addEventListener("click", function (event) {
+      event.stopPropagation();
       wagonTransition(wagon.wagon_number, action.endpoint, action.question, action.success, button);
     });
     actions.appendChild(button);
@@ -1123,7 +1318,10 @@
     var button = form.querySelector("button[type='submit']");
     button.disabled = true;
     jsonRequest("/wagons/load", "POST", {
-      block_id: Number(form.elements.block_id.value), wagon_number: form.elements.wagon_number.value.trim()
+      block_id: Number(form.elements.block_id.value),
+      wagon_number: form.elements.wagon_number.value.trim(),
+      dead_end_code: form.elements.dead_end_code.value,
+      slot_index: Number(form.elements.slot_index.value)
     })
       .then(function () { form.reset(); showToast("Блок загружен в вагон."); return Promise.all([loadWagons(), loadYard()]); })
       .catch(function (error) { showToast(error.message || "Не удалось загрузить блок"); })

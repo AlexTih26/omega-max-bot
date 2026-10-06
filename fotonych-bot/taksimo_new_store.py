@@ -28,11 +28,21 @@ WAGON_DEAD_ENDS = (
     {"code": "gruzovoy_2", "name": "Грузовой 2 (Туран)", "slots": 10},
     {"code": "gruzovoy_3", "name": "Грузовой 3", "slots": 10},
 )
+WAGON_DEAD_ENDS_BY_CODE = {item["code"]: item for item in WAGON_DEAD_ENDS}
 
 
 def wagon_dead_ends() -> list[dict[str, Any]]:
     """Конфигурация тупиков/слотов новой площадки."""
     return [dict(item) for item in WAGON_DEAD_ENDS]
+
+
+def _wagon_position_payload(dead_end_code: Any, slot_index: Any) -> dict[str, Any]:
+    code = _required_text(dead_end_code, "тупик", max_length=40).lower()
+    dead_end = WAGON_DEAD_ENDS_BY_CODE.get(code)
+    if dead_end is None:
+        raise ValueError("Некорректно указан тупик")
+    slot = _as_int(slot_index, "слот тупика", minimum=1, maximum=int(dead_end["slots"]))
+    return {"dead_end_code": code, "slot_index": slot}
 
 
 class TaksimoNewConflictError(ValueError):
@@ -194,23 +204,35 @@ def _intake_line_payload(line: Mapping[str, Any], *, require_location: bool) -> 
     yard_y = line.get("yard_y")
     wagon_number = _optional_text(line.get("wagon_number"), "номер вагона", max_length=40).upper() or None
     if receipt_state == "missing":
-        if yard_x not in (None, "") or yard_y not in (None, "") or wagon_number:
+        if (
+            yard_x not in (None, "") or yard_y not in (None, "") or wagon_number
+            or line.get("dead_end_code") not in (None, "") or line.get("slot_index") not in (None, "")
+        ):
             raise ValueError("Для недостающего блока нельзя указывать место размещения")
         parsed_x = parsed_y = None
+        wagon_position = {"dead_end_code": None, "slot_index": None}
     elif require_location:
         if wagon_number:
             if yard_x not in (None, "") or yard_y not in (None, ""):
                 raise ValueError("Укажите либо вагон, либо место на площадке")
             parsed_x = parsed_y = None
+            wagon_position = _wagon_position_payload(line.get("dead_end_code"), line.get("slot_index"))
         else:
+            if line.get("dead_end_code") not in (None, "") or line.get("slot_index") not in (None, ""):
+                raise ValueError("Тупик и слот указываются только для вагона")
             parsed_x = _as_int(yard_x, "координата X", minimum=1, maximum=13)
             parsed_y = _as_int(yard_y, "координата Y", minimum=1, maximum=25)
+            wagon_position = {"dead_end_code": None, "slot_index": None}
     else:
         if wagon_number:
             parsed_x = parsed_y = None
+            wagon_position = _wagon_position_payload(line.get("dead_end_code"), line.get("slot_index"))
         else:
+            if line.get("dead_end_code") not in (None, "") or line.get("slot_index") not in (None, ""):
+                raise ValueError("Тупик и слот указываются только для вагона")
             parsed_x = None if yard_x in (None, "") else _as_int(yard_x, "координата X", minimum=1, maximum=13)
             parsed_y = None if yard_y in (None, "") else _as_int(yard_y, "координата Y", minimum=1, maximum=25)
+            wagon_position = {"dead_end_code": None, "slot_index": None}
     return {
         "block_type": block_type,
         "block_number": block_number,
@@ -222,6 +244,7 @@ def _intake_line_payload(line: Mapping[str, Any], *, require_location: bool) -> 
         "yard_x": parsed_x,
         "yard_y": parsed_y,
         "wagon_number": wagon_number,
+        **wagon_position,
     }
 
 
@@ -373,9 +396,13 @@ def _intake_payload(cursor: Any, row: Mapping[str, Any], *, include_lines: bool 
         cursor.execute("SELECT * FROM tn_expected_intake_lines WHERE intake_id = %s ORDER BY sort_order", (intake_id,))
         result["expected_lines"] = [_row_datetime(dict(item)) for item in cursor.fetchall()]
         cursor.execute(
-            """SELECT l.*, b.wagon_number AS block_wagon_number
+            """SELECT l.*, b.wagon_number AS block_wagon_number,
+                      p.dead_end_code, p.slot_index
                FROM tn_intake_lines AS l
                LEFT JOIN tn_blocks AS b ON b.received_line_id = l.id
+               LEFT JOIN tn_wagon_loads AS loads ON loads.block_id = b.id
+               LEFT JOIN tn_wagon_position_history AS p
+                 ON p.wagon_id = loads.wagon_id AND p.active_marker = 1
                WHERE l.intake_id = %s ORDER BY l.sort_order""",
             (intake_id,),
         )
@@ -771,12 +798,20 @@ def _save_intake(
             cursor.execute("SELECT id, block_type, block_number FROM tn_intake_lines WHERE intake_id = %s", (intake_id,))
             saved_lines = {(str(item["block_type"]), str(item["block_number"])): int(item["id"]) for item in cursor.fetchall()}
             wagon_ids: dict[str, int] = {}
+            wagon_positions: dict[str, dict[str, Any]] = {}
             for item in normalized:
                 if item["receipt_state"] == "missing":
                     continue
                 line_id = saved_lines[(item["block_type"], item["block_number"])]
                 if item["wagon_number"]:
                     wagon_number = item["wagon_number"]
+                    position = {
+                        "dead_end_code": item["dead_end_code"],
+                        "slot_index": item["slot_index"],
+                    }
+                    previous_position = wagon_positions.setdefault(wagon_number, position)
+                    if previous_position != position:
+                        raise ValueError(f"Для вагона {wagon_number} укажите один тупик и слот")
                     if wagon_number not in wagon_ids:
                         cursor.execute(
                             "SELECT id, status FROM tn_wagons WHERE wagon_number = %s FOR UPDATE", (wagon_number,)
@@ -802,6 +837,14 @@ def _save_intake(
                             wagon_ids[wagon_number] = int(wagon_row["id"])
                         else:
                             raise TaksimoNewConflictError(f"Вагон {wagon_number} нельзя догружать на текущем этапе")
+                        _ensure_wagon_position(
+                            cursor,
+                            wagon_id=wagon_ids[wagon_number],
+                            wagon_number=wagon_number,
+                            position=position,
+                            operator=operator,
+                            occurred_at=now,
+                        )
                     cursor.execute(
                         """INSERT INTO tn_blocks
                            (block_type, block_number, product_name, weight_kg, condition_code, current_location_kind,
@@ -1200,12 +1243,59 @@ def list_wagons() -> list[dict[str, Any]]:
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT w.id, w.wagon_number, w.status, w.created_at, w.loaded_at, w.dispatched_at,
-                          w.arrived_kodar_at, w.unloaded_bts_east_at,
-                          COUNT(loads.id) AS blocks_count
-                   FROM tn_wagons AS w LEFT JOIN tn_wagon_loads AS loads ON loads.wagon_id = w.id
-                   GROUP BY w.id ORDER BY w.created_at DESC, w.id DESC"""
+                           w.arrived_kodar_at, w.unloaded_bts_east_at,
+                          p.dead_end_code, p.slot_index, COALESCE(loads.blocks_count, 0) AS blocks_count
+                   FROM tn_wagons AS w
+                   LEFT JOIN (
+                       SELECT wagon_id, COUNT(*) AS blocks_count FROM tn_wagon_loads GROUP BY wagon_id
+                   ) AS loads ON loads.wagon_id = w.id
+                   LEFT JOIN tn_wagon_position_history AS p ON p.wagon_id = w.id AND p.active_marker = 1
+                   ORDER BY w.created_at DESC, w.id DESC"""
             )
             return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def wagon_dead_end_positions() -> dict[str, Any]:
+    """Текущая карта собственных 3 x 10 слотов и вагонов без позиции."""
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT slots.dead_end_code, slots.slot_index, wagon.wagon_number, wagon.status
+                   FROM tn_wagon_yard_slots AS slots
+                   LEFT JOIN tn_wagon_position_history AS position
+                     ON position.dead_end_code = slots.dead_end_code
+                    AND position.slot_index = slots.slot_index
+                    AND position.active_marker = 1
+                   LEFT JOIN tn_wagons AS wagon ON wagon.id = position.wagon_id
+                   ORDER BY slots.dead_end_code, slots.slot_index"""
+            )
+            positions_by_code: dict[str, dict[int, dict[str, Any]]] = {}
+            for row in cursor.fetchall():
+                item = dict(row)
+                positions_by_code.setdefault(str(item["dead_end_code"]), {})[int(item["slot_index"])] = {
+                    "slot_index": int(item["slot_index"]),
+                    "wagon_number": str(item.get("wagon_number") or ""),
+                    "status": str(item.get("status") or ""),
+                }
+            cursor.execute(
+                """SELECT wagon_number, status FROM tn_wagons
+                   WHERE status IN ('forming', 'returned_empty')
+                     AND NOT EXISTS (
+                         SELECT 1 FROM tn_wagon_position_history AS position
+                         WHERE position.wagon_id = tn_wagons.id AND position.active_marker = 1
+                     )
+                   ORDER BY wagon_number"""
+            )
+            free_wagons = [_row_datetime(dict(row)) for row in cursor.fetchall()]
+    dead_ends = wagon_dead_ends()
+    for dead_end in dead_ends:
+        code = dead_end["code"]
+        slot_map = positions_by_code.get(code, {})
+        dead_end["positions"] = [
+            slot_map.get(index, {"slot_index": index, "wagon_number": "", "status": ""})
+            for index in range(1, int(dead_end["slots"]) + 1)
+        ]
+    return {"dead_ends": dead_ends, "free_wagons": free_wagons}
 
 
 def wagon_history(wagon_number: Any) -> dict[str, Any]:
@@ -1230,7 +1320,7 @@ def wagon_history(wagon_number: Any) -> dict[str, Any]:
             cursor.execute(
                 """SELECT e.event_type, e.occurred_at, e.payload_json, e.actor_name
                    FROM tn_events AS e
-                   WHERE e.subject_public_id = %s AND e.subject_type IN ('wagon', 'wagon_dispatch')
+                    WHERE e.subject_public_id = %s AND e.subject_type IN ('wagon', 'wagon_dispatch', 'wagon_position')
                    ORDER BY e.occurred_at, e.id""",
                 (number,),
             )
@@ -1285,9 +1375,113 @@ def _append_wagon_physical_facts(
         )
 
 
-def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[str, Any]) -> dict[str, Any]:
+def _ensure_wagon_position(
+    cursor: Any,
+    *,
+    wagon_id: int,
+    wagon_number: str,
+    position: Mapping[str, Any],
+    operator: Mapping[str, Any],
+    occurred_at: datetime,
+) -> None:
+    """Закрепить вагон за своим слотом либо подтвердить уже выбранный слот."""
+    desired = _wagon_position_payload(position.get("dead_end_code"), position.get("slot_index"))
+    cursor.execute(
+        """SELECT dead_end_code FROM tn_wagon_yard_slots
+           WHERE dead_end_code = %s AND slot_index = %s FOR UPDATE""",
+        (desired["dead_end_code"], desired["slot_index"]),
+    )
+    if cursor.fetchone() is None:
+        raise TaksimoNewConflictError("Слот новой площадки не подготовлен")
+    cursor.execute(
+        """SELECT dead_end_code, slot_index FROM tn_wagon_position_history
+           WHERE wagon_id = %s AND active_marker = 1 FOR UPDATE""",
+        (wagon_id,),
+    )
+    current = cursor.fetchone()
+    if current is not None:
+        if str(current["dead_end_code"]) == desired["dead_end_code"] and int(current["slot_index"]) == desired["slot_index"]:
+            return
+        raise TaksimoNewConflictError(
+            f"Вагон {wagon_number} уже расположен в другом тупике или слоте"
+        )
+    cursor.execute(
+        """SELECT wagon_id FROM tn_wagon_position_history
+           WHERE dead_end_code = %s AND slot_index = %s AND active_marker = 1 FOR UPDATE""",
+        (desired["dead_end_code"], desired["slot_index"]),
+    )
+    occupied = cursor.fetchone()
+    if occupied is not None and int(occupied["wagon_id"]) != wagon_id:
+        raise TaksimoNewConflictError("Выбранный слот уже занят другим вагоном")
+    cursor.execute(
+        """INSERT INTO tn_wagon_position_history
+           (wagon_id, dead_end_code, slot_index, assigned_by_operator_id, assigned_at, active_marker)
+           VALUES (%s, %s, %s, %s, %s, 1)""",
+        (wagon_id, desired["dead_end_code"], desired["slot_index"], int(operator["id"]), occurred_at),
+    )
+    actor_kind, actor_id, actor_name = _operator_actor(operator)
+    _append_event(
+        cursor,
+        event_type="wagon_position_assigned",
+        subject_type="wagon_position",
+        subject_public_id=wagon_number,
+        actor_kind=actor_kind,
+        actor_id=actor_id,
+        actor_name=actor_name,
+        payload={"wagon_number": wagon_number, **desired},
+        occurred_at=occurred_at,
+    )
+
+
+def _release_wagon_position(
+    cursor: Any,
+    *,
+    wagon_id: int,
+    wagon_number: str,
+    operator: Mapping[str, Any],
+    occurred_at: datetime,
+) -> dict[str, Any]:
+    cursor.execute(
+        """SELECT id, dead_end_code, slot_index FROM tn_wagon_position_history
+           WHERE wagon_id = %s AND active_marker = 1 FOR UPDATE""",
+        (wagon_id,),
+    )
+    current = cursor.fetchone()
+    if current is None:
+        raise TaksimoNewConflictError("У вагона не задан обязательный слот новой площадки")
+    position = {"dead_end_code": str(current["dead_end_code"]), "slot_index": int(current["slot_index"])}
+    cursor.execute(
+        """UPDATE tn_wagon_position_history
+           SET released_by_operator_id = %s, released_at = %s, active_marker = NULL
+           WHERE id = %s""",
+        (int(operator["id"]), occurred_at, int(current["id"])),
+    )
+    actor_kind, actor_id, actor_name = _operator_actor(operator)
+    _append_event(
+        cursor,
+        event_type="wagon_position_released",
+        subject_type="wagon_position",
+        subject_public_id=wagon_number,
+        actor_kind=actor_kind,
+        actor_id=actor_id,
+        actor_name=actor_name,
+        payload={"wagon_number": wagon_number, **position},
+        occurred_at=occurred_at,
+    )
+    return position
+
+
+def load_block_to_wagon(
+    *,
+    block_id: Any,
+    wagon_number: Any,
+    dead_end_code: Any,
+    slot_index: Any,
+    operator: Mapping[str, Any],
+) -> dict[str, Any]:
     parsed_block_id = _as_int(block_id, "блок", minimum=1)
     number = _required_text(wagon_number, "номер вагона", max_length=40).upper()
+    position = _wagon_position_payload(dead_end_code, slot_index)
     now = utc_now()
     actor_kind, actor_id, actor_name = _operator_actor(operator)
     with transaction() as connection:
@@ -1330,6 +1524,14 @@ def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[s
                     wagon_id = int(wagon["id"])
                 else:
                     raise TaksimoNewConflictError("Вагон после фиксации загрузки нельзя догружать")
+            _ensure_wagon_position(
+                cursor,
+                wagon_id=wagon_id,
+                wagon_number=number,
+                position=position,
+                operator=operator,
+                occurred_at=now,
+            )
             cursor.execute(
                 """INSERT INTO tn_wagon_loads (wagon_id, block_id, loaded_by_operator_id, loaded_at)
                    VALUES (%s, %s, %s, %s)""",
@@ -1344,7 +1546,12 @@ def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[s
             _append_event(
                 cursor, event_type="block_loaded_to_wagon", subject_type="wagon_load", subject_public_id=str(load_id),
                 actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name,
-                payload={"wagon_number": number, "block_id": parsed_block_id, "block": f"{block['block_type']} {block['block_number']}"}, occurred_at=now,
+                payload={
+                    "wagon_number": number,
+                    "block_id": parsed_block_id,
+                    "block": f"{block['block_type']} {block['block_number']}",
+                    **position,
+                }, occurred_at=now,
             )
             context = _rumex_context(block)
             if context:
@@ -1353,13 +1560,26 @@ def load_block_to_wagon(*, block_id: Any, wagon_number: Any, operator: Mapping[s
                     payload={
                         "load_id": load_id, "wagon_number": number, "block_id": parsed_block_id,
                         "block": f"{block['block_type']} {block['block_number']}", "loaded_at": iso_utc(now),
+                        **position,
                         **context,
                     }, created_at=now,
                 )
-            return {"id": load_id, "wagon_number": number, "block_id": parsed_block_id, "loaded_at": iso_utc(now)}
+            return {
+                "id": load_id,
+                "wagon_number": number,
+                "block_id": parsed_block_id,
+                "loaded_at": iso_utc(now),
+                **position,
+            }
 
 
-def mark_wagon_loaded(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+def mark_wagon_loaded(
+    wagon_number: Any,
+    *,
+    dead_end_code: Any = None,
+    slot_index: Any = None,
+    operator: Mapping[str, Any],
+) -> dict[str, Any]:
     if str(operator["role"]) != "operator1":
         raise PermissionError("Зафиксировать загрузку вагона может только Оператор 1")
     number = _required_text(wagon_number, "номер вагона", max_length=40).upper()
@@ -1378,11 +1598,36 @@ def mark_wagon_loaded(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict
             if not count:
                 raise ValueError("Нельзя зафиксировать загрузку пустого вагона")
             cursor.execute(
+                """SELECT dead_end_code, slot_index FROM tn_wagon_position_history
+                   WHERE wagon_id = %s AND active_marker = 1 FOR UPDATE""",
+                (int(wagon["id"]),),
+            )
+            position_row = cursor.fetchone()
+            if position_row is None:
+                position = _wagon_position_payload(dead_end_code, slot_index)
+                _ensure_wagon_position(
+                    cursor,
+                    wagon_id=int(wagon["id"]),
+                    wagon_number=number,
+                    position=position,
+                    operator=operator,
+                    occurred_at=now,
+                )
+            else:
+                position = {
+                    "dead_end_code": str(position_row["dead_end_code"]),
+                    "slot_index": int(position_row["slot_index"]),
+                }
+                if dead_end_code not in (None, "") or slot_index not in (None, ""):
+                    requested_position = _wagon_position_payload(dead_end_code, slot_index)
+                    if requested_position != position:
+                        raise TaksimoNewConflictError("Вагон уже расположен в другом тупике или слоте")
+            cursor.execute(
                 """UPDATE tn_wagons SET status = 'loaded', loaded_at = %s, loaded_by_operator_id = %s
                    WHERE id = %s""",
                 (now, int(operator["id"]), int(wagon["id"])),
             )
-            payload = {"wagon_number": number, "blocks_count": count, "loaded_at": iso_utc(now)}
+            payload = {"wagon_number": number, "blocks_count": count, "loaded_at": iso_utc(now), **position}
             _append_event(
                 cursor, event_type="wagon_loaded", subject_type="wagon", subject_public_id=number,
                 actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
@@ -1395,7 +1640,7 @@ def mark_wagon_loaded(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict
                 cursor, event_type="wagon_loaded", idempotency_key=f"wagon:{number}:loaded",
                 payload=payload, created_at=now,
             )
-    return {"wagon_number": number, "status": "loaded", "blocks_count": count, "loaded_at": iso_utc(now)}
+    return {"wagon_number": number, "status": "loaded", "blocks_count": count, "loaded_at": iso_utc(now), **position}
 
 
 def dispatch_wagon(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
@@ -1414,12 +1659,19 @@ def dispatch_wagon(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[st
                 raise TaksimoNewConflictError("Перед отправлением зафиксируйте загрузку вагона")
             cursor.execute("SELECT COUNT(*) AS count FROM tn_wagon_loads WHERE wagon_id = %s", (int(wagon["id"]),))
             count = int(cursor.fetchone()["count"])
+            position = _release_wagon_position(
+                cursor,
+                wagon_id=int(wagon["id"]),
+                wagon_number=number,
+                operator=operator,
+                occurred_at=now,
+            )
             cursor.execute(
                 """UPDATE tn_wagons SET status = 'in_transit', dispatched_at = %s, dispatched_by_operator_id = %s
                    WHERE id = %s""",
                 (now, int(operator["id"]), int(wagon["id"])),
             )
-            payload = {"wagon_number": number, "blocks_count": count, "dispatched_at": iso_utc(now)}
+            payload = {"wagon_number": number, "blocks_count": count, "dispatched_at": iso_utc(now), **position}
             _append_event(
                 cursor, event_type="wagon_dispatched", subject_type="wagon_dispatch", subject_public_id=number,
                 actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
@@ -1432,7 +1684,7 @@ def dispatch_wagon(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[st
                 cursor, event_type="wagon_in_transit", idempotency_key=f"wagon:{number}:in_transit",
                 payload=payload, created_at=now,
             )
-    return {"wagon_number": number, "status": "in_transit", "blocks_count": count, "dispatched_at": iso_utc(now)}
+    return {"wagon_number": number, "status": "in_transit", "blocks_count": count, "dispatched_at": iso_utc(now), **position}
 
 
 def _advance_wagon_lifecycle(
@@ -1507,14 +1759,64 @@ def mark_wagon_unloaded_bts_east(wagon_number: Any, *, operator: Mapping[str, An
     )
 
 
-def mark_wagon_returned_empty(wagon_number: Any, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+def mark_wagon_returned_empty(
+    wagon_number: Any,
+    *,
+    dead_end_code: Any,
+    slot_index: Any,
+    operator: Mapping[str, Any],
+) -> dict[str, Any]:
     """Зафиксировать возврат порожнего вагона на площадку, замыкая цикл."""
-    return _advance_wagon_lifecycle(
-        wagon_number, expected_status="unloaded_bts_east", next_status="returned_empty",
-        timestamp_column="returned_empty_at", operator_column="returned_empty_by_operator_id",
-        event_type="wagon_returned_empty", outbox_type="taksimo.wagon.returned_empty",
-        notification_type="wagon_returned_empty", operator=operator,
-    )
+    if str(operator["role"]) != "operator1":
+        raise PermissionError("Подтвердить этап вагона может только Оператор 1")
+    number = _required_text(wagon_number, "номер вагона", max_length=40).upper()
+    position = _wagon_position_payload(dead_end_code, slot_index)
+    now = utc_now()
+    actor_kind, actor_id, actor_name = _operator_actor(operator)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM tn_wagons WHERE wagon_number = %s FOR UPDATE", (number,))
+            wagon = cursor.fetchone()
+            if wagon is None:
+                raise KeyError(number)
+            if str(wagon["status"]) != "unloaded_bts_east":
+                raise TaksimoNewConflictError("Нельзя подтвердить этот этап в текущем статусе вагона")
+            cursor.execute("SELECT COUNT(*) AS count FROM tn_wagon_loads WHERE wagon_id = %s", (int(wagon["id"]),))
+            count = int(cursor.fetchone()["count"])
+            _ensure_wagon_position(
+                cursor,
+                wagon_id=int(wagon["id"]),
+                wagon_number=number,
+                position=position,
+                operator=operator,
+                occurred_at=now,
+            )
+            cursor.execute(
+                """UPDATE tn_wagons
+                   SET status = 'returned_empty', returned_empty_at = %s, returned_empty_by_operator_id = %s
+                   WHERE id = %s""",
+                (now, int(operator["id"]), int(wagon["id"])),
+            )
+            payload = {
+                "wagon_number": number,
+                "blocks_count": count,
+                "status": "returned_empty",
+                "occurred_at": iso_utc(now),
+                **position,
+            }
+            _append_event(
+                cursor, event_type="wagon_returned_empty", subject_type="wagon", subject_public_id=number,
+                actor_kind=actor_kind, actor_id=actor_id, actor_name=actor_name, payload=payload, occurred_at=now,
+            )
+            _append_wagon_physical_facts(
+                cursor, wagon_id=int(wagon["id"]), wagon_number=number, stage="returned_empty",
+                event_type="taksimo.wagon.returned_empty", payload=payload, created_at=now,
+            )
+            _append_notification(
+                cursor, event_type="wagon_returned_empty", idempotency_key=f"wagon:{number}:returned_empty",
+                payload=payload, created_at=now,
+            )
+    return payload
 
 
 def search(query: Any, *, limit: int = 50) -> list[dict[str, Any]]:

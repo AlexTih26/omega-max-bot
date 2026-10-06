@@ -16,7 +16,7 @@ from aiohttp import web
 from taksimo_new_auth import operator_from_request
 from taksimo_new_db import TaksimoNewDatabaseError
 import taksimo_new_store as store
-import taksimo_legacy_reader as legacy
+import taksimo_legacy_archive as legacy_archive
 
 
 def _json(data: dict, status: int = 200) -> web.Response:
@@ -57,13 +57,52 @@ async def _body(request: web.Request) -> dict:
     return body
 
 
+def _legacy_status(view: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: view.get(key)
+        for key in ("mode", "available", "cutover_at", "captured_at", "error")
+        if view.get(key) is not None
+    }
+
+
+def _legacy_items(view: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    collections = view.get("collections")
+    if not isinstance(collections, dict):
+        return []
+    items = collections.get(name)
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _legacy_yard_slabs(view: dict[str, Any]) -> list[dict[str, Any]]:
+    result = []
+    for slab in _legacy_items(view, "yard_slabs"):
+        item = dict(slab)
+        item["yard_x"] = item.get("pos_x")
+        item["yard_y"] = item.get("pos_y")
+        result.append(item)
+    return result
+
+
 async def handle_dashboard(_request: web.Request) -> web.Response:
-    return _json(store.dashboard())
+    view = legacy_archive.current_view()
+    payload = store.dashboard()
+    payload["legacy"] = {
+        "yard_blocks": len(_legacy_items(view, "yard_slabs")),
+        "wagons": len(_legacy_items(view, "wagons")),
+        "sessions": len(_legacy_items(view, "sessions")),
+        **_legacy_status(view),
+    }
+    return _json(payload)
 
 
 async def handle_intakes(request: web.Request) -> web.Response:
     if request.method == "GET":
-        return _json({"intakes": store.list_intakes(date_value=request.query.get("date"), limit=request.query.get("limit", 100))})
+        view = legacy_archive.current_view()
+        return _json({
+            "intakes": store.list_intakes(date_value=request.query.get("date"), limit=request.query.get("limit", 100)),
+            "legacy_sessions": _legacy_items(view, "sessions"),
+            "legacy": _legacy_status(view),
+        })
     operator, denied = _operator(request)
     if denied:
         return denied
@@ -214,11 +253,21 @@ async def handle_operation_cancel(request: web.Request) -> web.Response:
 
 
 async def handle_yard(_request: web.Request) -> web.Response:
-    return _json(store.yard_map())
+    view = legacy_archive.current_view()
+    payload = store.yard_map()
+    payload["legacy_slabs"] = _legacy_yard_slabs(view)
+    payload["legacy"] = _legacy_status(view)
+    return _json(payload)
 
 
 async def handle_wagons(_request: web.Request) -> web.Response:
-    return _json({"wagons": store.list_wagons()})
+    view = legacy_archive.current_view()
+    return _json({
+        "wagons": store.list_wagons(),
+        "legacy_wagons": _legacy_items(view, "wagons"),
+        "legacy_slots": _legacy_items(view, "slots"),
+        "legacy": _legacy_status(view),
+    })
 
 
 async def handle_wagon_history(request: web.Request) -> web.Response:
@@ -227,12 +276,13 @@ async def handle_wagon_history(request: web.Request) -> web.Response:
         return denied
     number = request.match_info["wagon_number"]
     history = store.wagon_history(number)
+    view = legacy_archive.current_view()
     legacy_trips = [
-        trip for trip in legacy.list_legacy_wagon_history()
+        trip for trip in _legacy_items(view, "wagon_history")
         if str(trip.get("wagon_number") or "") == str(number)
     ]
     blocks_by_dispatch: dict[int, list[dict[str, Any]]] = {}
-    for slab in legacy.list_legacy_dispatch_slabs():
+    for slab in _legacy_items(view, "dispatch_slabs"):
         if str(slab.get("wagon_number") or "") != str(number):
             continue
         dispatch_id = slab.get("wagon_dispatch_id")
@@ -250,6 +300,7 @@ async def handle_wagon_history(request: web.Request) -> web.Response:
                 trip[field] = datetime.fromtimestamp(value, tz=timezone.utc).isoformat().replace("+00:00", "Z")
     history["trips"] = legacy_trips
     history["circles"] = len(legacy_trips)
+    history["legacy"] = _legacy_status(view)
     return _json({"history": history})
 
 
@@ -259,7 +310,13 @@ async def handle_wagon_load(request: web.Request) -> web.Response:
         return denied
     try:
         body = await _body(request)
-        return _json({"load": store.load_block_to_wagon(block_id=body.get("block_id"), wagon_number=body.get("wagon_number"), operator=operator)}, 201)
+        return _json({"load": store.load_block_to_wagon(
+            block_id=body.get("block_id"),
+            wagon_number=body.get("wagon_number"),
+            dead_end_code=body.get("dead_end_code"),
+            slot_index=body.get("slot_index"),
+            operator=operator,
+        )}, 201)
     except KeyError:
         return _json({"error": "Блок не найден"}, 404)
     except store.TaksimoNewConflictError as exc:
@@ -301,7 +358,25 @@ async def _handle_wagon_transition(request: web.Request, transition) -> web.Resp
 
 
 async def handle_wagon_loaded(request: web.Request) -> web.Response:
-    return await _handle_wagon_transition(request, store.mark_wagon_loaded)
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        body = await _body(request)
+        return _json({"wagon": store.mark_wagon_loaded(
+            request.match_info["wagon_number"],
+            dead_end_code=body.get("dead_end_code"),
+            slot_index=body.get("slot_index"),
+            operator=operator,
+        )})
+    except PermissionError as exc:
+        return _json({"error": str(exc)}, 403)
+    except KeyError:
+        return _json({"error": "Вагон не найден"}, 404)
+    except store.TaksimoNewConflictError as exc:
+        return _json({"error": str(exc)}, 409)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
 
 
 async def handle_wagon_arrived_kodar(request: web.Request) -> web.Response:
@@ -313,18 +388,36 @@ async def handle_wagon_unloaded_bts_east(request: web.Request) -> web.Response:
 
 
 async def handle_wagon_returned_empty(request: web.Request) -> web.Response:
-    return await _handle_wagon_transition(request, store.mark_wagon_returned_empty)
+    operator, denied = _operator(request)
+    if denied:
+        return denied
+    try:
+        body = await _body(request)
+        return _json({"wagon": store.mark_wagon_returned_empty(
+            request.match_info["wagon_number"],
+            dead_end_code=body.get("dead_end_code"),
+            slot_index=body.get("slot_index"),
+            operator=operator,
+        )})
+    except PermissionError as exc:
+        return _json({"error": str(exc)}, 403)
+    except KeyError:
+        return _json({"error": "Вагон не найден"}, 404)
+    except store.TaksimoNewConflictError as exc:
+        return _json({"error": str(exc)}, 409)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
 
 
 _SEARCH_KINDS = {"block", "wagon", "intake", "slab", "vehicle"}
 
 
-def _legacy_search_results(text: str, kind: str) -> list[dict[str, Any]]:
-    """Read-only поиск по справочникам старой Таксимо (плиты, машины, вагоны)."""
+def _legacy_search_results(text: str, kind: str, view: dict[str, Any]) -> list[dict[str, Any]]:
+    """Поиск по legacy-справочникам из live-режима либо архивного снимка."""
     upper = text.upper()
     results: list[dict[str, Any]] = []
     if not kind or kind == "slab":
-        for slab in legacy.list_legacy_slabs():
+        for slab in _legacy_items(view, "slabs"):
             needle = (str(slab.get("letter") or "") + str(slab.get("number") or "")).upper()
             if upper in needle:
                 results.append({
@@ -335,7 +428,7 @@ def _legacy_search_results(text: str, kind: str) -> list[dict[str, Any]]:
                     "on_yard": slab.get("on_yard"), "legacy": True,
                 })
     if not kind or kind == "vehicle":
-        for vehicle in legacy.list_legacy_vehicles():
+        for vehicle in _legacy_items(view, "vehicles"):
             needle = " ".join(str(vehicle.get(f) or "") for f in ("plate", "brand", "driver")).upper()
             if upper in needle:
                 results.append({
@@ -345,7 +438,7 @@ def _legacy_search_results(text: str, kind: str) -> list[dict[str, Any]]:
                     "active": vehicle.get("active"), "legacy": True,
                 })
     if not kind or kind == "wagon":
-        for wagon in legacy.list_legacy_wagons():
+        for wagon in _legacy_items(view, "wagons"):
             if upper in str(wagon.get("number") or "").upper():
                 results.append({
                     "kind": "wagon",
@@ -370,7 +463,7 @@ async def handle_search(request: web.Request) -> web.Response:
         results = store.search(query, limit=request.query.get("limit", 50))
     except ValueError as exc:
         return _json({"error": str(exc)}, 400)
-    results.extend(_legacy_search_results(query, kind))
+    results.extend(_legacy_search_results(query, kind, legacy_archive.current_view()))
     if kind:
         results = [item for item in results if item.get("kind") == kind]
     return _json({"results": results[:50]})
@@ -398,6 +491,8 @@ _EVENT_LABELS_RU = {
     "wagon_arrived_kodar": "Вагон прибыл в Кодар",
     "wagon_unloaded_bts_east": "Вагон выгружен у БТС Восток",
     "wagon_returned_empty": "Вагон вернулся порожним",
+    "wagon_position_assigned": "Вагон поставлен в тупик",
+    "wagon_position_released": "Вагон освободил слот тупика",
     "operation_corrected": "Создана корректировка",
     "operation_cancelled": "Отменена подтверждённая операция",
     "daily_report": "Ежедневный отчёт",
@@ -468,63 +563,43 @@ async def handle_report(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
-# --- Read-only справочники и картина площадки из старой Таксимо ---
-# Подтягиваются напрямую из старой SQLite (mode=ro) на каждый запрос, пока
-# операторы ещё работают в старой версии. Старая база не изменяется.
+# --- Legacy-справочники и архивная картина старой Таксимо ---
+# До даты X каждый вызов читает SQLite в mode=ro; затем маршруты возвращают
+# неизменяемый снимок MySQL. В старую базу не записывается ничего.
 
 async def handle_legacy_vehicles(_request: web.Request) -> web.Response:
-    return _json({"vehicles": legacy.list_legacy_vehicles()})
+    view = legacy_archive.current_view()
+    return _json({"vehicles": _legacy_items(view, "vehicles"), "legacy": _legacy_status(view)})
 
 
 async def handle_legacy_wagons(_request: web.Request) -> web.Response:
-    return _json({"wagons": legacy.list_legacy_wagons()})
+    view = legacy_archive.current_view()
+    return _json({"wagons": _legacy_items(view, "wagons"), "legacy": _legacy_status(view)})
 
 
 async def handle_legacy_slots(_request: web.Request) -> web.Response:
-    return _json({"slots": legacy.list_legacy_wagon_slots()})
+    view = legacy_archive.current_view()
+    return _json({"slots": _legacy_items(view, "slots"), "legacy": _legacy_status(view)})
 
 
 async def handle_legacy_slabs(_request: web.Request) -> web.Response:
-    return _json({"slabs": legacy.list_legacy_slabs()})
+    view = legacy_archive.current_view()
+    return _json({"slabs": _legacy_items(view, "slabs"), "legacy": _legacy_status(view)})
 
 
 async def handle_legacy_sessions(_request: web.Request) -> web.Response:
-    return _json({"sessions": legacy.list_legacy_sessions()})
+    view = legacy_archive.current_view()
+    return _json({"sessions": _legacy_items(view, "sessions"), "legacy": _legacy_status(view)})
 
 
 async def handle_legacy_wagon_history(_request: web.Request) -> web.Response:
-    return _json({"history": legacy.list_legacy_wagon_history()})
-
-
-_LEGACY_ZONE_TO_DEAD_END = {
-    "ГРУЗОВОЙ": "gruzovoy_1",
-    "ТУРАН": "gruzovoy_2",
-}
+    view = legacy_archive.current_view()
+    return _json({"history": _legacy_items(view, "wagon_history"), "legacy": _legacy_status(view)})
 
 
 async def handle_dead_ends(_request: web.Request) -> web.Response:
-    """Карта тупиков новой площадки для выбора вагона тапом.
-
-    Пока операторы ещё работают в старой Таксимо, вагоны в слотах читаются из
-    старого ``wagon_slots`` (зона ГРУЗОВОЙ -> Грузовой 1, ТУРАН -> Грузовой 2
-    (Туран)); новые вагоны контура без слота попадают в ``free_wagons``.
-    """
-    positions_by_code: dict[str, dict[int, str]] = {}
-    for slot in legacy.list_legacy_wagon_slots():
-        code = _LEGACY_ZONE_TO_DEAD_END.get((slot.get("zone") or "").strip().upper())
-        if code is None or not isinstance(slot.get("slot_index"), int):
-            continue
-        positions_by_code.setdefault(code, {})[slot["slot_index"]] = (slot.get("wagon_number") or "")
-    free_wagons = [wagon["wagon_number"] for wagon in store.list_wagons()]
-    dead_ends = store.wagon_dead_ends()
-    for dead_end in dead_ends:
-        slot_map = positions_by_code.get(dead_end["code"], {})
-        slot_count = int(dead_end["slots"])
-        dead_end["positions"] = [
-            {"slot_index": index, "wagon_number": slot_map.get(index, "")}
-            for index in range(1, slot_count + 1)
-        ]
-    return _json({"dead_ends": dead_ends, "free_wagons": free_wagons})
+    """Карта собственных 30 позиций нового контура без legacy-проекции."""
+    return _json(store.wagon_dead_end_positions())
 
 
 async def handle_attachment_placeholder(_request: web.Request) -> web.Response:
@@ -670,12 +745,12 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo-new/events", _with_database_errors(handle_events))
     app.router.add_get("/api/taksimo-new/events/export", _with_database_errors(handle_events_export))
     app.router.add_get("/api/taksimo-new/reports/summary", _with_database_errors(handle_report))
-    app.router.add_get("/api/taksimo-new/catalog/vehicles", handle_legacy_vehicles)
-    app.router.add_get("/api/taksimo-new/catalog/wagons", handle_legacy_wagons)
-    app.router.add_get("/api/taksimo-new/catalog/slots", handle_legacy_slots)
-    app.router.add_get("/api/taksimo-new/catalog/slabs", handle_legacy_slabs)
-    app.router.add_get("/api/taksimo-new/catalog/sessions", handle_legacy_sessions)
-    app.router.add_get("/api/taksimo-new/catalog/wagon-history", handle_legacy_wagon_history)
+    app.router.add_get("/api/taksimo-new/catalog/vehicles", _with_database_errors(handle_legacy_vehicles))
+    app.router.add_get("/api/taksimo-new/catalog/wagons", _with_database_errors(handle_legacy_wagons))
+    app.router.add_get("/api/taksimo-new/catalog/slots", _with_database_errors(handle_legacy_slots))
+    app.router.add_get("/api/taksimo-new/catalog/slabs", _with_database_errors(handle_legacy_slabs))
+    app.router.add_get("/api/taksimo-new/catalog/sessions", _with_database_errors(handle_legacy_sessions))
+    app.router.add_get("/api/taksimo-new/catalog/wagon-history", _with_database_errors(handle_legacy_wagon_history))
     app.router.add_get("/api/taksimo-new/catalog/dead-ends", _with_database_errors(handle_dead_ends))
     app.router.add_post("/api/taksimo-new/attachments", _with_database_errors(handle_attachment_placeholder))
     app.router.add_get("/api/taksimo-new/intakes/{public_id}/documents", _with_database_errors(handle_intake_documents))

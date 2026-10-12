@@ -851,7 +851,16 @@ async def handle_trips(request: web.Request) -> web.Response:
             date_value=request.query.get("date"), status=request.query.get("status"),
             limit=request.query.get("limit", 100),
         )})
-    return await _trip_write(request, _dispatcher, lambda body, **ctx: store.create_trip(body, **ctx))
+    operator, denied = _dispatcher(request)
+    if denied:
+        return denied
+    try:
+        body = await _body(request)
+        trip = store.create_trip(body, operator=operator)
+        store.register_trip_blocks(trip["public_id"], operator=operator)
+        return _json({"ok": True, "record": trip}, 201)
+    except (ValueError, PermissionError, KeyError) as exc:
+        return _catalog_error(exc)
 
 
 async def handle_trip(request: web.Request) -> web.Response:
@@ -957,6 +966,33 @@ async def handle_receipt_blocks(request: web.Request) -> web.Response:
         return _catalog_error(exc)
 
 
+async def handle_blocks(request: web.Request) -> web.Response:
+    return _json({"blocks": store.list_blocks(
+        query=request.query.get("q"), state=request.query.get("state"),
+        limit=request.query.get("limit", 100),
+    )})
+
+
+async def handle_block_history(request: web.Request) -> web.Response:
+    try:
+        return _json({"history": store.block_history(request.match_info["block_key"])})
+    except (ValueError, KeyError) as exc:
+        return _catalog_error(exc)
+
+
+async def handle_vehicles_history(request: web.Request) -> web.Response:
+    return _json({"vehicles": store.list_vehicles(
+        query=request.query.get("q"), limit=request.query.get("limit", 100),
+    )})
+
+
+async def handle_vehicle_history(request: web.Request) -> web.Response:
+    try:
+        return _json({"history": store.vehicle_history(request.match_info["vehicle_ref"])})
+    except (ValueError, KeyError) as exc:
+        return _catalog_error(exc)
+
+
 def _receipts_store():
     import taksimo_new_receipts
     return taksimo_new_receipts
@@ -1037,3 +1073,7 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_post("/api/taksimo-new/receipts/{public_id}/send", _with_database_errors(handle_receipt_send))
     app.router.add_post("/api/taksimo-new/receipts/{public_id}/return", _with_database_errors(handle_receipt_return))
     app.router.add_get("/api/taksimo-new/receipts/{public_id}/blocks", _with_database_errors(handle_receipt_blocks))
+    app.router.add_get("/api/taksimo-new/blocks", _with_database_errors(handle_blocks))
+    app.router.add_get("/api/taksimo-new/blocks/{block_key}/history", _with_database_errors(handle_block_history))
+    app.router.add_get("/api/taksimo-new/vehicles", _with_database_errors(handle_vehicles_history))
+    app.router.add_get("/api/taksimo-new/vehicles/{vehicle_ref}/history", _with_database_errors(handle_vehicle_history))

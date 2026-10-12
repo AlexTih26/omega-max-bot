@@ -3081,3 +3081,417 @@ def get_ttn_copy(public_id: str, copy_number: int, *, operator: Mapping[str, Any
                     details={"copy_number": number},
                 )
             return _ttn_copy_payload(row, include_content=True)
+
+
+def _block_key(letter: Any, number: Any) -> str:
+    """Канонический ключ паспорта блока: буква и номер в верхнем регистре без пробелов."""
+    block_letter = _required_text(letter, "буква блока", max_length=1).upper()
+    if block_letter not in "ABCDEFK":
+        raise ValueError("Некорректно указана буква блока")
+    block_number = re.sub(r"\s+", "", _required_text(number, "номер блока", max_length=78)).upper()
+    return f"{block_letter}-{block_number}"[:80]
+
+
+def _ensure_block_registry(
+    cursor: Any,
+    *,
+    letter: Any,
+    number: Any,
+    suffix: Any = "",
+    weight_kg: Any = None,
+    price_rub: Any = 0,
+    trip_id: Any = None,
+    operator: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Найти либо создать паспорт блока; вес и цену существующего не перезаписывать."""
+    key = _block_key(letter, number)
+    now = utc_now()
+    cursor.execute("SELECT * FROM tn_block_registry WHERE block_key = %s FOR UPDATE", (key,))
+    row = cursor.fetchone()
+    if row is None:
+        cursor.execute(
+            """INSERT INTO tn_block_registry
+               (block_key, block_letter, block_number, suffix_code, weight_kg, price_rub, state,
+                first_trip_id, first_account_id, created_at, updated_at)
+               VALUES (%s, %s, %s, %s, %s, %s, 'declared', %s, %s, %s, %s)""",
+            (
+                key, key[:1], key[2:], _optional_text(suffix, "суффикс блока", max_length=8),
+                None if weight_kg in (None, "") else _as_int(weight_kg, "вес блока", minimum=1),
+                round(float(price_rub or 0), 2),
+                None if trip_id in (None, "") else int(trip_id),
+                int(operator["id"]) if operator is not None else None,
+                now, now,
+            ),
+        )
+        block_id = int(cursor.lastrowid)
+    else:
+        block_id = int(row["id"])
+        updates: list[str] = []
+        parameters: list[Any] = []
+        if row.get("weight_kg") is None and weight_kg not in (None, ""):
+            updates.append("weight_kg = %s")
+            parameters.append(_as_int(weight_kg, "вес блока", minimum=1))
+        if not row.get("price_rub") and price_rub:
+            updates.append("price_rub = %s")
+            parameters.append(round(float(price_rub), 2))
+        if updates:
+            parameters.extend([now, block_id])
+            cursor.execute(
+                "UPDATE tn_block_registry SET " + ", ".join(updates) + ", updated_at = %s WHERE id = %s",
+                tuple(parameters),
+            )
+    cursor.execute("SELECT block_key, state, weight_kg, price_rub FROM tn_block_registry WHERE id = %s", (block_id,))
+    saved = cursor.fetchone()
+    return {
+        "id": block_id,
+        "block_key": str(saved["block_key"]),
+        "state": str(saved["state"]),
+        "weight_kg": int(saved["weight_kg"]) if saved["weight_kg"] is not None else None,
+        "price_rub": float(saved["price_rub"] or 0),
+    }
+
+
+def _append_block_history(
+    cursor: Any,
+    *,
+    block_id: Any,
+    event_type: Any,
+    location_kind: Any = "",
+    trip_id: Any = None,
+    wagon_number: Any = "",
+    yard_x: Any = None,
+    yard_y: Any = None,
+    details: Mapping[str, Any] | None = None,
+    operator: Mapping[str, Any] | None = None,
+    occurred_at: datetime | None = None,
+) -> None:
+    """Добавить строку истории перемещений блока."""
+    event = _required_text(event_type, "тип события", max_length=40)
+    actor_kind = actor_id = actor_name = ""
+    if operator is not None:
+        actor_kind, actor_id, actor_name = _operator_actor(operator)
+    cursor.execute(
+        """INSERT INTO tn_block_history
+           (block_id, event_type, location_kind, trip_id, wagon_number, yard_x, yard_y, details_json,
+            actor_kind, actor_id, actor_name, occurred_at)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s, %s, %s)""",
+        (
+            int(block_id), event, _optional_text(location_kind, "вид места", max_length=24),
+            None if trip_id in (None, "") else int(trip_id),
+            _optional_text(wagon_number, "номер вагона", max_length=40),
+            None if yard_x in (None, "") else _as_int(yard_x, "координата X", minimum=1, maximum=255),
+            None if yard_y in (None, "") else _as_int(yard_y, "координата Y", minimum=1, maximum=255),
+            _json(details) if details else None,
+            actor_kind, actor_id, actor_name, occurred_at or utc_now(),
+        ),
+    )
+
+
+def register_trip_blocks(public_id: str, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    """Зарегистрировать блоки рейса в паспорте и записать события trip_declared."""
+    _require_role(operator, DISPATCHER_ROLES, "диспетчер или администратор")
+    block_count = 0
+    events_added = 0
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s FOR UPDATE", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            trip_id = int(found["id"])
+            cursor.execute(
+                """SELECT id, block_letter, block_number, suffix_code, weight_kg, price_rub
+                   FROM tn_trip_blocks WHERE trip_id = %s ORDER BY id""",
+                (trip_id,),
+            )
+            items = cursor.fetchall()
+            if not items:
+                raise ValueError("В рейсе нет блоков")
+            block_count = len(items)
+            for item in items:
+                passport = _ensure_block_registry(
+                    cursor,
+                    letter=item["block_letter"],
+                    number=item["block_number"],
+                    suffix=item["suffix_code"],
+                    weight_kg=item["weight_kg"],
+                    price_rub=item["price_rub"],
+                    trip_id=trip_id,
+                    operator=operator,
+                )
+                cursor.execute(
+                    "UPDATE tn_trip_blocks SET registry_block_id = %s WHERE id = %s",
+                    (passport["id"], int(item["id"])),
+                )
+                cursor.execute(
+                    """SELECT 1 FROM tn_block_history
+                       WHERE block_id = %s AND event_type = 'trip_declared' AND trip_id = %s""",
+                    (passport["id"], trip_id),
+                )
+                if cursor.fetchone() is None:
+                    _append_block_history(
+                        cursor,
+                        block_id=passport["id"],
+                        event_type="trip_declared",
+                        location_kind="in_transit",
+                        trip_id=trip_id,
+                        operator=operator,
+                    )
+                    events_added += 1
+                if passport["state"] == "declared":
+                    cursor.execute(
+                        "UPDATE tn_block_registry SET state = 'in_transit', updated_at = %s WHERE id = %s",
+                        (utc_now(), passport["id"]),
+                    )
+    return {
+        "trip_public_id": public_id,
+        "registered_blocks": block_count,
+        "events_added": events_added,
+    }
+
+
+def block_history(letter_or_key: Any, number: Any = None) -> dict[str, Any]:
+    """История блока: паспорт, события перемещений и рейсы."""
+    if number in (None, ""):
+        key = re.sub(r"\s+", "", _required_text(letter_or_key, "ключ блока", max_length=80)).upper()
+        if key[:1] not in "ABCDEFK":
+            raise ValueError("Некорректно указан ключ блока")
+    else:
+        key = _block_key(letter_or_key, number)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT * FROM tn_block_registry WHERE block_key = %s", (key,))
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(key)
+            block_id = int(row["id"])
+            block = {
+                "id": block_id,
+                "block_key": str(row["block_key"]),
+                "letter": str(row["block_letter"]),
+                "number": str(row["block_number"]),
+                "suffix": str(row["suffix_code"] or ""),
+                "weight_kg": int(row["weight_kg"]) if row["weight_kg"] is not None else None,
+                "price_rub": float(row["price_rub"] or 0),
+                "state": str(row["state"]),
+                "created_at": iso_utc(row["created_at"]),
+            }
+            cursor.execute(
+                """SELECT id, event_type, location_kind, trip_id, wagon_number, yard_x, yard_y,
+                          details_json, actor_name, occurred_at
+                   FROM tn_block_history
+                   WHERE block_id = %s
+                   ORDER BY occurred_at, id""",
+                (block_id,),
+            )
+            events = []
+            for item in cursor.fetchall():
+                details = item["details_json"]
+                if isinstance(details, str):
+                    try:
+                        details = json.loads(details)
+                    except ValueError:
+                        pass
+                events.append({
+                    "id": int(item["id"]),
+                    "event_type": str(item["event_type"]),
+                    "location_kind": str(item["location_kind"] or ""),
+                    "trip_id": int(item["trip_id"]) if item["trip_id"] is not None else None,
+                    "wagon_number": str(item["wagon_number"] or ""),
+                    "yard_x": int(item["yard_x"]) if item["yard_x"] is not None else None,
+                    "yard_y": int(item["yard_y"]) if item["yard_y"] is not None else None,
+                    "details": details,
+                    "actor_name": str(item["actor_name"] or ""),
+                    "occurred_at": iso_utc(item["occurred_at"]),
+                })
+            cursor.execute(
+                """SELECT t.public_id AS trip_public_id, t.trip_date, t.vehicle_plate, t.status,
+                          ttn.ttn_number
+                   FROM tn_trip_blocks AS tb
+                   JOIN tn_trips AS t ON t.id = tb.trip_id
+                   LEFT JOIN tn_ttn_numbers AS ttn ON ttn.trip_id = t.id
+                   WHERE tb.registry_block_id = %s
+                   ORDER BY t.trip_date, t.id""",
+                (block_id,),
+            )
+            trips = []
+            for item in cursor.fetchall():
+                trip_date = item["trip_date"]
+                trips.append({
+                    "trip_public_id": str(item["trip_public_id"]),
+                    "trip_date": trip_date.isoformat() if hasattr(trip_date, "isoformat") else str(trip_date),
+                    "vehicle_plate": str(item["vehicle_plate"] or ""),
+                    "ttn_number": str(item["ttn_number"]) if item["ttn_number"] else None,
+                    "status": str(item["status"]),
+                })
+    return {"block": block, "events": events, "trips": trips, "trip_count": len(trips)}
+
+
+def list_blocks(*, query: str | None = None, state: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """Паспорта блоков: свежие первыми, с фильтрами по запросу и состоянию."""
+    count = _as_int(limit, "предел", minimum=1, maximum=1000)
+    conditions: list[str] = []
+    parameters: list[Any] = []
+    if query:
+        needle = _optional_text(query, "запрос", max_length=80)
+        conditions.append("(r.block_key LIKE %s OR r.block_number LIKE %s)")
+        pattern = f"%{needle}%"
+        parameters.extend([pattern, pattern])
+    if state:
+        code = _required_text(state, "состояние", max_length=24).strip().lower()
+        if code not in {"declared", "in_transit", "at_yard", "in_wagon", "in_kodar", "unloaded_bts_east", "returned"}:
+            raise ValueError("Некорректное состояние блока")
+        conditions.append("r.state = %s")
+        parameters.append(code)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    parameters.append(count)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT r.id, r.block_key, r.block_letter, r.block_number, r.suffix_code, r.weight_kg,
+                          r.price_rub, r.state, r.created_at,
+                          (SELECT COUNT(DISTINCT tb.trip_id) FROM tn_trip_blocks AS tb
+                           WHERE tb.registry_block_id = r.id) AS trip_count
+                   FROM tn_block_registry AS r
+                   """ + where + """
+                   ORDER BY r.created_at DESC, r.id DESC
+                   LIMIT %s""",
+                tuple(parameters),
+            )
+            result = []
+            for item in cursor.fetchall():
+                result.append({
+                    "id": int(item["id"]),
+                    "block_key": str(item["block_key"]),
+                    "letter": str(item["block_letter"]),
+                    "number": str(item["block_number"]),
+                    "suffix": str(item["suffix_code"] or ""),
+                    "weight_kg": int(item["weight_kg"]) if item["weight_kg"] is not None else None,
+                    "price_rub": float(item["price_rub"] or 0),
+                    "state": str(item["state"]),
+                    "trip_count": int(item["trip_count"] or 0),
+                    "created_at": iso_utc(item["created_at"]),
+                })
+            return result
+
+
+def vehicle_history(vehicle_id_or_plate: Any) -> dict[str, Any]:
+    """История машины: карточка и рейсы по убыванию даты."""
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            if isinstance(vehicle_id_or_plate, int):
+                lookup_id = _as_int(vehicle_id_or_plate, "машина", minimum=1)
+                cursor.execute(
+                    """SELECT v.id, v.plate, v.plate_tail, v.note, c.name AS carrier_name,
+                              d.full_name AS default_driver_name
+                       FROM tn_vehicles AS v
+                       LEFT JOIN tn_carriers AS c ON c.id = v.carrier_id
+                       LEFT JOIN tn_drivers AS d ON d.id = v.default_driver_id
+                       WHERE v.id = %s""",
+                    (lookup_id,),
+                )
+            else:
+                plate = _required_text(vehicle_id_or_plate, "гос. номер", max_length=32).upper()
+                cursor.execute(
+                    """SELECT v.id, v.plate, v.plate_tail, v.note, c.name AS carrier_name,
+                              d.full_name AS default_driver_name
+                       FROM tn_vehicles AS v
+                       LEFT JOIN tn_carriers AS c ON c.id = v.carrier_id
+                       LEFT JOIN tn_drivers AS d ON d.id = v.default_driver_id
+                       WHERE v.plate = %s""",
+                    (plate,),
+                )
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(str(vehicle_id_or_plate))
+            vehicle = {
+                "id": int(row["id"]),
+                "plate": str(row["plate"]),
+                "plate_tail": str(row["plate_tail"] or ""),
+                "carrier_name": str(row["carrier_name"] or ""),
+                "default_driver_name": str(row["default_driver_name"] or ""),
+                "note": str(row["note"] or ""),
+            }
+            vehicle_id = vehicle["id"]
+            cursor.execute(
+                """SELECT t.public_id AS trip_public_id, t.trip_date, t.status, ttn.ttn_number,
+                          t.driver_name, t.carrier_name, t.block_count, t.total_weight_kg
+                   FROM tn_trips AS t
+                   LEFT JOIN tn_ttn_numbers AS ttn ON ttn.trip_id = t.id
+                   WHERE t.vehicle_id = %s OR t.vehicle_plate = %s
+                   ORDER BY t.trip_date DESC, t.id DESC""",
+                (vehicle_id, vehicle["plate"]),
+            )
+            trips = []
+            for item in cursor.fetchall():
+                trip_date = item["trip_date"]
+                trips.append({
+                    "trip_public_id": str(item["trip_public_id"]),
+                    "trip_date": trip_date.isoformat() if hasattr(trip_date, "isoformat") else str(trip_date),
+                    "status": str(item["status"]),
+                    "ttn_number": str(item["ttn_number"]) if item["ttn_number"] else None,
+                    "driver_name": str(item["driver_name"] or ""),
+                    "carrier_name": str(item["carrier_name"] or ""),
+                    "block_count": int(item["block_count"] or 0),
+                    "total_weight_kg": int(item["total_weight_kg"] or 0),
+                })
+            first_trip_at = last_trip_at = None
+            if trips:
+                last_trip_at = trips[0]["trip_date"]
+                first_trip_at = trips[-1]["trip_date"]
+    return {
+        "vehicle": vehicle,
+        "trips": trips,
+        "trip_count": len(trips),
+        "first_trip_at": first_trip_at,
+        "last_trip_at": last_trip_at,
+    }
+
+
+def list_vehicles(*, query: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    """Машины из справочника с числом рейсов: активные первыми, затем по числу рейсов."""
+    count = _as_int(limit, "предел", minimum=1, maximum=1000)
+    conditions: list[str] = []
+    parameters: list[Any] = []
+    if query:
+        needle = _optional_text(query, "запрос", max_length=80)
+        conditions.append("(v.plate LIKE %s OR v.plate_tail LIKE %s)")
+        pattern = f"%{needle}%"
+        parameters.extend([pattern, pattern])
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    parameters.append(count)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT v.id, v.plate, v.plate_tail, v.note, v.active, v.created_at, v.updated_at,
+                          c.name AS carrier_name, d.full_name AS default_driver_name,
+                          COALESCE(stats.trip_count, 0) AS trip_count, stats.last_trip_at
+                   FROM tn_vehicles AS v
+                   LEFT JOIN (
+                       SELECT vehicle_id, COUNT(*) AS trip_count, MAX(trip_date) AS last_trip_at
+                       FROM tn_trips
+                       WHERE vehicle_id IS NOT NULL
+                       GROUP BY vehicle_id
+                   ) AS stats ON stats.vehicle_id = v.id
+                   LEFT JOIN tn_carriers AS c ON c.id = v.carrier_id
+                   LEFT JOIN tn_drivers AS d ON d.id = v.default_driver_id
+                   """ + where + """
+                   ORDER BY v.active DESC, trip_count DESC, v.plate, v.id
+                   LIMIT %s""",
+                tuple(parameters),
+            )
+            result = []
+            for item in cursor.fetchall():
+                last_trip_at = item["last_trip_at"]
+                result.append({
+                    "id": int(item["id"]),
+                    "plate": str(item["plate"]),
+                    "plate_tail": str(item["plate_tail"] or ""),
+                    "carrier_name": str(item["carrier_name"] or ""),
+                    "default_driver_name": str(item["default_driver_name"] or ""),
+                    "note": str(item["note"] or ""),
+                    "active": bool(item["active"]),
+                    "trip_count": int(item["trip_count"] or 0),
+                    "last_trip_at": last_trip_at.isoformat() if hasattr(last_trip_at, "isoformat") else None,
+                })
+            return result

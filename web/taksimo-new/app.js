@@ -35,7 +35,8 @@
     wagon_position_assigned: "Вагон поставлен в тупик",
     wagon_position_released: "Вагон освободил слот тупика",
     operation_corrected: "Создана корректировка подтверждённой операции",
-    operation_cancelled: "Оператор 1 отменил подтверждённую операцию"
+    operation_cancelled: "Оператор 1 отменил подтверждённую операцию",
+    trip_declared: "Блок заявлен в рейсе"
   };
   var tripStatusLabels = {
     draft: "Черновик",
@@ -44,6 +45,15 @@
     er_sent: "ЭР отправлена",
     er_returned: "ЭР вернулась",
     cancelled: "Отменён"
+  };
+  var blockStateLabels = {
+    declared: "Заявлен",
+    in_transit: "В пути",
+    at_yard: "На площадке",
+    in_wagon: "В вагоне",
+    in_kodar: "В Кодаре",
+    unloaded_bts_east: "Выгружен у БТС Восток",
+    returned: "Вернулся"
   };
   var receiptStatusLabels = {
     draft: "Черновик",
@@ -1062,8 +1072,202 @@
     });
   }
 
+  function historyKind() {
+    return document.getElementById("historyKindBlock").getAttribute("aria-pressed") === "true" ? "block" : "vehicle";
+  }
+
+  function setHistoryKind(kind) {
+    var blockActive = kind === "block";
+    var blockButton = document.getElementById("historyKindBlock");
+    var vehicleButton = document.getElementById("historyKindVehicle");
+    blockButton.setAttribute("aria-pressed", String(blockActive));
+    vehicleButton.setAttribute("aria-pressed", String(!blockActive));
+    blockButton.className = "tn-button " + (blockActive ? "tn-button--primary" : "tn-button--secondary");
+    vehicleButton.className = "tn-button " + (blockActive ? "tn-button--secondary" : "tn-button--primary");
+    document.getElementById("historyBlockList").hidden = !blockActive;
+    document.getElementById("historyVehicleList").hidden = blockActive;
+    document.getElementById("historyEmpty").hidden = true;
+    clear(document.getElementById("historyDetail"));
+  }
+
+  function blockEventPlace(event) {
+    if (event.wagon_number) return "вагон " + event.wagon_number;
+    if (event.yard_x && event.yard_y) return "площадка X=" + event.yard_x + ", Y=" + event.yard_y;
+    if (event.location_kind) return blockStateLabels[event.location_kind] || event.location_kind;
+    return "—";
+  }
+
+  function renderHistoryBlocks(blocks) {
+    var list = document.getElementById("historyBlockList");
+    clear(list);
+    document.getElementById("historyEmpty").hidden = blocks.length > 0;
+    blocks.forEach(function (block) {
+      var card = element("article", "tn-card");
+      var row = element("div", "tn-card-title-row");
+      var heading = element("div");
+      heading.appendChild(element("p", "tn-card-title", block.block_key || (block.letter + " " + block.number)));
+      var meta = [];
+      if (block.letter) meta.push(block.letter + (block.number ? " · " + block.number : ""));
+      if (block.weight_kg) meta.push(block.weight_kg + " кг");
+      meta.push(blockStateLabels[block.state] || block.state || "—");
+      if (typeof block.trip_count === "number") meta.push("рейсов: " + block.trip_count);
+      heading.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+      row.appendChild(heading);
+      card.appendChild(row);
+      card.addEventListener("click", function () { openBlockHistory(block.block_key); });
+      list.appendChild(card);
+    });
+  }
+
+  function renderHistoryVehicles(vehicles) {
+    var list = document.getElementById("historyVehicleList");
+    clear(list);
+    document.getElementById("historyEmpty").hidden = vehicles.length > 0;
+    vehicles.forEach(function (vehicle) {
+      var card = element("article", "tn-card");
+      card.appendChild(element("p", "tn-card-title", vehicle.plate || "—"));
+      var meta = [];
+      meta.push(vehicle.carrier_name || "не указан");
+      meta.push("рейсов: " + (vehicle.trip_count || 0));
+      if (vehicle.last_trip_at) meta.push("последний рейс: " + vehicle.last_trip_at);
+      card.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+      card.addEventListener("click", function () { openVehicleHistory(vehicle.plate); });
+      list.appendChild(card);
+    });
+  }
+
+  function loadHistory() {
+    var kind = historyKind();
+    var url = kind === "block" ? "/blocks?limit=50" : "/vehicles?limit=50";
+    return request(url).then(function (data) {
+      if (kind === "block") renderHistoryBlocks(data.blocks || []);
+      else renderHistoryVehicles(data.vehicles || []);
+      setError("");
+    });
+  }
+
+  function renderBlockHistory(history) {
+    var detail = document.getElementById("historyDetail");
+    clear(detail);
+    var block = history.block || {};
+    var passport = element("section", "tn-form-card");
+    passport.appendChild(element("p", "tn-card-title", block.block_key || "Блок"));
+    var meta = [];
+    if (block.weight_kg) meta.push("вес: " + block.weight_kg + " кг");
+    meta.push("цена: " + block.price_rub + " ₽");
+    meta.push("состояние: " + (blockStateLabels[block.state] || block.state || "—"));
+    passport.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+    detail.appendChild(passport);
+    var events = history.events || [];
+    var eventsSection = element("section", "tn-section");
+    eventsSection.appendChild(element("h3", "", "События (" + events.length + ")"));
+    var eventsList = element("div", "tn-card-list");
+    if (!events.length) eventsList.appendChild(element("p", "tn-empty", "Событий нет."));
+    events.forEach(function (event) {
+      var card = element("article", "tn-card");
+      card.appendChild(element("p", "tn-card-title", eventLabels[event.event_type] || event.event_type));
+      var m = [];
+      m.push("место: " + blockEventPlace(event));
+      if (event.wagon_number) m.push("вагон: " + event.wagon_number);
+      if (event.actor_name) m.push("кто: " + event.actor_name);
+      m.push("когда: " + formatDate(event.occurred_at));
+      card.appendChild(element("p", "tn-card-meta", m.join(" · ")));
+      eventsList.appendChild(card);
+    });
+    eventsSection.appendChild(eventsList);
+    detail.appendChild(eventsSection);
+    var trips = history.trips || [];
+    var tripsSection = element("section", "tn-section");
+    tripsSection.appendChild(element("h3", "", "Рейсы (" + trips.length + ")"));
+    var tripsList = element("div", "tn-card-list");
+    if (!trips.length) tripsList.appendChild(element("p", "tn-empty", "Рейсов нет."));
+    trips.forEach(function (trip) {
+      var item = element("article", "tn-card");
+      item.appendChild(element("p", "tn-card-title", trip.ttn_number || "номер не выдан"));
+      var m = [];
+      if (trip.trip_date) m.push("дата: " + trip.trip_date);
+      if (trip.vehicle_plate) m.push("машина: " + trip.vehicle_plate);
+      m.push("статус: " + (tripStatusLabels[trip.status] || trip.status));
+      item.appendChild(element("p", "tn-card-meta", m.join(" · ")));
+      tripsList.appendChild(item);
+    });
+    tripsSection.appendChild(tripsList);
+    detail.appendChild(tripsSection);
+  }
+
+  function openBlockHistory(blockKey) {
+    var detail = document.getElementById("historyDetail");
+    clear(detail);
+    detail.appendChild(element("p", "tn-help", "Загрузка…"));
+    request("/blocks/" + encodeURIComponent(blockKey) + "/history").then(function (data) {
+      renderBlockHistory(data.history);
+    }).catch(function (error) {
+      showToast(error.message || "Не удалось открыть историю блока");
+    });
+  }
+
+  function renderVehicleHistory(history) {
+    var detail = document.getElementById("historyDetail");
+    clear(detail);
+    var vehicle = history.vehicle || {};
+    var passport = element("section", "tn-form-card");
+    passport.appendChild(element("p", "tn-card-title", vehicle.plate || "—"));
+    var meta = [];
+    meta.push(vehicle.carrier_name || "не указан");
+    meta.push("водитель по умолчанию: " + (vehicle.default_driver_name || "не указан"));
+    passport.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+    detail.appendChild(passport);
+    var trips = history.trips || [];
+    var stats = element("div", "tn-stats");
+    stats.appendChild(statCard(String(trips.length), "сходила, раз"));
+    stats.appendChild(statCard(history.first_trip_at || "—", "первый рейс"));
+    stats.appendChild(statCard(history.last_trip_at || "—", "последний рейс"));
+    detail.appendChild(stats);
+    var tripsSection = element("section", "tn-section");
+    tripsSection.appendChild(element("h3", "", "Рейсы (" + trips.length + ")"));
+    var tripsList = element("div", "tn-card-list");
+    if (!trips.length) tripsList.appendChild(element("p", "tn-empty", "Рейсов у машины нет."));
+    trips.forEach(function (trip) {
+      var item = element("article", "tn-card");
+      item.appendChild(element("p", "tn-card-title", trip.ttn_number || "номер не выдан"));
+      var m = [];
+      if (trip.trip_date) m.push("дата: " + trip.trip_date);
+      if (trip.driver_name) m.push("водитель: " + trip.driver_name);
+      m.push("блоков: " + trip.block_count);
+      m.push("вес: " + trip.total_weight_kg + " кг");
+      item.appendChild(element("p", "tn-card-meta", m.join(" · ")));
+      tripsList.appendChild(item);
+    });
+    tripsSection.appendChild(tripsList);
+    detail.appendChild(tripsSection);
+  }
+
+  function openVehicleHistory(plate) {
+    var detail = document.getElementById("historyDetail");
+    clear(detail);
+    detail.appendChild(element("p", "tn-help", "Загрузка…"));
+    request("/vehicles/" + encodeURIComponent(plate) + "/history").then(function (data) {
+      renderVehicleHistory(data.history);
+    }).catch(function (error) {
+      showToast(error.message || "Не удалось открыть историю машины");
+    });
+  }
+
+  function runHistorySearch() {
+    var query = document.getElementById("historyQuery").value.trim();
+    var kind = historyKind();
+    clear(document.getElementById("historyDetail"));
+    var url = kind === "block"
+      ? "/blocks?q=" + encodeURIComponent(query) + "&limit=50"
+      : "/vehicles?q=" + encodeURIComponent(query) + "&limit=50";
+    return request(url).then(function (data) {
+      if (kind === "block") renderHistoryBlocks(data.blocks || []);
+      else renderHistoryVehicles(data.vehicles || []);
+    });
+  }
+
   function loadPanel(name) {
-    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog, admin: loadAdmin, trips: loadTrips, receipts: loadReceipts, operator: loadOperatorPanel };
+    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog, admin: loadAdmin, trips: loadTrips, receipts: loadReceipts, operator: loadOperatorPanel, history: loadHistory };
     if (!loaders[name]) return;
     loaders[name]().catch(function (error) { setError(error.message || "Не удалось загрузить данные"); });
   }
@@ -2004,6 +2208,22 @@
     });
     document.getElementById("searchKind").addEventListener("change", function () {
       runSearch().catch(function (error) { setError(error.message || "Не удалось выполнить поиск"); });
+    });
+    document.getElementById("historySearchButton").addEventListener("click", function () {
+      runHistorySearch().catch(function (error) { showToast(error.message || "Не удалось выполнить поиск"); });
+    });
+    document.getElementById("historyQuery").addEventListener("keydown", function (event) {
+      if (event.key === "Enter") {
+        runHistorySearch().catch(function (error) { showToast(error.message || "Не удалось выполнить поиск"); });
+      }
+    });
+    document.getElementById("historyKindBlock").addEventListener("click", function () {
+      setHistoryKind("block");
+      loadHistory().catch(function (error) { showToast(error.message || "Не удалось загрузить список"); });
+    });
+    document.getElementById("historyKindVehicle").addEventListener("click", function () {
+      setHistoryKind("vehicle");
+      loadHistory().catch(function (error) { showToast(error.message || "Не удалось загрузить список"); });
     });
     document.getElementById("logoutButton").addEventListener("click", function () {
       request("/auth/logout", { method: "POST" }).catch(function () {}).finally(function () { location.replace("/taksimo-new/login.html"); });

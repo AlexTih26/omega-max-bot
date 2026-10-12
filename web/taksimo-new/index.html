@@ -41,6 +41,7 @@
         <button class="tn-tab" type="button" data-tab="yard" aria-selected="false">Площадка</button>
         <button class="tn-tab" type="button" data-tab="wagons" aria-selected="false">Вагоны</button>
         <button class="tn-tab" type="button" data-tab="search" aria-selected="false">Поиск</button>
+        <button class="tn-tab" type="button" data-tab="history" aria-selected="false">История</button>
         <button class="tn-tab" type="button" data-tab="journal" aria-selected="false">Журнал</button>
         <button class="tn-tab" type="button" data-tab="reports" aria-selected="false">Отчёты</button>
         <button class="tn-tab" type="button" data-tab="catalog" aria-selected="false">Справочник</button>
@@ -120,6 +121,22 @@
         </div>
         <p class="tn-empty" id="searchEmpty" hidden>Ничего не найдено.</p>
         <div class="tn-card-list" id="searchResults"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="history" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">История перемещений</p><h2>История</h2><p class="tn-subtitle">Блок и машина прослеживаются от рождения до последнего рейса.</p></div>
+        </div>
+        <label class="tn-field tn-field--wide">Запрос<input id="historyQuery" type="search" maxlength="80" placeholder="Ключ блока или гос. номер" autocomplete="off" autocapitalize="characters"></label>
+        <div class="tn-form-actions">
+          <button class="tn-button tn-button--primary" type="button" id="historySearchButton">Найти</button>
+          <button class="tn-button tn-button--primary" type="button" id="historyKindBlock" aria-pressed="true">Блоки</button>
+          <button class="tn-button tn-button--secondary" type="button" id="historyKindVehicle" aria-pressed="false">Машины</button>
+        </div>
+        <p class="tn-empty" id="historyEmpty" hidden>Ничего не найдено.</p>
+        <div class="tn-catalog-grid" id="historyBlockList"></div>
+        <div class="tn-catalog-grid" id="historyVehicleList" hidden></div>
+        <div id="historyDetail"></div>
       </section>
 
       <section class="tn-panel" data-panel="journal" hidden>

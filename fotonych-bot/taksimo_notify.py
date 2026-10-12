@@ -279,7 +279,8 @@ def format_wagon_full_message(info: dict) -> str:
 
 def format_wagon_daily_lines(wagons: list[dict]) -> list[str]:
     if not wagons:
-        return ["🚃 Погрузка вагонов · сегодня до 16:00: не было."]
+        hour, minute = _report_time()
+        return [f"🚃 Погрузка вагонов · сегодня до {hour:02d}:{minute:02d}: не было."]
     hour, minute = _report_time()
     lines = [
         f"🚃 Погрузка вагонов · погружено сегодня до {hour:02d}:{minute:02d} МСК: "

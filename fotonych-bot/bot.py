@@ -46,8 +46,8 @@ from sklad_master_access_chat import set_bot as set_sklad_access_bot
 from sklad_master_access_chat import handle_sklad_access_callback
 from sklad_master_backup import backup_sklad_master_db, daily_sklad_backup_loop
 from sklad_master_reminders import sklad_eta_reminder_loop
+from taksimo_notify import daily_report_loop as taksimo_daily_report_loop
 from taksimo_notify import notify_chat_id, set_bot as set_taksimo_bot
-from taksimo_new_notify import daily_report_loop as taksimo_new_daily_report_loop
 from taksimo_new_notify import set_bot as set_taksimo_new_bot
 from materials_chat import (
     handle_materials_chat_message,
@@ -593,7 +593,7 @@ async def main() -> None:
             logger.info("Реестр водителей при старте: %s, chat_id=%s", n, drivers_cid)
         except Exception:
             logger.exception("Не удалось загрузить реестр водителей")
-    report_task = asyncio.create_task(taksimo_new_daily_report_loop())
+    report_task = asyncio.create_task(taksimo_daily_report_loop())
     backup_task = asyncio.create_task(daily_backup_loop())
     sklad_backup_task = asyncio.create_task(daily_sklad_backup_loop())
     rumex_registry_backup_task = asyncio.create_task(daily_rumex_registry_backup_loop())

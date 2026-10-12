@@ -40,6 +40,32 @@ def _admin(request: web.Request) -> tuple[dict | None, web.Response | None]:
     return operator, None
 
 
+def _roles(request: web.Request, allowed: set[str], label: str) -> tuple[dict | None, web.Response | None]:
+    operator, denied = _operator(request)
+    if denied:
+        return None, denied
+    if operator["role"] not in allowed:
+        return None, _json({"error": f"Требуется роль: {label}"}, 403)
+    return operator, None
+
+
+DISPATCHER_ROLES = {"dispatcher"} | ADMIN_ROLES
+ACCOUNTANT_ROLES = {"accountant1", "accountant2", "accountant3"} | ADMIN_ROLES
+OPERATOR_ROLES = {"operator1", "operator2", "operator3"} | ADMIN_ROLES
+
+
+def _dispatcher(request: web.Request) -> tuple[dict | None, web.Response | None]:
+    return _roles(request, DISPATCHER_ROLES, "диспетчер")
+
+
+def _accountant(request: web.Request) -> tuple[dict | None, web.Response | None]:
+    return _roles(request, ACCOUNTANT_ROLES, "бухгалтер")
+
+
+def _operator_only(request: web.Request) -> tuple[dict | None, web.Response | None]:
+    return _roles(request, OPERATOR_ROLES, "оператор")
+
+
 def _service_authorized(request: web.Request) -> bool:
     configured = _integration_token()
     authorization = (request.headers.get("Authorization") or "").strip()
@@ -804,6 +830,138 @@ async def handle_admin_wagon(request: web.Request) -> web.Response:
     ))
 
 
+async def _trip_write(request: web.Request, guard, writer) -> web.Response:
+    operator, denied = guard(request)
+    if denied:
+        return denied
+    try:
+        body = await _body(request)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+    try:
+        record = writer(body, operator=operator)
+    except (ValueError, PermissionError, KeyError) as exc:
+        return _catalog_error(exc)
+    return _json({"ok": True, "record": record}, 201)
+
+
+async def handle_trips(request: web.Request) -> web.Response:
+    if request.method == "GET":
+        return _json({"trips": store.list_trips(
+            date_value=request.query.get("date"), status=request.query.get("status"),
+            limit=request.query.get("limit", 100),
+        )})
+    return await _trip_write(request, _dispatcher, lambda body, **ctx: store.create_trip(body, **ctx))
+
+
+async def handle_trip(request: web.Request) -> web.Response:
+    trip = store.get_trip(request.match_info["public_id"])
+    if trip is None:
+        return _json({"error": "Рейс не найден"}, 404)
+    return _json({"trip": trip})
+
+
+async def handle_trip_ttn_number(request: web.Request) -> web.Response:
+    return await _trip_write(
+        request, _dispatcher,
+        lambda _body_value, **ctx: store.issue_ttn_number(request.match_info["public_id"], **ctx),
+    )
+
+
+async def handle_trip_ttn_copies(request: web.Request) -> web.Response:
+    operator, denied = _dispatcher(request)
+    if denied:
+        return denied
+    import taksimo_new_ttn
+    try:
+        return _json({"copies": store.build_ttn_copies(
+            request.match_info["public_id"], operator=operator,
+            builder=taksimo_new_ttn.build_copies_for_store,
+        )}, 201)
+    except (ValueError, PermissionError, KeyError) as exc:
+        return _catalog_error(exc)
+
+
+async def handle_trip_ttn_copies_list(request: web.Request) -> web.Response:
+    return _json({"copies": store.list_ttn_copies(request.match_info["public_id"])})
+
+
+async def handle_trip_ttn_copy_download(request: web.Request) -> web.Response:
+    operator, denied = _dispatcher(request)
+    if denied:
+        return denied
+    try:
+        copy_number = int(request.match_info["copy_number"])
+    except (TypeError, ValueError):
+        return _json({"error": "Некорректный номер экземпляра"}, 400)
+    try:
+        document = store.get_ttn_copy(request.match_info["public_id"], copy_number, operator=operator)
+    except (ValueError, PermissionError, KeyError) as exc:
+        return _catalog_error(exc)
+    if document is None:
+        return _json({"error": "Экземпляр ТТН не найден"}, 404)
+    return web.Response(
+        body=document["content"],
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(str(document["filename"]))},
+        content_type=str(document["content_type"]),
+    )
+
+
+async def handle_receipts(request: web.Request) -> web.Response:
+    if request.method == "GET":
+        return _json({"receipts": _receipts_store().list_receipts(
+            status=request.query.get("status"), limit=request.query.get("limit", 100),
+        )})
+    return await _trip_write(
+        request, _accountant,
+        lambda body, **ctx: _receipts_store().create_receipt(
+            body.get("trip_public_id"), note=body.get("note", ""), **ctx,
+        ),
+    )
+
+
+async def handle_receipt(request: web.Request) -> web.Response:
+    receipt = _receipts_store().get_receipt(request.match_info["public_id"])
+    if receipt is None:
+        return _json({"error": "Расписка не найдена"}, 404)
+    return _json({"receipt": receipt})
+
+
+async def handle_receipt_send(request: web.Request) -> web.Response:
+    return await _trip_write(
+        request, _accountant,
+        lambda body, **ctx: _receipts_store().mark_receipt_sent(
+            request.match_info["public_id"], external_reference=body.get("external_reference", ""), **ctx,
+        ),
+    )
+
+
+async def handle_receipt_return(request: web.Request) -> web.Response:
+    return await _trip_write(
+        request, _accountant,
+        lambda body, **ctx: _receipts_store().mark_receipt_returned(
+            request.match_info["public_id"], note=body.get("note", ""), **ctx,
+        ),
+    )
+
+
+async def handle_receipt_blocks(request: web.Request) -> web.Response:
+    operator, denied = _accountant(request)
+    if denied:
+        return denied
+    try:
+        return _json({"blocks": _receipts_store().receipt_blocks_text(
+            request.match_info["public_id"], operator=operator,
+        )})
+    except (ValueError, PermissionError, KeyError) as exc:
+        return _catalog_error(exc)
+
+
+def _receipts_store():
+    import taksimo_new_receipts
+    return taksimo_new_receipts
+
+
 def _with_database_errors(handler):
     async def wrapped(request: web.Request) -> web.Response:
         try:
@@ -865,3 +1023,17 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_post("/api/taksimo-new/admin/drivers", _with_database_errors(handle_admin_driver))
     app.router.add_post("/api/taksimo-new/admin/vehicles", _with_database_errors(handle_admin_vehicle))
     app.router.add_post("/api/taksimo-new/admin/wagons", _with_database_errors(handle_admin_wagon))
+
+    app.router.add_get("/api/taksimo-new/trips", _with_database_errors(handle_trips))
+    app.router.add_post("/api/taksimo-new/trips", _with_database_errors(handle_trips))
+    app.router.add_get("/api/taksimo-new/trips/{public_id}", _with_database_errors(handle_trip))
+    app.router.add_post("/api/taksimo-new/trips/{public_id}/ttn-number", _with_database_errors(handle_trip_ttn_number))
+    app.router.add_post("/api/taksimo-new/trips/{public_id}/ttn-copies", _with_database_errors(handle_trip_ttn_copies))
+    app.router.add_get("/api/taksimo-new/trips/{public_id}/ttn-copies", _with_database_errors(handle_trip_ttn_copies_list))
+    app.router.add_get("/api/taksimo-new/trips/{public_id}/ttn-copies/{copy_number}", _with_database_errors(handle_trip_ttn_copy_download))
+    app.router.add_get("/api/taksimo-new/receipts", _with_database_errors(handle_receipts))
+    app.router.add_post("/api/taksimo-new/receipts", _with_database_errors(handle_receipts))
+    app.router.add_get("/api/taksimo-new/receipts/{public_id}", _with_database_errors(handle_receipt))
+    app.router.add_post("/api/taksimo-new/receipts/{public_id}/send", _with_database_errors(handle_receipt_send))
+    app.router.add_post("/api/taksimo-new/receipts/{public_id}/return", _with_database_errors(handle_receipt_return))
+    app.router.add_get("/api/taksimo-new/receipts/{public_id}/blocks", _with_database_errors(handle_receipt_blocks))

@@ -37,6 +37,22 @@
     operation_corrected: "Создана корректировка подтверждённой операции",
     operation_cancelled: "Оператор 1 отменил подтверждённую операцию"
   };
+  var tripStatusLabels = {
+    draft: "Черновик",
+    ttn_issued: "Номер ТТН выдан",
+    printed: "ТТН напечатана",
+    er_sent: "ЭР отправлена",
+    er_returned: "ЭР вернулась",
+    cancelled: "Отменён"
+  };
+  var receiptStatusLabels = {
+    draft: "Черновик",
+    sent: "Отправлена в ЭДО",
+    returned: "Вернулась",
+    cancelled: "Отменена"
+  };
+  var tripBlockLetters = ["A", "B", "C", "D", "E", "F", "K"];
+  var operatorTripStatuses = { printed: true, er_sent: true, er_returned: true };
 
   var currentUser = document.getElementById("currentUser");
   var appError = document.getElementById("appError");
@@ -708,8 +724,346 @@
       .finally(function () { button.disabled = false; });
   }
 
+  function tripStatusBadge(status) {
+    return element("span", "tn-badge tn-badge--" + String(status || "").replace(/[^a-z_]/g, ""), tripStatusLabels[status] || status || "—");
+  }
+
+  function receiptStatusBadge(status) {
+    return element("span", "tn-badge tn-badge--" + String(status || "").replace(/[^a-z_]/g, ""), receiptStatusLabels[status] || status || "—");
+  }
+
+  function makeTripBlockRow() {
+    var row = element("div", "tn-form-grid");
+    var letterField = element("label", "tn-field", "Буква *");
+    var select = element("select");
+    tripBlockLetters.forEach(function (letter) {
+      var option = element("option", "", letter);
+      option.value = letter;
+      select.appendChild(option);
+    });
+    select.name = "letter";
+    letterField.appendChild(select);
+    row.appendChild(letterField);
+    var numberField = element("label", "tn-field", "Номер блока *");
+    var numberInput = element("input");
+    numberInput.name = "number";
+    numberInput.maxLength = 40;
+    numberInput.required = true;
+    numberField.appendChild(numberInput);
+    row.appendChild(numberField);
+    var suffixField = element("label", "tn-field", "Суффикс");
+    var suffixInput = element("input");
+    suffixInput.name = "suffix";
+    suffixInput.maxLength = 8;
+    suffixField.appendChild(suffixInput);
+    row.appendChild(suffixField);
+    var weightField = element("label", "tn-field", "Вес, кг");
+    var weightInput = element("input");
+    weightInput.name = "weight_kg";
+    weightInput.type = "number";
+    weightInput.min = "1";
+    weightField.appendChild(weightInput);
+    row.appendChild(weightField);
+    var priceField = element("label", "tn-field", "Стоимость, ₽");
+    var priceInput = element("input");
+    priceInput.name = "price_rub";
+    priceInput.type = "number";
+    priceInput.min = "0";
+    priceInput.step = "0.01";
+    priceField.appendChild(priceInput);
+    row.appendChild(priceField);
+    var remove = element("button", "tn-button tn-button--secondary", "Убрать");
+    remove.type = "button";
+    remove.addEventListener("click", function () {
+      if (row.parentNode) row.parentNode.removeChild(row);
+      syncTripBlockButtons();
+    });
+    row.appendChild(remove);
+    return row;
+  }
+
+  function syncTripBlockButtons() {
+    var list = document.getElementById("tripBlocksList");
+    var rows = list ? list.querySelectorAll(".tn-form-grid") : [];
+    var addButton = document.getElementById("addTripBlockButton");
+    if (addButton) addButton.disabled = rows.length >= 6;
+    rows.forEach(function (row) {
+      var remove = row.querySelector("button");
+      if (remove) remove.disabled = rows.length <= 3;
+    });
+  }
+
+  function ensureTripBlockRows() {
+    var list = document.getElementById("tripBlocksList");
+    if (!list) return;
+    while (list.querySelectorAll(".tn-form-grid").length < 3) list.appendChild(makeTripBlockRow());
+    syncTripBlockButtons();
+  }
+
+  function addTripBlockRow() {
+    var list = document.getElementById("tripBlocksList");
+    if (!list) return;
+    if (list.querySelectorAll(".tn-form-grid").length >= 6) { showToast("Максимум 6 блоков в рейсе."); return; }
+    list.appendChild(makeTripBlockRow());
+    syncTripBlockButtons();
+  }
+
+  function submitTripForm(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    var rows = Array.from(form.querySelectorAll("#tripBlocksList .tn-form-grid"));
+    if (rows.length < 3) { showToast("Минимум 3 блока в рейсе."); return; }
+    var blocks = rows.map(function (row) {
+      var get = function (name) {
+        var el = row.querySelector("[name='" + name + "']");
+        return el ? el.value.trim() : "";
+      };
+      return {
+        letter: get("letter"),
+        number: get("number"),
+        suffix: get("suffix"),
+        weight_kg: get("weight_kg"),
+        price_rub: get("price_rub")
+      };
+    });
+    var payload = {
+      vehicle_plate: form.elements.vehicle_plate.value.trim(),
+      trip_date: form.elements.trip_date.value || null,
+      blocks: blocks
+    };
+    var button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    jsonRequest("/trips", "POST", payload)
+      .then(function () {
+        form.reset();
+        ensureTripBlockRows();
+        showToast("Рейс создан.");
+        return loadTrips();
+      })
+      .catch(function (error) { showToast(error.message || "Не удалось создать рейс"); })
+      .finally(function () { button.disabled = false; });
+  }
+
+  function issueTripTtn(trip, button) {
+    button.disabled = true;
+    jsonRequest("/trips/" + encodeURIComponent(trip.public_id) + "/ttn-number", "POST", {})
+      .then(function () { showToast("Номер ТТН выдан."); return loadTrips(); })
+      .catch(function (error) { showToast(error.message || "Не удалось выдать номер ТТН"); button.disabled = false; });
+  }
+
+  function printTripTtn(trip, button) {
+    button.disabled = true;
+    jsonRequest("/trips/" + encodeURIComponent(trip.public_id) + "/ttn-copies", "POST", {})
+      .then(function () { showToast("ТТН сформирована — 4 экземпляра."); return loadTrips(); })
+      .catch(function (error) { showToast(error.message || "Не удалось сформировать ТТН"); button.disabled = false; });
+  }
+
+  function showTripCopies(trip) {
+    request("/trips/" + encodeURIComponent(trip.public_id) + "/ttn-copies").then(function (data) {
+      var copies = data.copies || [];
+      if (!copies.length) { showToast("Экземпляры ещё не сформированы."); return; }
+      showToast(copies.map(function (copy) { return "копия " + copy.copy_number; }).join(" · "));
+    }).catch(function (error) { showToast(error.message || "Не удалось загрузить экземпляры"); });
+  }
+
+  function makeTripCard(trip) {
+    var card = element("article", "tn-card");
+    var row = element("div", "tn-card-title-row");
+    var heading = element("div");
+    heading.appendChild(element("p", "tn-card-title", trip.ttn_number || "номер не выдан"));
+    var meta = [];
+    if (trip.vehicle_plate) meta.push(trip.vehicle_plate);
+    if (trip.driver_name) meta.push(trip.driver_name);
+    if (trip.carrier_name) meta.push(trip.carrier_name);
+    meta.push("блоков: " + trip.block_count);
+    meta.push("вес: " + trip.total_weight_kg + " кг");
+    heading.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+    row.appendChild(heading);
+    row.appendChild(tripStatusBadge(trip.status));
+    card.appendChild(row);
+    if (trip.trip_date) card.appendChild(element("p", "tn-card-meta", "Дата: " + trip.trip_date));
+    var actions = element("div", "tn-card-actions");
+    if (trip.status === "draft") {
+      var ttnButton = element("button", "tn-button tn-button--primary", "Выдать номер ТТН");
+      ttnButton.type = "button";
+      ttnButton.addEventListener("click", function () { issueTripTtn(trip, ttnButton); });
+      actions.appendChild(ttnButton);
+    }
+    if (trip.status === "ttn_issued") {
+      var printButton = element("button", "tn-button tn-button--primary", "Напечатать 4 экземпляра");
+      printButton.type = "button";
+      printButton.addEventListener("click", function () { printTripTtn(trip, printButton); });
+      actions.appendChild(printButton);
+    }
+    if (trip.ttn_number) {
+      for (var n = 1; n <= 4; n += 1) {
+        var link = element("a", "tn-button tn-button--secondary", "Скачать " + n);
+        link.href = API + "/trips/" + encodeURIComponent(trip.public_id) + "/ttn-copies/" + n;
+        link.setAttribute("download", "");
+        actions.appendChild(link);
+      }
+      var show = element("button", "tn-button tn-button--secondary", "Показать экземпляры");
+      show.type = "button";
+      show.addEventListener("click", function () { showTripCopies(trip); });
+      actions.appendChild(show);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderTrips(target, trips, emptyNode) {
+    clear(target);
+    emptyNode.hidden = trips.length > 0;
+    trips.forEach(function (trip) { target.appendChild(makeTripCard(trip)); });
+  }
+
+  function loadTrips() {
+    return request("/trips?limit=50").then(function (data) {
+      var trips = data.trips || [];
+      renderTrips(document.getElementById("tripsList"), trips, document.getElementById("tripsEmpty"));
+      setError("");
+    });
+  }
+
+  function makeReceiptCard(receipt) {
+    var card = element("article", "tn-card");
+    var row = element("div", "tn-card-title-row");
+    var heading = element("div");
+    heading.appendChild(element("p", "tn-card-title", receipt.ttn_number || "Расписка без номера"));
+    var meta = [];
+    if (receipt.vehicle_plate) meta.push(receipt.vehicle_plate);
+    if (receipt.driver_name) meta.push(receipt.driver_name);
+    if (receipt.carrier_name) meta.push(receipt.carrier_name);
+    if (receipt.carrier_inn) meta.push("ИНН " + receipt.carrier_inn);
+    if (receipt.blocks_summary) meta.push(receipt.blocks_summary);
+    meta.push("вес: " + receipt.total_weight_kg + " кг");
+    heading.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+    row.appendChild(heading);
+    row.appendChild(receiptStatusBadge(receipt.status));
+    card.appendChild(row);
+    var timeParts = [];
+    if (receipt.sent_at) timeParts.push("отправлена: " + formatDate(receipt.sent_at));
+    if (receipt.returned_at) timeParts.push("вернулась: " + formatDate(receipt.returned_at));
+    if (receipt.external_reference) timeParts.push("ЭДО: " + receipt.external_reference);
+    if (timeParts.length) card.appendChild(element("p", "tn-card-meta", timeParts.join(" · ")));
+    var actions = element("div", "tn-card-actions");
+    if (receipt.status === "draft") {
+      var sendButton = element("button", "tn-button tn-button--primary", "Отметить отправленной");
+      sendButton.type = "button";
+      sendButton.addEventListener("click", function () { markReceiptSent(receipt, sendButton); });
+      actions.appendChild(sendButton);
+    }
+    if (receipt.status === "sent") {
+      var returnButton = element("button", "tn-button tn-button--primary", "Отметить вернувшейся");
+      returnButton.type = "button";
+      returnButton.addEventListener("click", function () { markReceiptReturned(receipt, returnButton); });
+      actions.appendChild(returnButton);
+    }
+    var blocksButton = element("button", "tn-button tn-button--secondary", "Расшифровка блоков");
+    blocksButton.type = "button";
+    blocksButton.addEventListener("click", function () { showReceiptBlocks(receipt); });
+    actions.appendChild(blocksButton);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function markReceiptSent(receipt, button) {
+    var reference = window.prompt("Ссылка или номер в ЭДО:", "");
+    if (reference === null) return;
+    button.disabled = true;
+    jsonRequest("/receipts/" + encodeURIComponent(receipt.public_id) + "/send", "POST", { external_reference: reference.trim() })
+      .then(function () { showToast("Расписка отмечена отправленной."); return loadReceipts(); })
+      .catch(function (error) { showToast(error.message || "Не удалось отметить отправку"); button.disabled = false; });
+  }
+
+  function markReceiptReturned(receipt, button) {
+    button.disabled = true;
+    jsonRequest("/receipts/" + encodeURIComponent(receipt.public_id) + "/return", "POST", {})
+      .then(function () { showToast("Расписка отмечена вернувшейся."); return loadReceipts(); })
+      .catch(function (error) { showToast(error.message || "Не удалось отметить возврат"); button.disabled = false; });
+  }
+
+  function showReceiptBlocks(receipt) {
+    request("/receipts/" + encodeURIComponent(receipt.public_id) + "/blocks").then(function (data) {
+      showToast(data.blocks || "Расшифровка блоков пустая.");
+    }).catch(function (error) { showToast(error.message || "Не удалось получить расшифровку"); });
+  }
+
+  function fillReceiptTripSelect(trips) {
+    var select = document.getElementById("receiptForm").elements.trip_public_id;
+    var current = select.value;
+    while (select.options.length > 1) select.remove(1);
+    trips.filter(function (trip) { return trip.status !== "draft"; }).forEach(function (trip) {
+      var label = (trip.ttn_number || trip.public_id) + " · " + (trip.vehicle_plate || "") + (trip.driver_name ? " · " + trip.driver_name : "");
+      select.appendChild(new Option(label, trip.public_id));
+    });
+    select.value = current;
+  }
+
+  function renderReceipts(target, receipts, emptyNode) {
+    clear(target);
+    emptyNode.hidden = receipts.length > 0;
+    receipts.forEach(function (receipt) { target.appendChild(makeReceiptCard(receipt)); });
+  }
+
+  function loadReceipts() {
+    return Promise.all([
+      request("/receipts?limit=50"),
+      request("/trips?limit=50")
+    ]).then(function (results) {
+      var receipts = results[0].receipts || [];
+      var trips = results[1].trips || [];
+      renderReceipts(document.getElementById("receiptsList"), receipts, document.getElementById("receiptsEmpty"));
+      fillReceiptTripSelect(trips);
+      setError("");
+    });
+  }
+
+  function submitReceiptForm(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    var button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    jsonRequest("/receipts", "POST", {
+      trip_public_id: form.elements.trip_public_id.value,
+      note: form.elements.note.value.trim()
+    })
+      .then(function () { form.reset(); showToast("Расписка создана."); return loadReceipts(); })
+      .catch(function (error) { showToast(error.message || "Не удалось создать расписку"); })
+      .finally(function () { button.disabled = false; });
+  }
+
+  function loadOperatorPanel() {
+    return request("/trips?limit=50").then(function (data) {
+      var trips = (data.trips || []).filter(function (trip) { return operatorTripStatuses[trip.status] === true; });
+      var list = document.getElementById("operatorTripsList");
+      clear(list);
+      document.getElementById("operatorTripsEmpty").hidden = trips.length > 0;
+      trips.forEach(function (trip) {
+        var card = element("article", "tn-card");
+        var row = element("div", "tn-card-title-row");
+        var heading = element("div");
+        heading.appendChild(element("p", "tn-card-title", trip.ttn_number || "номер не выдан"));
+        var meta = [];
+        if (trip.vehicle_plate) meta.push(trip.vehicle_plate);
+        if (trip.driver_name) meta.push(trip.driver_name);
+        if (trip.carrier_name) meta.push(trip.carrier_name);
+        meta.push("блоков: " + trip.block_count);
+        meta.push("вес: " + trip.total_weight_kg + " кг");
+        heading.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+        row.appendChild(heading);
+        row.appendChild(tripStatusBadge(trip.status));
+        card.appendChild(row);
+        list.appendChild(card);
+      });
+      setError("");
+    });
+  }
+
   function loadPanel(name) {
-    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog, admin: loadAdmin };
+    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog, admin: loadAdmin, trips: loadTrips, receipts: loadReceipts, operator: loadOperatorPanel };
     if (!loaders[name]) return;
     loaders[name]().catch(function (error) { setError(error.message || "Не удалось загрузить данные"); });
   }
@@ -1601,7 +1955,7 @@
   }
 
   function applyPermissions() {
-    var sectionByTab = { reception: "reception", yard: "yard", wagons: "wagons", journal: "journal", reports: "reports", search: "search" };
+    var sectionByTab = { reception: "reception", yard: "yard", wagons: "wagons", journal: "journal", reports: "reports", search: "search", trips: "trips", receipts: "receipts", operator: "reception" };
     document.querySelectorAll(".tn-tab").forEach(function (tab) {
       var name = tab.getAttribute("data-tab");
       var section = sectionByTab[name];
@@ -1609,6 +1963,9 @@
     });
     document.querySelectorAll("[data-operator1-only]").forEach(function (node) { node.hidden = !isOperator1(); });
     document.querySelectorAll("[data-admin-only]").forEach(function (node) { node.hidden = !isAdmin(); });
+    document.querySelectorAll("[data-dispatcher-only]").forEach(function (node) { node.hidden = !state.permissions.trips; });
+    document.querySelectorAll("[data-accountant-only]").forEach(function (node) { node.hidden = !state.permissions.receipts; });
+    document.querySelectorAll("[data-operator-only]").forEach(function (node) { node.hidden = !state.permissions.reception; });
     var allowedTabs = { manage: isOperator1(), admin: isAdmin() };
     if (allowedTabs[state.activeTab] === false) showPanel("today");
   }
@@ -1636,6 +1993,10 @@
     document.getElementById("adminWagonForm").addEventListener("submit", function (event) {
       submitAdminForm(event, "/admin/wagons", ["id", "wagon_number", "scheme_code", "note", "active"], "Вагон сохранён.");
     });
+    document.getElementById("tripForm").addEventListener("submit", submitTripForm);
+    document.getElementById("receiptForm").addEventListener("submit", submitReceiptForm);
+    document.getElementById("addTripBlockButton").addEventListener("click", addTripBlockRow);
+    ensureTripBlockRows();
     document.getElementById("reportDate").addEventListener("change", loadReport);
     document.getElementById("searchInput").addEventListener("input", function () {
       clearTimeout(state.searchTimer);

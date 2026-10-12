@@ -15,7 +15,7 @@ import time
 
 from aiohttp import web
 
-from taksimo_new_db import TaksimoNewDatabaseError
+from taksimo_new_db import TaksimoNewDatabaseError, _load_private_environment
 import taksimo_new_store as store
 
 
@@ -30,6 +30,13 @@ PIN_RE = re.compile(r"^\d{6,12}$")
 
 
 def _secret() -> str:
+    """Секрет подписи сессии из закрытого конфига или окружения.
+
+    Закрытый файл читается здесь же: до первого обращения к MySQL его
+    могло не быть в окружении, и вход ошибочно считался ненастроенным.
+    """
+    if not (os.getenv("TAKSIMO_NEW_AUTH_SECRET") or "").strip():
+        _load_private_environment()
     return (os.getenv("TAKSIMO_NEW_AUTH_SECRET") or "").strip()
 
 
@@ -117,6 +124,8 @@ SECTION_ROLES: dict[str, tuple[str, ...]] = {
     "reports": ("admin", "dispatcher", "accountant1", "accountant2", "accountant3", "operator1", "operator2", "operator3"),
     "search": ("admin", "dispatcher", "accountant1", "accountant2", "accountant3", "operator1", "operator2", "operator3"),
     "corrections": ("operator1", "operator2", "operator3"),
+    "trips": ("admin", "dispatcher"),
+    "receipts": ("admin", "accountant1", "accountant2", "accountant3"),
     "admin": ("admin",),
 }
 

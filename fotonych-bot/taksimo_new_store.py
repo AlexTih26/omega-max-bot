@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import json
 import re
 from typing import Any
@@ -27,6 +29,7 @@ ROLE_CODES = (
 OPERATOR_ROLES = {"operator1", "operator2", "operator3"}
 ACCOUNTANT_ROLES = {"accountant1", "accountant2", "accountant3"}
 ADMIN_ROLES = {"admin"}
+DISPATCHER_ROLES = {"dispatcher"} | ADMIN_ROLES
 MAX_LOCK_MINUTES = 20
 DEFAULT_TIMEZONE = "Asia/Irkutsk"
 
@@ -110,7 +113,12 @@ def _datetime_from_external(value: Any, label: str) -> datetime | None:
 def _row_datetime(row: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in row.items():
-        result[key] = iso_utc(value) if isinstance(value, datetime) else value
+        if isinstance(value, datetime):
+            result[key] = iso_utc(value)
+        elif isinstance(value, Decimal):
+            result[key] = float(value)
+        else:
+            result[key] = value
     return result
 
 
@@ -2655,3 +2663,421 @@ def account_roles() -> list[dict[str, Any]]:
                    FROM tn_operator_accounts ORDER BY role_code, id"""
             )
             return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def _fetch_trip(cursor: Any, trip_id: int, *, for_update: bool = False) -> dict[str, Any] | None:
+    cursor.execute(
+        """SELECT t.*, creator.display_name AS created_by_name
+           FROM tn_trips AS t
+           LEFT JOIN tn_operator_accounts AS creator ON creator.id = t.created_by_account_id
+           WHERE t.id = %s""" + (" FOR UPDATE" if for_update else ""),
+        (trip_id,),
+    )
+    return cursor.fetchone()
+
+
+def _trip_date(value: Any) -> Any:
+    if value in (None, ""):
+        return utc_now().date()
+    if not isinstance(value, str):
+        raise ValueError("Некорректно указана дата рейса")
+    try:
+        return datetime.fromisoformat(value).date()
+    except ValueError:
+        raise ValueError("Некорректно указана дата рейса") from None
+
+
+def _trip_block_payload(item: Mapping[str, Any], block_defaults: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    letter = _required_text(item.get("letter"), "буква блока", max_length=1).upper()
+    if letter not in "ABCDEFK":
+        raise ValueError("Некорректно указана буква блока")
+    number = _required_text(item.get("number"), "номер блока", max_length=40)
+    suffix = _optional_text(item.get("suffix"), "суффикс блока", max_length=8)
+    weight_value = item.get("weight_kg")
+    if weight_value in (None, ""):
+        if letter not in block_defaults:
+            raise ValueError(f"Для блока {letter} не задан вес — заполните справочник плит")
+        weight_kg = block_defaults[letter]["weight_kg"]
+    else:
+        weight_kg = _as_int(weight_value, "вес блока", minimum=1)
+    price_value = item.get("price_rub")
+    if price_value in (None, ""):
+        price_rub = block_defaults[letter]["price_rub"] if letter in block_defaults else 0.0
+    else:
+        try:
+            price_rub = round(float(price_value), 2)
+        except (TypeError, ValueError):
+            raise ValueError("Некорректно указана стоимость блока") from None
+    return {"letter": letter, "number": number, "suffix": suffix, "weight_kg": weight_kg, "price_rub": price_rub}
+
+
+def _trip_payload(cursor: Any, row: Mapping[str, Any]) -> dict[str, Any]:
+    result = _row_datetime(dict(row))
+    trip_id = int(row["id"])
+    result["id"] = trip_id
+    trip_date = row.get("trip_date")
+    if trip_date is not None:
+        result["trip_date"] = trip_date.isoformat() if hasattr(trip_date, "isoformat") else str(trip_date)
+    blocks = []
+    cursor.execute("SELECT * FROM tn_trip_blocks WHERE trip_id = %s ORDER BY id", (trip_id,))
+    for item in cursor.fetchall():
+        block = _row_datetime(dict(item))
+        block["id"] = int(item["id"])
+        block["weight_kg"] = int(item["weight_kg"])
+        block["price_rub"] = float(item["price_rub"] or 0)
+        blocks.append(block)
+    result["blocks"] = blocks
+    cursor.execute("SELECT ttn_number FROM tn_ttn_numbers WHERE trip_id = %s", (trip_id,))
+    ttn = cursor.fetchone()
+    result["ttn_number"] = str(ttn["ttn_number"]) if ttn else None
+    return result
+
+
+def _ttn_copy_payload(row: Mapping[str, Any], *, include_content: bool = False) -> dict[str, Any]:
+    result = _row_datetime(dict(row))
+    result["id"] = int(row["id"])
+    if include_content:
+        result["content"] = row["content"]
+    else:
+        result.pop("content", None)
+    return result
+
+
+def create_trip(payload: Mapping[str, Any], *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    _require_role(operator, DISPATCHER_ROLES, "диспетчер или администратор")
+    trip_date = _trip_date(payload.get("trip_date"))
+    vehicle_plate = _required_text(payload.get("vehicle_plate"), "номер машины", max_length=32).upper()
+    vehicle_id = None if payload.get("vehicle_id") in (None, "") else _as_int(payload.get("vehicle_id"), "машина", minimum=1)
+    carrier_id = None if payload.get("carrier_id") in (None, "") else _as_int(payload.get("carrier_id"), "перевозчик", minimum=1)
+    driver_id = None if payload.get("driver_id") in (None, "") else _as_int(payload.get("driver_id"), "водитель", minimum=1)
+    blocks_raw = payload.get("blocks")
+    if not isinstance(blocks_raw, list) or not blocks_raw:
+        raise ValueError("Добавьте хотя бы один блок рейса")
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT letter, weight_kg, price_rub FROM tn_block_types")
+            block_defaults = {
+                str(row["letter"]): {"weight_kg": int(row["weight_kg"]), "price_rub": float(row["price_rub"] or 0)}
+                for row in cursor.fetchall()
+            }
+            blocks = []
+            for item in blocks_raw:
+                if not isinstance(item, Mapping):
+                    raise ValueError("Некорректная строка блока")
+                blocks.append(_trip_block_payload(item, block_defaults))
+            identities = {(block["letter"], block["number"]) for block in blocks}
+            if len(identities) != len(blocks):
+                raise ValueError("В рейсе повторяется один и тот же блок")
+            vehicle = None
+            if vehicle_id is not None:
+                cursor.execute("SELECT id, carrier_id, default_driver_id FROM tn_vehicles WHERE id = %s", (vehicle_id,))
+                vehicle = cursor.fetchone()
+            if vehicle is None:
+                cursor.execute("SELECT id, carrier_id, default_driver_id FROM tn_vehicles WHERE plate = %s", (vehicle_plate,))
+                vehicle = cursor.fetchone()
+            saved_vehicle_id = vehicle_id if vehicle_id is not None else (int(vehicle["id"]) if vehicle else None)
+            resolved_carrier_id = carrier_id
+            if resolved_carrier_id is None and vehicle is not None and vehicle.get("carrier_id"):
+                resolved_carrier_id = int(vehicle["carrier_id"])
+            resolved_driver_id = driver_id
+            if resolved_driver_id is None and vehicle is not None and vehicle.get("default_driver_id"):
+                resolved_driver_id = int(vehicle["default_driver_id"])
+            carrier_name = carrier_inn = carrier_legal_form = ""
+            if resolved_carrier_id is not None:
+                cursor.execute("SELECT legal_form, name, inn FROM tn_carriers WHERE id = %s", (resolved_carrier_id,))
+                carrier = cursor.fetchone()
+                if carrier is not None:
+                    carrier_name = str(carrier["name"] or "")
+                    carrier_inn = str(carrier["inn"] or "")
+                    carrier_legal_form = str(carrier["legal_form"] or "")
+            driver_name = driver_license = ""
+            if resolved_driver_id is not None:
+                cursor.execute("SELECT full_name, license_number FROM tn_drivers WHERE id = %s", (resolved_driver_id,))
+                driver = cursor.fetchone()
+                if driver is not None:
+                    driver_name = str(driver["full_name"] or "")
+                    driver_license = str(driver["license_number"] or "")
+            public_id = _public_id()
+            block_count = len(blocks)
+            total_weight_kg = sum(block["weight_kg"] for block in blocks)
+            cursor.execute(
+                """INSERT INTO tn_trips
+                   (public_id, trip_date, vehicle_id, vehicle_plate, carrier_id, carrier_name, carrier_inn,
+                    carrier_legal_form, driver_id, driver_name, driver_license, block_count, total_weight_kg,
+                    status, created_by_account_id, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'draft', %s, %s, %s)""",
+                (
+                    public_id, trip_date, saved_vehicle_id, vehicle_plate, resolved_carrier_id, carrier_name,
+                    carrier_inn, carrier_legal_form, resolved_driver_id, driver_name, driver_license,
+                    block_count, total_weight_kg, int(operator["id"]), now, now,
+                ),
+            )
+            trip_id = int(cursor.lastrowid)
+            cursor.executemany(
+                """INSERT INTO tn_trip_blocks
+                   (trip_id, block_id, block_letter, block_number, suffix_code, weight_kg, price_rub, created_at)
+                   VALUES (%s, NULL, %s, %s, %s, %s, %s, %s)""",
+                [
+                    (trip_id, block["letter"], block["number"], block["suffix"], block["weight_kg"], block["price_rub"], now)
+                    for block in blocks
+                ],
+            )
+            _append_action_log(
+                cursor, operator=operator, action="trip_created", subject_type="trip", subject_id=public_id,
+                details={"vehicle_plate": vehicle_plate, "block_count": block_count, "total_weight_kg": total_weight_kg},
+            )
+            row = _fetch_trip(cursor, trip_id)
+            if row is None:
+                raise RuntimeError("Не удалось прочитать созданный рейс")
+            return _trip_payload(cursor, row)
+
+
+def list_trips(*, date_value: str | None = None, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    count = _as_int(limit, "предел", minimum=1, maximum=1000)
+    conditions = []
+    params: list[Any] = []
+    if date_value:
+        try:
+            day = datetime.fromisoformat(str(date_value)).date()
+        except ValueError:
+            raise ValueError("Некорректная дата") from None
+        conditions.append("t.trip_date = %s")
+        params.append(day)
+    if status:
+        code = _required_text(status, "статус", max_length=24).strip().lower()
+        if code not in {"draft", "ttn_issued", "printed", "er_sent", "er_returned", "cancelled"}:
+            raise ValueError("Некорректный статус рейса")
+        conditions.append("t.status = %s")
+        params.append(code)
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(count)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT t.*
+                   FROM tn_trips AS t
+                   """ + where + """
+                   ORDER BY t.trip_date DESC, t.id DESC
+                   LIMIT %s""",
+                tuple(params),
+            )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                result.append(_trip_payload(cursor, row))
+            return result
+
+
+def get_trip(public_id: str) -> dict[str, Any] | None:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                return None
+            row = _fetch_trip(cursor, int(found["id"]))
+            return _trip_payload(cursor, row) if row is not None else None
+
+
+def issue_ttn_number(public_id: str, *, operator: Mapping[str, Any]) -> dict[str, Any]:
+    _require_role(operator, DISPATCHER_ROLES, "диспетчер или администратор")
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s FOR UPDATE", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            trip_id = int(found["id"])
+            cursor.execute("SELECT ttn_number FROM tn_ttn_numbers WHERE trip_id = %s", (trip_id,))
+            if cursor.fetchone() is not None:
+                row = _fetch_trip(cursor, trip_id)
+                if row is None:
+                    raise KeyError(public_id)
+                return _trip_payload(cursor, row)
+            row = _fetch_trip(cursor, trip_id, for_update=True)
+            if row is None:
+                raise KeyError(public_id)
+            if str(row["status"]) != "draft":
+                raise TaksimoNewConflictError("Номер ТТН выдаётся только рейсу в статусе черновика")
+            trip_date = row.get("trip_date")
+            if trip_date is None:
+                raise TaksimoNewConflictError("У рейса не указана дата")
+            year = trip_date.year
+            cursor.execute(
+                "SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next_seq FROM tn_ttn_numbers WHERE year = %s",
+                (year,),
+            )
+            sequence_number = int(cursor.fetchone()["next_seq"])
+            ttn_number = f"ТТН №РМ-{year}-{sequence_number:06d}"
+            cursor.execute(
+                """INSERT INTO tn_ttn_numbers
+                   (year, sequence_number, ttn_number, trip_id, issued_by_account_id, issued_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)""",
+                (year, sequence_number, ttn_number, trip_id, int(operator["id"]), now),
+            )
+            cursor.execute("UPDATE tn_trips SET status = 'ttn_issued', updated_at = %s WHERE id = %s", (now, trip_id))
+            _append_action_log(
+                cursor, operator=operator, action="ttn_issued", subject_type="trip", subject_id=public_id,
+                details={"ttn_number": ttn_number},
+            )
+            refreshed = _fetch_trip(cursor, trip_id)
+            if refreshed is None:
+                raise RuntimeError("Не удалось прочитать рейс после выдачи номера")
+            return _trip_payload(cursor, refreshed)
+
+
+def _trip_shipment(cursor: Any, row: Mapping[str, Any]) -> dict[str, Any]:
+    trip_id = int(row["id"])
+    cursor.execute("SELECT ttn_number FROM tn_ttn_numbers WHERE trip_id = %s", (trip_id,))
+    ttn = cursor.fetchone()
+    ttn_number = str(ttn["ttn_number"]) if ttn else ""
+    cursor.execute(
+        "SELECT block_letter, block_number, weight_kg, price_rub FROM tn_trip_blocks WHERE trip_id = %s ORDER BY id",
+        (trip_id,),
+    )
+    items = [
+        {
+            "block_type_code": str(item["block_letter"]),
+            "block_number": str(item["block_number"]),
+            "weight_kg": int(item["weight_kg"]),
+            "price_rub": float(item["price_rub"] or 0),
+        }
+        for item in cursor.fetchall()
+    ]
+    model = ""
+    vehicle_id = row.get("vehicle_id")
+    if vehicle_id is not None:
+        cursor.execute("SELECT note FROM tn_vehicles WHERE id = %s", (int(vehicle_id),))
+        vehicle = cursor.fetchone()
+        if vehicle is not None:
+            model = str(vehicle["note"] or "")
+    created_at = row.get("created_at")
+    loaded_at = None
+    if isinstance(created_at, datetime):
+        loaded_at = created_at.replace(tzinfo=timezone.utc).timestamp()
+    return {
+        "id": trip_id,
+        "ttn_number": ttn_number,
+        "loaded_at": loaded_at,
+        "items": items,
+        "document_snapshot": {
+            "vehicle": {"model": model, "full_plate": str(row["vehicle_plate"])},
+            "driver": {"full_name": str(row["driver_name"] or ""), "license_number": str(row["driver_license"] or "")},
+        },
+    }
+
+
+def trip_shipment(public_id: str) -> dict[str, Any]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            row = _fetch_trip(cursor, int(found["id"]))
+            if row is None:
+                raise KeyError(public_id)
+            return _trip_shipment(cursor, row)
+
+
+def build_ttn_copies(public_id: str, *, operator: Mapping[str, Any], builder: Callable[[dict[str, Any], int], bytes]) -> list[dict[str, Any]]:
+    _require_role(operator, DISPATCHER_ROLES, "диспетчер или администратор")
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s FOR UPDATE", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            trip_id = int(found["id"])
+            row = _fetch_trip(cursor, trip_id)
+            if row is None:
+                raise KeyError(public_id)
+            if str(row["status"]) not in {"ttn_issued", "printed", "er_sent", "er_returned"}:
+                raise TaksimoNewConflictError("Номер ТТН ещё не выдан, сформировать копии нельзя")
+            cursor.execute("SELECT * FROM tn_ttn_copies WHERE trip_id = %s ORDER BY copy_number", (trip_id,))
+            existing = cursor.fetchall()
+            if existing:
+                return [_ttn_copy_payload(item) for item in existing]
+            shipment = _trip_shipment(cursor, row)
+            items = shipment["items"]
+            if len(items) < 3 or len(items) > 6:
+                raise ValueError("Для ТТН нужно от 3 до 6 блоков")
+            if not shipment["document_snapshot"]["driver"]["license_number"]:
+                raise ValueError("Не указан номер прав водителя — заполните его в карточке водителя")
+            if not shipment["document_snapshot"]["vehicle"]["model"]:
+                raise ValueError("Не указана модель машины — заполните её в карточке машины")
+            ttn_number = shipment["ttn_number"]
+            for copy_number in range(1, 5):
+                content = builder(shipment, copy_number)
+                digest = hashlib.sha256(content).hexdigest()
+                filename = f"{ttn_number} — Экземпляр № {copy_number}.xlsx"
+                cursor.execute(
+                    """INSERT INTO tn_ttn_copies
+                       (trip_id, copy_number, filename, content_type, content, sha256, size_bytes, created_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        trip_id, copy_number, filename,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        content, digest, len(content), now,
+                    ),
+                )
+            if str(row["status"]) == "ttn_issued":
+                cursor.execute("UPDATE tn_trips SET status = 'printed', updated_at = %s WHERE id = %s", (now, trip_id))
+            _append_action_log(
+                cursor, operator=operator, action="ttn_printed", subject_type="trip", subject_id=public_id,
+                details={"copy_count": 4},
+            )
+            cursor.execute("SELECT * FROM tn_ttn_copies WHERE trip_id = %s ORDER BY copy_number", (trip_id,))
+            return [_ttn_copy_payload(item) for item in cursor.fetchall()]
+
+
+def list_ttn_copies(public_id: str) -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            trip_id = int(found["id"])
+            cursor.execute(
+                """SELECT id, trip_id, copy_number, filename, content_type, sha256, size_bytes,
+                          downloaded_at, downloaded_by_account_id, created_at
+                   FROM tn_ttn_copies WHERE trip_id = %s ORDER BY copy_number""",
+                (trip_id,),
+            )
+            return [_ttn_copy_payload(row) for row in cursor.fetchall()]
+
+
+def get_ttn_copy(public_id: str, copy_number: int, *, operator: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    number = _as_int(copy_number, "номер копии", minimum=1, maximum=4)
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT id FROM tn_trips WHERE public_id = %s", (public_id,))
+            found = cursor.fetchone()
+            if found is None:
+                raise KeyError(public_id)
+            trip_id = int(found["id"])
+            cursor.execute(
+                "SELECT * FROM tn_ttn_copies WHERE trip_id = %s AND copy_number = %s",
+                (trip_id, number),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise KeyError(f"{public_id}:{copy_number}")
+            if operator is not None:
+                cursor.execute(
+                    """UPDATE tn_ttn_copies SET downloaded_at = %s, downloaded_by_account_id = %s
+                       WHERE id = %s""",
+                    (now, int(operator["id"]), int(row["id"])),
+                )
+                row["downloaded_at"] = now
+                row["downloaded_by_account_id"] = int(operator["id"])
+                _append_action_log(
+                    cursor, operator=operator, action="ttn_downloaded", subject_type="trip", subject_id=public_id,
+                    details={"copy_number": number},
+                )
+            return _ttn_copy_payload(row, include_content=True)

@@ -46,6 +46,9 @@
         <button class="tn-tab" type="button" data-tab="catalog" aria-selected="false">Справочник</button>
         <button class="tn-tab" type="button" data-tab="manage" aria-selected="false" data-operator1-only>Управление</button>
         <button class="tn-tab" type="button" data-tab="admin" aria-selected="false" data-admin-only>Администрирование</button>
+        <button class="tn-tab" type="button" data-tab="trips" aria-selected="false" data-dispatcher-only>Приёмка блоков</button>
+        <button class="tn-tab" type="button" data-tab="receipts" aria-selected="false" data-accountant-only>Расписки</button>
+        <button class="tn-tab" type="button" data-tab="operator" aria-selected="false" data-operator-only>Машины</button>
       </nav>
 
       <section class="tn-panel" data-panel="today">
@@ -250,6 +253,52 @@
         <section class="tn-section">
           <div class="tn-section-heading"><div><h3>Журнал действий</h3><p class="tn-help">Кто что сделал и что сохранил.</p></div></div>
           <div class="tn-card-list" id="adminActions"></div>
+        </section>
+      </section>
+
+      <section class="tn-panel" data-panel="trips" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">Диспетчер</p><h2>Приёмка блоков</h2><p class="tn-subtitle">Рейсы, номера ТТН и печать экземпляров.</p></div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+        <form class="tn-form-card tn-form-grid" id="tripForm">
+          <h3>Создать рейс</h3>
+          <label class="tn-field">Гос. номер машины *<input name="vehicle_plate" maxlength="32" required autocapitalize="characters"></label>
+          <label class="tn-field">Дата<input name="trip_date" type="date"></label>
+          <div class="tn-field--wide" id="tripBlocksList"></div>
+          <div class="tn-form-actions">
+            <button class="tn-button tn-button--secondary" type="button" id="addTripBlockButton">Добавить блок</button>
+            <button class="tn-button tn-button--primary" type="submit">Создать рейс</button>
+          </div>
+        </form>
+        <p class="tn-empty" id="tripsEmpty" hidden>Рейсов пока нет.</p>
+        <div class="tn-card-list" id="tripsList"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="receipts" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">Бухгалтер</p><h2>Расписки</h2><p class="tn-subtitle">Экспедиторские расписки (ЭР) по рейсам с выданной ТТН.</p></div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+        <form class="tn-form-card tn-form-grid" id="receiptForm">
+          <h3>Создать ЭР</h3>
+          <label class="tn-field">Рейс *<select name="trip_public_id" required><option value="">Выберите рейс</option></select></label>
+          <label class="tn-field tn-field--wide">Примечание<input name="note" maxlength="500"></label>
+          <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Создать расписку</button></div>
+        </form>
+        <p class="tn-empty" id="receiptsEmpty" hidden>Расписок пока нет.</p>
+        <div class="tn-card-list" id="receiptsList"></div>
+      </section>
+
+      <section class="tn-panel" data-panel="operator" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">Оператор</p><h2>Машины</h2><p class="tn-subtitle">Машины, ожидающие приёмки на площадке.</p></div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Машины в работе</h3><p class="tn-help">Приёмка на площадке выполняется в разделе «Приёмка», здесь — список машин в работе.</p></div></div>
+          <p class="tn-empty" id="operatorTripsEmpty" hidden>Машин в работе нет.</p>
+          <div class="tn-card-list" id="operatorTripsList"></div>
         </section>
       </section>
     </main>

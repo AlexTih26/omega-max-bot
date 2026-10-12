@@ -17,6 +17,7 @@ from taksimo_new_auth import operator_from_request
 from taksimo_new_db import TaksimoNewDatabaseError
 import taksimo_new_store as store
 import taksimo_legacy_archive as legacy_archive
+from taksimo_new_store import ADMIN_ROLES
 
 
 def _json(data: dict, status: int = 200) -> web.Response:
@@ -27,6 +28,15 @@ def _operator(request: web.Request) -> tuple[dict | None, web.Response | None]:
     operator = operator_from_request(request)
     if operator is None:
         return None, _json({"error": "Требуется вход"}, 401)
+    return operator, None
+
+
+def _admin(request: web.Request) -> tuple[dict | None, web.Response | None]:
+    operator, denied = _operator(request)
+    if denied:
+        return None, denied
+    if operator["role"] not in ADMIN_ROLES:
+        return None, _json({"error": "Требуется роль администратора"}, 403)
     return operator, None
 
 
@@ -709,6 +719,86 @@ async def handle_integration_failure(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
+def _catalog_error(exc: Exception) -> web.Response:
+    if isinstance(exc, PermissionError):
+        return _json({"error": str(exc)}, 403)
+    if isinstance(exc, KeyError):
+        return _json({"error": str(exc).strip("'")}, 404)
+    return _json({"error": str(exc)}, 400)
+
+
+async def _catalog_write(request: web.Request, writer) -> web.Response:
+    """Общий контур админской записи: роль, тело, единый разбор ошибок."""
+    operator, denied = _admin(request)
+    if denied:
+        return denied
+    try:
+        body = await _body(request)
+    except ValueError as exc:
+        return _json({"error": str(exc)}, 400)
+    try:
+        record = writer(body, operator=operator, remote_address=(request.remote or ""))
+    except (ValueError, PermissionError, KeyError) as exc:
+        return _catalog_error(exc)
+    return _json({"ok": True, "record": record}, 201)
+
+
+async def handle_admin_catalogs(_request: web.Request) -> web.Response:
+    return _json(store.catalogs())
+
+
+async def handle_admin_accounts(_request: web.Request) -> web.Response:
+    return _json({"accounts": store.account_roles(), "roles": list(store.ROLE_CODES)})
+
+
+async def handle_admin_actions(request: web.Request) -> web.Response:
+    return _json({"actions": store.list_actions(limit=request.query.get("limit", 100))})
+
+
+async def handle_admin_block_type(request: web.Request) -> web.Response:
+    return await _catalog_write(request, lambda body, **ctx: store.save_block_type(
+        request.match_info["letter"], weight_kg=body.get("weight_kg"), price_rub=body.get("price_rub", 0), **ctx,
+    ))
+
+
+async def handle_admin_wagon_scheme(request: web.Request) -> web.Response:
+    return await _catalog_write(request, lambda body, **ctx: store.save_wagon_scheme(
+        request.match_info["code"], label=body.get("label"), max_blocks=body.get("max_blocks"),
+        allowed_letters=body.get("allowed_letters", ""), **ctx,
+    ))
+
+
+async def handle_admin_carrier(request: web.Request) -> web.Response:
+    return await _catalog_write(request, lambda body, **ctx: store.save_carrier(
+        name=body.get("name"), inn=body.get("inn"), legal_form=body.get("legal_form", "ООО"),
+        active=body.get("active", True), carrier_id=body.get("id"), **ctx,
+    ))
+
+
+async def handle_admin_driver(request: web.Request) -> web.Response:
+    return await _catalog_write(request, lambda body, **ctx: store.save_driver(
+        full_name=body.get("full_name"), phone=body.get("phone", ""),
+        license_number=body.get("license_number", ""), active=body.get("active", True),
+        driver_id=body.get("id"), **ctx,
+    ))
+
+
+async def handle_admin_vehicle(request: web.Request) -> web.Response:
+    return await _catalog_write(request, lambda body, **ctx: store.save_vehicle(
+        plate=body.get("plate"), carrier_id=body.get("carrier_id"),
+        default_driver_id=body.get("default_driver_id"), note=body.get("note", ""),
+        active=body.get("active", True), vehicle_id=body.get("id"), **ctx,
+    ))
+
+
+async def handle_admin_wagon(request: web.Request) -> web.Response:
+    return await _catalog_write(request, lambda body, **ctx: store.save_wagon(
+        wagon_number=body.get("wagon_number"), scheme_code=body.get("scheme_code"),
+        note=body.get("note", ""), active=body.get("active", True),
+        wagon_id=body.get("id"), **ctx,
+    ))
+
+
 def _with_database_errors(handler):
     async def wrapped(request: web.Request) -> web.Response:
         try:
@@ -760,3 +850,13 @@ def register_taksimo_new_routes(app: web.Application) -> None:
     app.router.add_get("/api/taksimo-new/integration/outbox", _with_database_errors(handle_integration_outbox))
     app.router.add_post("/api/taksimo-new/integration/outbox/{public_id}/ack", _with_database_errors(handle_integration_ack))
     app.router.add_post("/api/taksimo-new/integration/outbox/{public_id}/failure", _with_database_errors(handle_integration_failure))
+
+    app.router.add_get("/api/taksimo-new/admin/catalogs", _with_database_errors(handle_admin_catalogs))
+    app.router.add_get("/api/taksimo-new/admin/accounts", _with_database_errors(handle_admin_accounts))
+    app.router.add_get("/api/taksimo-new/admin/actions", _with_database_errors(handle_admin_actions))
+    app.router.add_post("/api/taksimo-new/admin/block-types/{letter}", _with_database_errors(handle_admin_block_type))
+    app.router.add_post("/api/taksimo-new/admin/wagon-schemes/{code}", _with_database_errors(handle_admin_wagon_scheme))
+    app.router.add_post("/api/taksimo-new/admin/carriers", _with_database_errors(handle_admin_carrier))
+    app.router.add_post("/api/taksimo-new/admin/drivers", _with_database_errors(handle_admin_driver))
+    app.router.add_post("/api/taksimo-new/admin/vehicles", _with_database_errors(handle_admin_vehicle))
+    app.router.add_post("/api/taksimo-new/admin/wagons", _with_database_errors(handle_admin_wagon))

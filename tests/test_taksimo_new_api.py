@@ -90,6 +90,39 @@ class TaksimoNewApiTests(AioHTTPTestCase):
 
 @unittest.skipUnless(AIOHTTP_AVAILABLE, "Для проверок авторизации требуется aiohttp")
 class TaksimoNewAuthStatusTests(unittest.TestCase):
+    async def test_admin_catalog_requires_admin_role(self):
+        operator = {"id": 3, "role": "operator1", "name": "Оператор 1"}
+        with patch.object(auth, "auth_status", return_value={"configured": True, "database": True}):
+            with patch.object(auth, "operator_from_request", return_value=operator):
+                with patch.object(api, "operator_from_request", return_value=operator):
+                    response = await self.client.get("/api/taksimo-new/admin/catalogs")
+        self.assertEqual(response.status, 403)
+
+    async def test_admin_catalog_is_open_to_admin(self):
+        operator = {"id": 1, "role": "admin", "name": "Администратор"}
+        with patch.object(auth, "auth_status", return_value={"configured": True, "database": True}):
+            with patch.object(auth, "operator_from_request", return_value=operator):
+                with patch.object(api, "operator_from_request", return_value=operator):
+                    with patch.object(api.store, "catalogs", return_value={"block_types": []}):
+                        response = await self.client.get("/api/taksimo-new/admin/catalogs")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["block_types"], [])
+
+    async def test_admin_block_type_save_passes_body_and_actor(self):
+        operator = {"id": 1, "role": "admin", "name": "Администратор"}
+        with patch.object(auth, "auth_status", return_value={"configured": True, "database": True}):
+            with patch.object(auth, "operator_from_request", return_value=operator):
+                with patch.object(api, "operator_from_request", return_value=operator):
+                    with patch.object(api.store, "save_block_type", return_value={"letter": "A"}) as saved:
+                        response = await self.client.post(
+                            "/api/taksimo-new/admin/block-types/A", json={"weight_kg": 7780, "price_rub": 100}
+                        )
+        self.assertEqual(response.status, 201)
+        self.assertEqual((await response.json())["record"], {"letter": "A"})
+        self.assertEqual(saved.call_args.args[0], "A")
+        self.assertEqual(saved.call_args.kwargs["weight_kg"], 7780)
+        self.assertEqual(saved.call_args.kwargs["operator"]["role"], "admin")
+
     def test_database_status_does_not_depend_on_cookie_secret(self):
         with patch.dict(os.environ, {"TAKSIMO_NEW_AUTH_SECRET": ""}, clear=False):
             with patch.object(auth.store, "operator_accounts_ready", return_value=True):

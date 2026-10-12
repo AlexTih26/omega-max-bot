@@ -17,7 +17,15 @@ from zoneinfo import ZoneInfo
 from taksimo_new_db import iso_utc, transaction, utc_now
 
 
+ROLE_CODES = (
+    "admin",
+    "dispatcher",
+    "accountant1", "accountant2", "accountant3",
+    "operator1", "operator2", "operator3",
+)
 OPERATOR_ROLES = {"operator1", "operator2", "operator3"}
+ACCOUNTANT_ROLES = {"accountant1", "accountant2", "accountant3"}
+ADMIN_ROLES = {"admin"}
 MAX_LOCK_MINUTES = 20
 DEFAULT_TIMEZONE = "Asia/Irkutsk"
 
@@ -111,6 +119,11 @@ def _operator_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "role": str(row["role_code"]),
         "name": str(row["display_name"]),
     }
+
+
+def _require_role(operator: Mapping[str, Any], allowed: set[str], label: str) -> None:
+    if str(operator.get("role") or "") not in allowed:
+        raise PermissionError(f"Требуется роль: {label}")
 
 
 def _operator_actor(operator: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -259,12 +272,12 @@ def operator_accounts_ready() -> bool:
         with connection.cursor() as cursor:
             cursor.execute("SELECT role_code FROM tn_operator_accounts WHERE active = 1")
             roles = {str(row["role_code"]) for row in cursor.fetchall()}
-    return roles == OPERATOR_ROLES
+    return OPERATOR_ROLES.issubset(roles)
 
 
 def set_operator_account(role: str, display_name: str, *, pin_hash: str | None, active: bool) -> None:
-    if role not in OPERATOR_ROLES:
-        raise ValueError("Неизвестная роль оператора")
+    if role not in ROLE_CODES:
+        raise ValueError("Неизвестная роль учётной записи")
     name = _required_text(display_name, "имя оператора", max_length=120)
     now = utc_now()
     with transaction() as connection:
@@ -2130,4 +2143,455 @@ def record_outbox_delivery_failure(public_id: str, *, result_note: Any) -> bool:
                    VALUES (%s, 0, %s, %s)""",
                 (int(row["id"]), note, utc_now()),
             )
+
+
+# --- Справочники администратора и журнал действий ---
+# Справочники задают значения по умолчанию: рейс и строки документов сохраняют
+# собственный снимок, поэтому правка справочника не переписывает историю.
+
+
+def record_action(
+    *,
+    operator: Mapping[str, Any],
+    action: str,
+    subject_type: str = "",
+    subject_id: Any = "",
+    details: Mapping[str, Any] | None = None,
+    remote_address: str = "",
+) -> None:
+    """Записать действие в журнал: кто что сделал и что сохранил."""
+    name = _required_text(action, "действие", max_length=80)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            _append_action_log(
+                cursor,
+                operator=operator,
+                action=name,
+                subject_type=_optional_text(subject_type, "объект", max_length=40),
+                subject_id=_optional_text(subject_id, "идентификатор объекта", max_length=64),
+                details=details,
+                remote_address=remote_address,
+            )
+
+
+def _append_action_log(
+    cursor: Any,
+    *,
+    operator: Mapping[str, Any],
+    action: str,
+    subject_type: str = "",
+    subject_id: str = "",
+    details: Mapping[str, Any] | None = None,
+    remote_address: str = "",
+    occurred_at: datetime | None = None,
+) -> None:
+    cursor.execute(
+        """INSERT INTO tn_action_log
+           (account_id, role_code, action, subject_type, subject_id, details_json,
+            remote_address, created_at)
+           VALUES (%s, %s, %s, %s, %s, CAST(%s AS JSON), %s, %s)""",
+        (
+            int(operator["id"]), str(operator.get("role") or ""), action,
+            subject_type, subject_id,
+            _json(dict(details)) if details else None,
+            remote_address[:128], occurred_at or utc_now(),
+        ),
+    )
+
+
+def list_actions(*, limit: int = 100) -> list[dict[str, Any]]:
+    count = _as_int(limit, "предел", minimum=1, maximum=1000)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT l.id, l.role_code, l.action, l.subject_type, l.subject_id,
+                          l.details_json, l.remote_address, l.created_at,
+                          a.display_name AS actor_name
+                   FROM tn_action_log AS l
+                   LEFT JOIN tn_operator_accounts AS a ON a.id = l.account_id
+                   ORDER BY l.id DESC
+                   LIMIT %s""",
+                (count,),
+            )
+            rows = cursor.fetchall()
+    result = []
+    for row in rows:
+        item = _row_datetime(dict(row))
+        details = item.pop("details_json", None)
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except ValueError:
+                pass
+        item["details"] = details
+        result.append(item)
+    return result
+
+
+def block_types() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT letter, weight_kg, price_rub, sort_order, updated_at
+                   FROM tn_block_types ORDER BY sort_order, letter"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def save_block_type(
+    letter: Any, *, weight_kg: Any, price_rub: Any = 0, operator: Mapping[str, Any], remote_address: str = ""
+) -> dict[str, Any]:
+    _require_role(operator, ADMIN_ROLES, "администратор")
+    code = _required_text(letter, "буква плиты", max_length=1).upper()
+    if code not in "ABCDEFK":
+        raise ValueError("Некорректно указана буква плиты")
+    weight = _as_int(weight_kg, "вес плиты", minimum=1, maximum=100_000)
+    try:
+        price = round(float(price_rub or 0), 2)
+    except (TypeError, ValueError):
+        raise ValueError("Некорректно указана стоимость плиты") from None
+    if price < 0:
+        raise ValueError("Некорректно указана стоимость плиты")
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT letter FROM tn_block_types WHERE letter = %s FOR UPDATE", (code,))
+            exists = cursor.fetchone() is not None
+            if exists:
+                cursor.execute(
+                    "UPDATE tn_block_types SET weight_kg = %s, price_rub = %s, updated_at = %s WHERE letter = %s",
+                    (weight, price, now, code),
+                )
+            else:
+                cursor.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM tn_block_types")
+                order = int(cursor.fetchone()["next_order"])
+                cursor.execute(
+                    """INSERT INTO tn_block_types (letter, weight_kg, price_rub, sort_order, updated_at)
+                       VALUES (%s, %s, %s, %s, %s)""",
+                    (code, weight, price, order, now),
+                )
+            _append_action_log(
+                cursor, operator=operator,
+                action="catalog_block_type_saved", subject_type="block_type", subject_id=code,
+                details={"weight_kg": weight, "price_rub": price}, remote_address=remote_address,
+            )
+    return {"letter": code, "weight_kg": weight, "price_rub": price}
+
+
+def block_suffixes() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT code, label, requires_defect, sort_order FROM tn_block_suffixes ORDER BY sort_order, code"
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def wagon_schemes() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT code, label, max_blocks, allowed_letters, sort_order, updated_at
+                   FROM tn_wagon_schemes ORDER BY sort_order, code"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def save_wagon_scheme(
+    code: Any, *, label: Any, max_blocks: Any, allowed_letters: Any = "",
+    operator: Mapping[str, Any], remote_address: str = "",
+) -> dict[str, Any]:
+    _require_role(operator, ADMIN_ROLES, "администратор")
+    scheme = _required_text(code, "код схемы", max_length=20).lower()
+    title = _required_text(label, "название схемы", max_length=60)
+    maximum = _as_int(max_blocks, "максимум плит", minimum=1, maximum=32)
+    letters = "".join(sorted({ch for ch in str(allowed_letters or "").upper() if ch in "ABCDEFK"}))
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT code FROM tn_wagon_schemes WHERE code = %s FOR UPDATE", (scheme,))
+            if cursor.fetchone() is None:
+                cursor.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order FROM tn_wagon_schemes")
+                order = int(cursor.fetchone()["next_order"])
+                cursor.execute(
+                    """INSERT INTO tn_wagon_schemes (code, label, max_blocks, allowed_letters, sort_order, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (scheme, title, maximum, letters, order, now),
+                )
+            else:
+                cursor.execute(
+                    """UPDATE tn_wagon_schemes SET label = %s, max_blocks = %s, allowed_letters = %s, updated_at = %s
+                       WHERE code = %s""",
+                    (title, maximum, letters, now, scheme),
+                )
+            _append_action_log(
+                cursor, operator=operator,
+                action="catalog_wagon_scheme_saved", subject_type="wagon_scheme", subject_id=scheme,
+                details={"max_blocks": maximum, "allowed_letters": letters}, remote_address=remote_address,
+            )
+    return {"code": scheme, "label": title, "max_blocks": maximum, "allowed_letters": letters}
+
+
+def carriers() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT id, legal_form, name, inn, active, created_at, updated_at
+                   FROM tn_carriers ORDER BY name, id"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def save_carrier(
+    *, name: Any, inn: Any, legal_form: Any = "ООО", active: bool = True,
+    operator: Mapping[str, Any], carrier_id: Any = None, remote_address: str = "",
+) -> dict[str, Any]:
+    _require_role(operator, ADMIN_ROLES, "администратор")
+    title = _required_text(name, "название перевозчика", max_length=200)
+    form = _required_text(legal_form, "организационная форма", max_length=8).upper()
+    if form not in ("ООО", "ИП"):
+        raise ValueError("Организационная форма должна быть ООО или ИП")
+    number = _required_text(inn, "ИНН", max_length=12)
+    if not (len(number) == 10 and number.isdigit()) and not (len(number) == 12 and number.isdigit()):
+        raise ValueError("ИНН должен содержать 10 или 12 цифр")
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            if carrier_id in (None, ""):
+                cursor.execute(
+                    """INSERT INTO tn_carriers (legal_form, name, inn, active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (form, title, number, int(bool(active)), now, now),
+                )
+                identifier = int(cursor.lastrowid)
+                action = "catalog_carrier_created"
+            else:
+                identifier = _as_int(carrier_id, "перевозчик", minimum=1)
+                cursor.execute("SELECT id FROM tn_carriers WHERE id = %s FOR UPDATE", (identifier,))
+                if cursor.fetchone() is None:
+                    raise KeyError("Перевозчик не найден")
+                cursor.execute(
+                    """UPDATE tn_carriers SET legal_form = %s, name = %s, inn = %s, active = %s, updated_at = %s
+                       WHERE id = %s""",
+                    (form, title, number, int(bool(active)), now, identifier),
+                )
+                action = "catalog_carrier_updated"
+            _append_action_log(
+                cursor, operator=operator, action=action,
+                subject_type="carrier", subject_id=str(identifier),
+                details={"legal_form": form, "name": title, "inn": number}, remote_address=remote_address,
+            )
+    return {"id": identifier, "legal_form": form, "name": title, "inn": number, "active": bool(active)}
+
+
+def drivers() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT id, full_name, phone, license_number, active, created_at, updated_at
+                   FROM tn_drivers ORDER BY full_name, id"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def save_driver(
+    *, full_name: Any, phone: Any = "", license_number: Any = "", active: bool = True,
+    operator: Mapping[str, Any], driver_id: Any = None, remote_address: str = "",
+) -> dict[str, Any]:
+    _require_role(operator, ADMIN_ROLES, "администратор")
+    name = _required_text(full_name, "ФИО водителя", max_length=160)
+    contact = _optional_text(phone, "телефон", max_length=32)
+    licence = _optional_text(license_number, "номер прав", max_length=40)
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            if driver_id in (None, ""):
+                cursor.execute(
+                    """INSERT INTO tn_drivers (full_name, phone, license_number, active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (name, contact, licence, int(bool(active)), now, now),
+                )
+                identifier = int(cursor.lastrowid)
+                action = "catalog_driver_created"
+            else:
+                identifier = _as_int(driver_id, "водитель", minimum=1)
+                cursor.execute("SELECT id FROM tn_drivers WHERE id = %s FOR UPDATE", (identifier,))
+                if cursor.fetchone() is None:
+                    raise KeyError("Водитель не найден")
+                cursor.execute(
+                    """UPDATE tn_drivers SET full_name = %s, phone = %s, license_number = %s, active = %s, updated_at = %s
+                       WHERE id = %s""",
+                    (name, contact, licence, int(bool(active)), now, identifier),
+                )
+                action = "catalog_driver_updated"
+            _append_action_log(
+                cursor, operator=operator, action=action,
+                subject_type="driver", subject_id=str(identifier),
+                details={"full_name": name}, remote_address=remote_address,
+            )
+    return {"id": identifier, "full_name": name, "phone": contact, "license_number": licence, "active": bool(active)}
+
+
+def vehicles() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT v.id, v.plate, v.plate_tail, v.carrier_id, v.default_driver_id, v.note, v.active,
+                          v.created_at, v.updated_at, c.name AS carrier_name, c.inn AS carrier_inn,
+                          d.full_name AS default_driver_name
+                   FROM tn_vehicles AS v
+                   LEFT JOIN tn_carriers AS c ON c.id = v.carrier_id
+                   LEFT JOIN tn_drivers AS d ON d.id = v.default_driver_id
+                   ORDER BY v.plate, v.id"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def save_vehicle(
+    *, plate: Any, carrier_id: Any = None, default_driver_id: Any = None, note: Any = "",
+    active: bool = True, operator: Mapping[str, Any], vehicle_id: Any = None, remote_address: str = "",
+) -> dict[str, Any]:
+    _require_role(operator, ADMIN_ROLES, "администратор")
+    number = _required_text(plate, "гос. номер", max_length=32)
+    tail = "".join(ch for ch in number.upper() if ch.isdigit())[-4:]
+    comment = _optional_text(note, "примечание", max_length=200)
+    carrier = None if carrier_id in (None, "") else _as_int(carrier_id, "перевозчик", minimum=1)
+    driver = None if default_driver_id in (None, "") else _as_int(default_driver_id, "водитель", minimum=1)
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            if vehicle_id in (None, ""):
+                cursor.execute(
+                    """INSERT INTO tn_vehicles (plate, plate_tail, carrier_id, default_driver_id, note, active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (number, tail, carrier, driver, comment, int(bool(active)), now, now),
+                )
+                identifier = int(cursor.lastrowid)
+                action = "catalog_vehicle_created"
+            else:
+                identifier = _as_int(vehicle_id, "машина", minimum=1)
+                cursor.execute("SELECT id FROM tn_vehicles WHERE id = %s FOR UPDATE", (identifier,))
+                if cursor.fetchone() is None:
+                    raise KeyError("Машина не найдена")
+                cursor.execute(
+                    """UPDATE tn_vehicles SET plate = %s, plate_tail = %s, carrier_id = %s, default_driver_id = %s,
+                              note = %s, active = %s, updated_at = %s
+                       WHERE id = %s""",
+                    (number, tail, carrier, driver, comment, int(bool(active)), now, identifier),
+                )
+                action = "catalog_vehicle_updated"
+            _append_action_log(
+                cursor, operator=operator, action=action,
+                subject_type="vehicle", subject_id=str(identifier),
+                details={"plate": number, "carrier_id": carrier, "default_driver_id": driver},
+                remote_address=remote_address,
+            )
+    return {
+        "id": identifier, "plate": number, "plate_tail": tail, "carrier_id": carrier,
+        "default_driver_id": driver, "note": comment, "active": bool(active),
+    }
+
+
+def wagon_fleet() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT w.id, w.wagon_number, w.scheme_code, w.current_dead_end, w.current_slot, w.note,
+                          w.active, w.created_at, w.updated_at, s.label AS scheme_label, s.max_blocks
+                   FROM tn_wagon_fleet AS w
+                   LEFT JOIN tn_wagon_schemes AS s ON s.code = w.scheme_code
+                   ORDER BY w.wagon_number, w.id"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
+
+
+def save_wagon(
+    *, wagon_number: Any, scheme_code: Any = None, note: Any = "", active: bool = True,
+    operator: Mapping[str, Any], wagon_id: Any = None, remote_address: str = "",
+) -> dict[str, Any]:
+    _require_role(operator, ADMIN_ROLES, "администратор")
+    number = _required_text(wagon_number, "номер вагона", max_length=40)
+    scheme = None if scheme_code in (None, "") else _required_text(scheme_code, "схема вагона", max_length=20).lower()
+    comment = _optional_text(note, "примечание", max_length=200)
+    now = utc_now()
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            if scheme is not None:
+                cursor.execute("SELECT code FROM tn_wagon_schemes WHERE code = %s", (scheme,))
+                if cursor.fetchone() is None:
+                    raise ValueError("Схема вагона не найдена")
+            if wagon_id in (None, ""):
+                cursor.execute(
+                    """INSERT INTO tn_wagon_fleet (wagon_number, scheme_code, note, active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (number, scheme, comment, int(bool(active)), now, now),
+                )
+                identifier = int(cursor.lastrowid)
+                action = "catalog_wagon_created"
+            else:
+                identifier = _as_int(wagon_id, "вагон", minimum=1)
+                cursor.execute("SELECT id FROM tn_wagon_fleet WHERE id = %s FOR UPDATE", (identifier,))
+                if cursor.fetchone() is None:
+                    raise KeyError("Вагон не найден")
+                cursor.execute(
+                    """UPDATE tn_wagon_fleet SET wagon_number = %s, scheme_code = %s, note = %s, active = %s, updated_at = %s
+                       WHERE id = %s""",
+                    (number, scheme, comment, int(bool(active)), now, identifier),
+                )
+                action = "catalog_wagon_updated"
+            _append_action_log(
+                cursor, operator=operator, action=action,
+                subject_type="wagon_fleet", subject_id=str(identifier),
+                details={"wagon_number": number, "scheme_code": scheme}, remote_address=remote_address,
+            )
+    return {"id": identifier, "wagon_number": number, "scheme_code": scheme, "note": comment, "active": bool(active)}
+
+
+def dead_ends() -> list[dict[str, Any]]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT code, label, legacy_label, slot_count, is_legacy, sort_order
+                   FROM tn_dead_ends ORDER BY sort_order, code"""
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+def yard_grid() -> dict[str, Any]:
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT x, y, max_blocks FROM tn_yard_slots ORDER BY x, y")
+            cells = [dict(row) for row in cursor.fetchall()]
+    return {
+        "x": max((int(cell["x"]) for cell in cells), default=0),
+        "y": max((int(cell["y"]) for cell in cells), default=0),
+        "max_blocks_per_cell": max((int(cell["max_blocks"]) for cell in cells), default=0),
+        "cells": cells,
+    }
+
+
+def catalogs() -> dict[str, Any]:
+    """Полный справочник администратора одним ответом."""
+    return {
+        "block_types": block_types(),
+        "block_suffixes": block_suffixes(),
+        "wagon_schemes": wagon_schemes(),
+        "carriers": carriers(),
+        "drivers": drivers(),
+        "vehicles": vehicles(),
+        "wagon_fleet": wagon_fleet(),
+        "dead_ends": dead_ends(),
+        "yard_grid": yard_grid(),
+    }
+
+
+def account_roles() -> list[dict[str, Any]]:
+    """Учётные записи всех ролей без хэшей PIN."""
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT id, role_code, login, display_name, active, created_at, updated_at
+                   FROM tn_operator_accounts ORDER BY role_code, id"""
+            )
+            return [_row_datetime(dict(row)) for row in cursor.fetchall()]
             return True

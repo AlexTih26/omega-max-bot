@@ -176,6 +176,13 @@ async def handle_auth_login(request: web.Request) -> web.Response:
         user_agent=agent,
     )
     store.record_login_attempt(success=True, remote_address=remote, user_agent=agent, operator_id=int(operator["id"]))
+    try:
+        store.record_action(
+            operator=operator, action="auth_login", subject_type="account",
+            subject_id=str(operator["id"]), remote_address=remote,
+        )
+    except TaksimoNewDatabaseError:
+        pass
     response = _json({"ok": True, "operator": operator})
     response.set_cookie(
         COOKIE_NAME,
@@ -192,9 +199,15 @@ async def handle_auth_login(request: web.Request) -> web.Response:
 
 async def handle_auth_logout(request: web.Request) -> web.Response:
     token = request.cookies.get(COOKIE_NAME)
+    operator = operator_from_request(request)
     if token and _secret():
         try:
             store.revoke_session(_token_hash(token))
+            if operator:
+                store.record_action(
+                    operator=operator, action="auth_logout", subject_type="account",
+                    subject_id=str(operator["id"]), remote_address=(request.remote or ""),
+                )
         except TaksimoNewDatabaseError:
             pass
     response = _json({"ok": True})

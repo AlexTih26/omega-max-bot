@@ -21,9 +21,9 @@ import taksimo_new_store as store  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Настройка трёх PIN новой Таксимо")
-    parser.add_argument("role", choices=("operator1", "operator2", "operator3"))
-    parser.add_argument("display_name", help="Отображаемое имя оператора")
+    parser = argparse.ArgumentParser(description="Настройка PIN учётных записей новой Таксимо")
+    parser.add_argument("role", choices=store.ROLE_CODES)
+    parser.add_argument("display_name", help="Отображаемое имя сотрудника")
     parser.add_argument("--disable", action="store_true", help="Отключить учётную запись")
     args = parser.parse_args()
 

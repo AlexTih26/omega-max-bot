@@ -21,12 +21,13 @@ OPERATOR_ROLES = {"operator1", "operator2", "operator3"}
 MAX_LOCK_MINUTES = 20
 DEFAULT_TIMEZONE = "Asia/Irkutsk"
 
-# Тупики новой площадки — своя конфигурация, НЕ копия старой (там было два:
-# ГРУЗОВОЙ и ТУРАН по 10). Слоты обязательны: это позиция вагона.
+# Тупики новой площадки наследуют старую (ГРУЗОВОЙ и ТУРАН по 10 мест)
+# и дополняются третьим. Коды совпадают с tn_dead_ends (миграция 010)
+# и с tn_wagon_yard_slots (миграция 009).
 WAGON_DEAD_ENDS = (
-    {"code": "gruzovoy_1", "name": "Грузовой 1", "slots": 10},
-    {"code": "gruzovoy_2", "name": "Грузовой 2 (Туран)", "slots": 10},
-    {"code": "gruzovoy_3", "name": "Грузовой 3", "slots": 10},
+    {"code": "gruzovoy", "name": "Грузовой", "slots": 10},
+    {"code": "turan", "name": "Туран", "slots": 10},
+    {"code": "third", "name": "Третий", "slots": 10},
 )
 WAGON_DEAD_ENDS_BY_CODE = {item["code"]: item for item in WAGON_DEAD_ENDS}
 

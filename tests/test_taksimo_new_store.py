@@ -95,7 +95,7 @@ class TaksimoNewStoreTests(unittest.TestCase):
             store, "_append_event"
         ), patch.object(store, "_append_outbox") as append_outbox:
             result = store.load_block_to_wagon(
-                block_id=7, wagon_number="123", dead_end_code="gruzovoy_1", slot_index=2, operator=operator
+                block_id=7, wagon_number="123", dead_end_code="gruzovoy", slot_index=2, operator=operator
             )
 
         self.assertEqual(result["id"], 42)
@@ -107,7 +107,7 @@ class TaksimoNewStoreTests(unittest.TestCase):
         self.assertEqual(payload["rumex_shipment_id"], 55)
         self.assertEqual(payload["rumex_document_version"], 1)
         self.assertEqual(payload["physical_owner"], "taksimo_new")
-        self.assertEqual(payload["dead_end_code"], "gruzovoy_1")
+        self.assertEqual(payload["dead_end_code"], "gruzovoy")
         self.assertEqual(payload["slot_index"], 2)
         ensure_position.assert_called_once()
 
@@ -127,13 +127,13 @@ class TaksimoNewStoreTests(unittest.TestCase):
             store, "_append_wagon_physical_facts"
         ), patch.object(store, "_append_notification"):
             result = store.mark_wagon_returned_empty(
-                wagon_number="123", dead_end_code="gruzovoy_2", slot_index=4, operator=operator
+                wagon_number="123", dead_end_code="turan", slot_index=4, operator=operator
             )
 
         self.assertEqual(result["wagon_number"], "123")
         self.assertEqual(result["status"], "returned_empty")
         self.assertEqual(result["blocks_count"], 5)
-        self.assertEqual(result["dead_end_code"], "gruzovoy_2")
+        self.assertEqual(result["dead_end_code"], "turan")
         self.assertEqual(result["slot_index"], 4)
         ensure_position.assert_called_once()
         self.assertTrue(
@@ -161,7 +161,7 @@ class TaksimoNewStoreTests(unittest.TestCase):
             store, "_append_event"
         ), patch.object(store, "_append_outbox"):
             result = store.load_block_to_wagon(
-                block_id=7, wagon_number="123", dead_end_code="gruzovoy_3", slot_index=8, operator=operator
+                block_id=7, wagon_number="123", dead_end_code="third", slot_index=8, operator=operator
             )
 
         self.assertEqual(result["wagon_number"], "123")
@@ -197,10 +197,10 @@ class TaksimoNewStoreTests(unittest.TestCase):
             store, "_append_event"
         ), patch.object(store, "_append_wagon_physical_facts"), patch.object(store, "_append_notification"):
             result = store.mark_wagon_loaded(
-                "123", dead_end_code="gruzovoy_1", slot_index=6, operator=operator
+                "123", dead_end_code="gruzovoy", slot_index=6, operator=operator
             )
 
         self.assertEqual(result["status"], "loaded")
-        self.assertEqual(result["dead_end_code"], "gruzovoy_1")
+        self.assertEqual(result["dead_end_code"], "gruzovoy")
         self.assertEqual(result["slot_index"], 6)
         ensure_position.assert_called_once()

@@ -1,23 +1,26 @@
--- 009: Независимые позиции вагонов и одноразовый архив старой Таксимо.
+-- 009: Тупики вагонов новой площадки и одноразовый архив старой Таксимо.
 -- Старая SQLite-база никогда не изменяется: JSON-снимок передаёт в MySQL
 -- только приложение после даты перехода и только через read-only соединение.
+--
+-- Тупики наследуют старую площадку (ГРУЗОВОЙ, ТУРАН) и дополняются третьим.
+-- Коды совпадают с tn_dead_ends из 010: gruzovoy, turan, third.
 
 CREATE TABLE IF NOT EXISTS tn_wagon_yard_slots (
     dead_end_code VARCHAR(40) NOT NULL,
     slot_index TINYINT UNSIGNED NOT NULL,
     PRIMARY KEY (dead_end_code, slot_index),
     CONSTRAINT chk_tn_wagon_yard_slots_code
-        CHECK (dead_end_code IN ('gruzovoy_1', 'gruzovoy_2', 'gruzovoy_3')),
+        CHECK (dead_end_code IN ('gruzovoy', 'turan', 'third')),
     CONSTRAINT chk_tn_wagon_yard_slots_index CHECK (slot_index BETWEEN 1 AND 10)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 INSERT IGNORE INTO tn_wagon_yard_slots (dead_end_code, slot_index) VALUES
-    ('gruzovoy_1', 1), ('gruzovoy_1', 2), ('gruzovoy_1', 3), ('gruzovoy_1', 4), ('gruzovoy_1', 5),
-    ('gruzovoy_1', 6), ('gruzovoy_1', 7), ('gruzovoy_1', 8), ('gruzovoy_1', 9), ('gruzovoy_1', 10),
-    ('gruzovoy_2', 1), ('gruzovoy_2', 2), ('gruzovoy_2', 3), ('gruzovoy_2', 4), ('gruzovoy_2', 5),
-    ('gruzovoy_2', 6), ('gruzovoy_2', 7), ('gruzovoy_2', 8), ('gruzovoy_2', 9), ('gruzovoy_2', 10),
-    ('gruzovoy_3', 1), ('gruzovoy_3', 2), ('gruzovoy_3', 3), ('gruzovoy_3', 4), ('gruzovoy_3', 5),
-    ('gruzovoy_3', 6), ('gruzovoy_3', 7), ('gruzovoy_3', 8), ('gruzovoy_3', 9), ('gruzovoy_3', 10);
+    ('gruzovoy', 1), ('gruzovoy', 2), ('gruzovoy', 3), ('gruzovoy', 4), ('gruzovoy', 5),
+    ('gruzovoy', 6), ('gruzovoy', 7), ('gruzovoy', 8), ('gruzovoy', 9), ('gruzovoy', 10),
+    ('turan', 1), ('turan', 2), ('turan', 3), ('turan', 4), ('turan', 5),
+    ('turan', 6), ('turan', 7), ('turan', 8), ('turan', 9), ('turan', 10),
+    ('third', 1), ('third', 2), ('third', 3), ('third', 4), ('third', 5),
+    ('third', 6), ('third', 7), ('third', 8), ('third', 9), ('third', 10);
 
 CREATE TABLE IF NOT EXISTS tn_wagon_position_history (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

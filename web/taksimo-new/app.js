@@ -108,8 +108,28 @@
     });
   }
 
+  var roleLabels = {
+    admin: "Администратор",
+    dispatcher: "Диспетчер",
+    accountant1: "Бухгалтер 1",
+    accountant2: "Бухгалтер 2",
+    accountant3: "Бухгалтер 3",
+    operator1: "Оператор 1",
+    operator2: "Оператор 2",
+    operator3: "Оператор 3"
+  };
+
   function isOperator1() {
     return state.operator && state.operator.role === "operator1";
+  }
+
+  function isAdmin() {
+    return state.operator && state.operator.role === "admin";
+  }
+
+  function hasRole() {
+    var allowed = Array.prototype.slice.call(arguments);
+    return Boolean(state.operator) && allowed.indexOf(state.operator.role) !== -1;
   }
 
   function showPanel(name) {
@@ -476,8 +496,220 @@
     });
   }
 
+  function adminCard(title, meta, onEdit) {
+    var card = element("article", "tn-card");
+    card.appendChild(element("p", "tn-card-title", title));
+    if (meta) card.appendChild(element("p", "tn-card-meta", meta));
+    if (onEdit) {
+      var actions = element("div", "tn-card-actions");
+      var button = element("button", "tn-button tn-button--secondary", "Изменить");
+      button.type = "button";
+      button.addEventListener("click", onEdit);
+      actions.appendChild(button);
+      card.appendChild(actions);
+    }
+    return card;
+  }
+
+  function renderAdminBlockTypes(types) {
+    var list = document.getElementById("adminBlockTypes");
+    clear(list);
+    types.forEach(function (item) {
+      var card = adminCard("Плита " + item.letter, "вес: " + item.weight_kg + " кг · стоимость: " + item.price_rub + " ₽", function () {
+        var weight = window.prompt("Вес плиты " + item.letter + ", кг", item.weight_kg);
+        if (weight === null) return;
+        var price = window.prompt("Стоимость плиты " + item.letter + ", ₽", item.price_rub);
+        if (price === null) return;
+        jsonRequest("/admin/block-types/" + encodeURIComponent(item.letter), "POST", { weight_kg: weight, price_rub: price })
+          .then(function () { showToast("Справочник плит обновлён."); return loadAdmin(); })
+          .catch(function (error) { showToast(error.message || "Не удалось сохранить"); });
+      });
+      list.appendChild(card);
+    });
+  }
+
+  function renderAdminWagonSchemes(schemes) {
+    var list = document.getElementById("adminWagonSchemes");
+    clear(list);
+    schemes.forEach(function (item) {
+      list.appendChild(adminCard(
+        item.label || item.code,
+        "максимум плит: " + item.max_blocks + (item.allowed_letters ? " · буквы: " + item.allowed_letters : "")
+      ));
+    });
+  }
+
+  function renderAdminCarriers(carriers) {
+    var list = document.getElementById("adminCarriers");
+    clear(list);
+    carriers.forEach(function (item) {
+      list.appendChild(adminCard(
+        item.legal_form + " " + item.name,
+        "ИНН " + item.inn + (item.active ? "" : " · отключён"),
+        function () { fillAdminCarrierForm(item); }
+      ));
+    });
+  }
+
+  function renderAdminDrivers(drivers) {
+    var list = document.getElementById("adminDrivers");
+    clear(list);
+    drivers.forEach(function (item) {
+      var meta = [item.phone || "телефон не указан", item.license_number ? "права " + item.license_number : "права не указаны"];
+      if (!item.active) meta.push("отключён");
+      list.appendChild(adminCard(item.full_name, meta.join(" · "), function () { fillAdminDriverForm(item); }));
+    });
+  }
+
+  function renderAdminVehicles(vehicles) {
+    var list = document.getElementById("adminVehicles");
+    clear(list);
+    vehicles.forEach(function (item) {
+      var meta = [item.carrier_name || "перевозчик не указан", item.default_driver_name ? "водитель: " + item.default_driver_name : "водитель не назначен"];
+      if (!item.active) meta.push("отключена");
+      list.appendChild(adminCard(item.plate, meta.join(" · "), function () { fillAdminVehicleForm(item); }));
+    });
+  }
+
+  function renderAdminWagons(wagons) {
+    var list = document.getElementById("adminWagons");
+    clear(list);
+    wagons.forEach(function (item) {
+      var meta = [item.scheme_label || "схема не задана"];
+      if (item.current_dead_end) meta.push("тупик " + item.current_dead_end + ", слот " + item.current_slot);
+      if (!item.active) meta.push("отключён");
+      list.appendChild(adminCard("Вагон " + item.wagon_number, meta.join(" · "), function () { fillAdminWagonForm(item); }));
+    });
+  }
+
+  function renderAdminAccounts(accounts) {
+    var list = document.getElementById("adminAccounts");
+    clear(list);
+    accounts.forEach(function (item) {
+      list.appendChild(adminCard(
+        item.display_name || item.role_code,
+        (roleLabels[item.role_code] || item.role_code) + (item.login ? " · вход: " + item.login : "") + (item.active ? "" : " · отключена")
+      ));
+    });
+  }
+
+  function renderAdminActions(actions) {
+    var list = document.getElementById("adminActions");
+    clear(list);
+    actions.forEach(function (item) {
+      var card = element("article", "tn-card");
+      card.appendChild(element("p", "tn-card-title", (item.actor_name || roleLabels[item.role_code] || item.role_code) + " · " + item.action));
+      var meta = [formatDate(item.created_at)];
+      if (item.subject_type) meta.push(item.subject_type + (item.subject_id ? " " + item.subject_id : ""));
+      card.appendChild(element("p", "tn-card-meta", meta.join(" · ")));
+      list.appendChild(card);
+    });
+  }
+
+  function fillAdminCarrierForm(item) {
+    var form = document.getElementById("adminCarrierForm");
+    form.elements.id.value = item.id;
+    form.elements.legal_form.value = item.legal_form;
+    form.elements.name.value = item.name;
+    form.elements.inn.value = item.inn;
+    form.elements.active.checked = Boolean(item.active);
+  }
+
+  function fillAdminDriverForm(item) {
+    var form = document.getElementById("adminDriverForm");
+    form.elements.id.value = item.id;
+    form.elements.full_name.value = item.full_name;
+    form.elements.phone.value = item.phone || "";
+    form.elements.license_number.value = item.license_number || "";
+    form.elements.active.checked = Boolean(item.active);
+  }
+
+  function fillAdminVehicleForm(item) {
+    var form = document.getElementById("adminVehicleForm");
+    form.elements.id.value = item.id;
+    form.elements.plate.value = item.plate;
+    form.elements.carrier_id.value = item.carrier_id || "";
+    form.elements.default_driver_id.value = item.default_driver_id || "";
+    form.elements.note.value = item.note || "";
+    form.elements.active.checked = Boolean(item.active);
+  }
+
+  function fillAdminWagonForm(item) {
+    var form = document.getElementById("adminWagonForm");
+    form.elements.id.value = item.id;
+    form.elements.wagon_number.value = item.wagon_number;
+    form.elements.scheme_code.value = item.scheme_code || "";
+    form.elements.note.value = item.note || "";
+    form.elements.active.checked = Boolean(item.active);
+  }
+
+  function fillAdminSelects(catalogs) {
+    var carrierSelect = document.getElementById("adminVehicleForm").elements.carrier_id;
+    var driverSelect = document.getElementById("adminVehicleForm").elements.default_driver_id;
+    var schemeSelect = document.getElementById("adminWagonForm").elements.scheme_code;
+    var carrierValue = carrierSelect.value;
+    var driverValue = driverSelect.value;
+    while (carrierSelect.options.length > 1) carrierSelect.remove(1);
+    while (driverSelect.options.length > 1) driverSelect.remove(1);
+    while (schemeSelect.options.length > 1) schemeSelect.remove(1);
+    (catalogs.carriers || []).forEach(function (item) {
+      carrierSelect.appendChild(new Option(item.legal_form + " " + item.name, item.id));
+    });
+    (catalogs.drivers || []).forEach(function (item) {
+      driverSelect.appendChild(new Option(item.full_name, item.id));
+    });
+    (catalogs.wagon_schemes || []).forEach(function (item) {
+      schemeSelect.appendChild(new Option(item.label || item.code, item.code));
+    });
+    carrierSelect.value = carrierValue;
+    driverSelect.value = driverValue;
+  }
+
+  function loadAdmin() {
+    return Promise.all([
+      request("/admin/catalogs"),
+      request("/admin/accounts"),
+      request("/admin/actions?limit=50")
+    ]).then(function (results) {
+      var catalogs = results[0] || {};
+      fillAdminSelects(catalogs);
+      renderAdminBlockTypes(catalogs.block_types || []);
+      renderAdminWagonSchemes(catalogs.wagon_schemes || []);
+      renderAdminCarriers(catalogs.carriers || []);
+      renderAdminDrivers(catalogs.drivers || []);
+      renderAdminVehicles(catalogs.vehicles || []);
+      renderAdminWagons(catalogs.wagon_fleet || []);
+      renderAdminAccounts(results[1].accounts || []);
+      renderAdminActions(results[2].actions || []);
+      setError("");
+    });
+  }
+
+  function adminFormPayload(form, fields) {
+    var payload = {};
+    fields.forEach(function (name) {
+      var field = form.elements[name];
+      if (!field) return;
+      if (field.type === "checkbox") payload[name] = field.checked;
+      else if (field.value !== "") payload[name] = field.value.trim ? field.value.trim() : field.value;
+    });
+    return payload;
+  }
+
+  function submitAdminForm(event, path, fields, message) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    if (!form.checkValidity()) { form.reportValidity(); return; }
+    var button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    jsonRequest(path, "POST", adminFormPayload(form, fields))
+      .then(function () { form.reset(); form.elements.id.value = ""; showToast(message); return loadAdmin(); })
+      .catch(function (error) { showToast(error.message || "Не удалось сохранить"); })
+      .finally(function () { button.disabled = false; });
+  }
+
   function loadPanel(name) {
-    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog };
+    var loaders = { today: loadDashboard, reception: loadIntakes, yard: loadYard, wagons: loadWagons, journal: loadEvents, reports: loadReport, catalog: loadCatalog, admin: loadAdmin };
     if (!loaders[name]) return;
     loaders[name]().catch(function (error) { setError(error.message || "Не удалось загрузить данные"); });
   }
@@ -1362,9 +1594,11 @@
   function loadIdentity() {
     return request("/auth/me").then(function (data) {
       state.operator = data.operator;
-      currentUser.textContent = data.operator.name + " · " + (data.operator.role === "operator1" ? "Оператор 1" : data.operator.role === "operator2" ? "Оператор 2" : "Оператор 3");
+      currentUser.textContent = data.operator.name + " · " + (roleLabels[data.operator.role] || data.operator.role);
       document.querySelectorAll("[data-operator1-only]").forEach(function (node) { node.hidden = !isOperator1(); });
-      if (!isOperator1() && state.activeTab === "manage") showPanel("today");
+      document.querySelectorAll("[data-admin-only]").forEach(function (node) { node.hidden = !isAdmin(); });
+      var allowedTabs = { manage: isOperator1(), admin: isAdmin() };
+      if (allowedTabs[state.activeTab] === false) showPanel("today");
     });
   }
 
@@ -1379,6 +1613,18 @@
     document.getElementById("wagonLoadForm").addEventListener("submit", submitWagonLoad);
     document.getElementById("correctionForm").addEventListener("submit", submitCorrection);
     document.getElementById("operationCancellationForm").addEventListener("submit", submitOperationCancellation);
+    document.getElementById("adminCarrierForm").addEventListener("submit", function (event) {
+      submitAdminForm(event, "/admin/carriers", ["id", "legal_form", "name", "inn", "active"], "Перевозчик сохранён.");
+    });
+    document.getElementById("adminDriverForm").addEventListener("submit", function (event) {
+      submitAdminForm(event, "/admin/drivers", ["id", "full_name", "phone", "license_number", "active"], "Водитель сохранён.");
+    });
+    document.getElementById("adminVehicleForm").addEventListener("submit", function (event) {
+      submitAdminForm(event, "/admin/vehicles", ["id", "plate", "carrier_id", "default_driver_id", "note", "active"], "Машина сохранена.");
+    });
+    document.getElementById("adminWagonForm").addEventListener("submit", function (event) {
+      submitAdminForm(event, "/admin/wagons", ["id", "wagon_number", "scheme_code", "note", "active"], "Вагон сохранён.");
+    });
     document.getElementById("reportDate").addEventListener("change", loadReport);
     document.getElementById("searchInput").addEventListener("input", function () {
       clearTimeout(state.searchTimer);

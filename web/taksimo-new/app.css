@@ -158,6 +158,10 @@ details.tn-form-card[open] summary { margin-bottom: 12px; }
 .tn-form-error { min-height: 1.2em; margin: 0; color: var(--tn-danger); font-size: .9rem; }
 
 .tn-catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.tn-field--checkbox { flex-direction: row; align-items: center; gap: 8px; }
+.tn-field--checkbox input { width: auto; }
+.tn-panel[data-panel="admin"] .tn-section + .tn-section { margin-top: 18px; }
+.tn-panel[data-panel="admin"] .tn-form-card + .tn-catalog-grid { margin-top: 12px; }
 .tn-dead-ends { display: grid; gap: 14px; }
 .tn-dead-end { border: 1px solid var(--tn-border); border-radius: 14px; background: var(--tn-surface); padding: 14px; box-shadow: 0 3px 9px rgba(30, 51, 69, .025); }
 .tn-dead-end-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }

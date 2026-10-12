@@ -45,6 +45,7 @@
         <button class="tn-tab" type="button" data-tab="reports" aria-selected="false">Отчёты</button>
         <button class="tn-tab" type="button" data-tab="catalog" aria-selected="false">Справочник</button>
         <button class="tn-tab" type="button" data-tab="manage" aria-selected="false" data-operator1-only>Управление</button>
+        <button class="tn-tab" type="button" data-tab="admin" aria-selected="false" data-admin-only>Администрирование</button>
       </nav>
 
       <section class="tn-panel" data-panel="today">
@@ -170,6 +171,86 @@
           <div class="tn-form-actions"><button class="tn-button tn-button--danger" type="submit">Зафиксировать отмену</button></div>
         </form>
         <p class="tn-photo-notice">Учётными записями и PIN управляет только технический владелец через серверную утилиту, не Оператор 1.</p>
+      </section>
+
+      <section class="tn-panel" data-panel="admin" hidden>
+        <div class="tn-panel-heading">
+          <div><p class="tn-kicker">Администратор</p><h2>Администрирование</h2><p class="tn-subtitle">Справочники задают значения по умолчанию. История рейсов и строки документов сохраняют собственный снимок, поэтому правка справочника не переписывает прошлое.</p></div>
+          <button class="tn-button tn-button--secondary" type="button" data-refresh>Обновить</button>
+        </div>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Веса и стоимость плит</h3><p class="tn-help">Подтверждённый справочник по буквам. От него считаются новые рейсы.</p></div></div>
+          <div class="tn-catalog-grid" id="adminBlockTypes"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Схемы загрузки вагона</h3><p class="tn-help">Схема присваивается перед постановкой порожнего вагона в тупик.</p></div></div>
+          <div class="tn-catalog-grid" id="adminWagonSchemes"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Перевозчики</h3><p class="tn-help">ООО или ИП, ИНН — 10 или 12 цифр.</p></div></div>
+          <form class="tn-form-card tn-form-grid" id="adminCarrierForm">
+            <input type="hidden" name="id">
+            <label class="tn-field">Форма *<select name="legal_form" required><option value="ООО">ООО</option><option value="ИП">ИП</option></select></label>
+            <label class="tn-field tn-field--wide">Название *<input name="name" maxlength="200" required></label>
+            <label class="tn-field">ИНН *<input name="inn" maxlength="12" required></label>
+            <label class="tn-field tn-field--checkbox"><span>Действует</span><input type="checkbox" name="active" checked></label>
+            <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Сохранить перевозчика</button></div>
+          </form>
+          <div class="tn-catalog-grid" id="adminCarriers"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Водители</h3><p class="tn-help">ФИО — то, что перейдёт в экспедиторскую расписку.</p></div></div>
+          <form class="tn-form-card tn-form-grid" id="adminDriverForm">
+            <input type="hidden" name="id">
+            <label class="tn-field tn-field--wide">ФИО *<input name="full_name" maxlength="160" required></label>
+            <label class="tn-field">Телефон<input name="phone" maxlength="32"></label>
+            <label class="tn-field">Права<input name="license_number" maxlength="40"></label>
+            <label class="tn-field tn-field--checkbox"><span>Действует</span><input type="checkbox" name="active" checked></label>
+            <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Сохранить водителя</button></div>
+          </form>
+          <div class="tn-catalog-grid" id="adminDrivers"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Машины</h3><p class="tn-help">Госномер — идентификатор. История машины — список её рейсов.</p></div></div>
+          <form class="tn-form-card tn-form-grid" id="adminVehicleForm">
+            <input type="hidden" name="id">
+            <label class="tn-field">Гос. номер *<input name="plate" maxlength="32" required></label>
+            <label class="tn-field">Перевозчик<select name="carrier_id"><option value="">не указан</option></select></label>
+            <label class="tn-field">Водитель по умолчанию<select name="default_driver_id"><option value="">не указан</option></select></label>
+            <label class="tn-field tn-field--wide">Примечание<input name="note" maxlength="200"></label>
+            <label class="tn-field tn-field--checkbox"><span>Действует</span><input type="checkbox" name="active" checked></label>
+            <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Сохранить машину</button></div>
+          </form>
+          <div class="tn-catalog-grid" id="adminVehicles"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Парк вагонов</h3><p class="tn-help">Парк около 60. Схема и текущий тупик — свойства вагона.</p></div></div>
+          <form class="tn-form-card tn-form-grid" id="adminWagonForm">
+            <input type="hidden" name="id">
+            <label class="tn-field">Номер вагона *<input name="wagon_number" maxlength="40" required></label>
+            <label class="tn-field">Схема<select name="scheme_code"><option value="">не задана</option></select></label>
+            <label class="tn-field tn-field--wide">Примечание<input name="note" maxlength="200"></label>
+            <label class="tn-field tn-field--checkbox"><span>Действует</span><input type="checkbox" name="active" checked></label>
+            <div class="tn-form-actions"><button class="tn-button tn-button--primary" type="submit">Сохранить вагон</button></div>
+          </form>
+          <div class="tn-catalog-grid" id="adminWagons"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Учётные записи и роли</h3><p class="tn-help">PIN задаёт только технический владелец через серверную утилиту.</p></div></div>
+          <div class="tn-catalog-grid" id="adminAccounts"></div>
+        </section>
+
+        <section class="tn-section">
+          <div class="tn-section-heading"><div><h3>Журнал действий</h3><p class="tn-help">Кто что сделал и что сохранил.</p></div></div>
+          <div class="tn-card-list" id="adminActions"></div>
+        </section>
       </section>
     </main>
   </div>

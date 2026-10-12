@@ -16,8 +16,14 @@ ROOT = Path(__file__).resolve().parent.parent
 BOT = ROOT / "fotonych-bot"
 sys.path.insert(0, str(BOT))
 
-from taksimo_new_auth import hash_pin  # noqa: E402
-import taksimo_new_store as store  # noqa: E402
+try:
+    from taksimo_new_auth import hash_pin  # noqa: E402
+    import taksimo_new_store as store  # noqa: E402
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        f"Не найден модуль {exc.name}. Запускайте утилиту интерпретатором бота:\n"
+        f"  {BOT}/.venv/bin/python scripts/{Path(__file__).name} admin \"Администратор\" --login admin"
+    ) from None
 
 
 def main() -> int:

@@ -25,6 +25,14 @@ data/*.sqlite3
 data/taksimo.db
 data/taksimo.db-*
 
+# WAL/SHM всех SQLite-баз (любое имя, не только taksimo)
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+
 # Бэкапы БД (только на сервере)
 data/backups/
 
@@ -38,6 +46,13 @@ data/materials_chat_state.json
 data/super_admin.json
 data/taksimo_chat_state.json
 data/taksimo_notify_state.json
+data/taksimo_notify_state.json.bak
+data/watchdog-cooldown
+data/drivers_registry.json
+data/materials_receipt_state.json
+
+# Локальные файлы и черновики пользователя (не в Git)
+образец ттн/
 
 # Папка data остаётся в репо (схема + .gitkeep), но не сами .db
 

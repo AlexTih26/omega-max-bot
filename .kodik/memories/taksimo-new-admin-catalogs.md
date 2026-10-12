@@ -86,5 +86,28 @@ POST /api/taksimo-new/admin/wagons
 ## Состояние
 
 Миграция `010` (и `009`) на сервере **не применена** — ждёт разрешения.
-Рабочая база `taksimo_new` нетронута. Следующий шаг — фронтенд админа
-(вкладка `manage` в `web/taksimo-new/index.html:47`).
+Рабочая база `taksimo_new` нетронута.
+
+## Фронтенд (коммит `76e901b`)
+
+Вкладка `data-tab="admin"` («Администрирование») в `index.html`, видна только
+роли `admin` через атрибут `data-admin-only`. Вкладка `manage` («Управление»)
+осталась за Оператором 1 (`data-operator1-only`) — это разные разделы.
+
+В `web/taksimo-new/app.js`:
+- `roleLabels` — подписи всех восьми ролей (было жёстко три оператора);
+- `isAdmin()`, `hasRole()`; `loadIdentity()` управляет `[data-admin-only]`;
+- `loadAdmin()` грузит `/admin/catalogs`, `/admin/accounts`,
+  `/admin/actions?limit=50`; загрузчик в `loadPanel` под ключом `admin`;
+- формы: `adminCarrierForm`, `adminDriverForm`, `adminVehicleForm`,
+  `adminWagonForm` через общий `submitAdminForm`; плиты и схемы правятся
+  через `window.prompt`.
+
+Фронтенд раздаёт **Nginx** из `root /MAX_BOT/web` (`scripts/nginx-*.conf:13`),
+не aiohttp: на порту 8765 `/taksimo-new/...` отдаёт 404 — это норма.
+Проверять страницу только через домен, а не через 127.0.0.1:8765.
+
+## Дальше
+
+Роли диспетчера и бухгалтеров на фронте пока только подписаны, но у них нет
+своих разделов — этапы 3–5 плана (диспетчер, бухгалтеры, операторы).

@@ -50,7 +50,7 @@ title: "Этап 2: единый вход по ролям, права разде
 
 ## Миграция 011
 
-`migrations/taksimo_new/011_unified_login_roles.sql` — **не применена**.
+`migrations/taksimo_new/011_unified_login_roles.sql` — **применена 12.10.2026**.
 Проставляет логины `operator1..3`, заводит `admin`, `dispatcher`,
 `accountant1..3` через `INSERT ... SELECT ... WHERE NOT EXISTS` (повторный
 прогон не задваивает и не сбрасывает `active`/PIN), добавляет индексы

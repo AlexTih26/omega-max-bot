@@ -10,6 +10,7 @@ import base64
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta, timezone
 import json
+import re
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -114,11 +115,15 @@ def _row_datetime(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _operator_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "id": int(row["id"]),
         "role": str(row["role_code"]),
         "name": str(row["display_name"]),
     }
+    login = row.get("login")
+    if login:
+        result["login"] = str(login)
+    return result
 
 
 def _require_role(operator: Mapping[str, Any], allowed: set[str], label: str) -> None:
@@ -275,22 +280,26 @@ def operator_accounts_ready() -> bool:
     return OPERATOR_ROLES.issubset(roles)
 
 
-def set_operator_account(role: str, display_name: str, *, pin_hash: str | None, active: bool) -> None:
+def set_operator_account(
+    role: str, display_name: str, *, pin_hash: str | None, active: bool, login: str | None = None
+) -> None:
     if role not in ROLE_CODES:
         raise ValueError("Неизвестная роль учётной записи")
-    name = _required_text(display_name, "имя оператора", max_length=120)
+    name = _required_text(display_name, "имя сотрудника", max_length=120)
+    account_login = None if login is None else _login(login)
     now = utc_now()
     with transaction() as connection:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT id, pin_hash FROM tn_operator_accounts WHERE role_code = %s FOR UPDATE", (role,))
+            cursor.execute("SELECT id, pin_hash, login FROM tn_operator_accounts WHERE role_code = %s FOR UPDATE", (role,))
             existing = cursor.fetchone()
             if existing:
                 value = pin_hash if pin_hash is not None else str(existing["pin_hash"])
+                saved_login = account_login if account_login is not None else existing["login"]
                 cursor.execute(
                     """UPDATE tn_operator_accounts
-                       SET display_name = %s, pin_hash = %s, active = %s, updated_at = %s
+                       SET display_name = %s, pin_hash = %s, login = %s, active = %s, updated_at = %s
                        WHERE id = %s""",
-                    (name, value, int(active), now, int(existing["id"])),
+                    (name, value, saved_login, int(active), now, int(existing["id"])),
                 )
                 if not active:
                     cursor.execute(
@@ -301,17 +310,51 @@ def set_operator_account(role: str, display_name: str, *, pin_hash: str | None, 
                 raise ValueError("Для новой учётной записи требуется PIN")
             else:
                 cursor.execute(
-                    """INSERT INTO tn_operator_accounts (role_code, display_name, pin_hash, active, created_at, updated_at)
-                       VALUES (%s, %s, %s, %s, %s, %s)""",
-                    (role, name, pin_hash, int(active), now, now),
+                    """INSERT INTO tn_operator_accounts
+                           (role_code, login, display_name, pin_hash, active, created_at, updated_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                    (role, account_login, name, pin_hash, int(active), now, now),
                 )
 
 
-def find_operator_for_pin(pin: str, verifier: Callable[[str, str], bool]) -> dict[str, Any] | None:
+def _login(value: Any) -> str:
+    """Логин сотрудника: латиница, цифры, точка, дефис, подчёркивание."""
+    result = _required_text(value, "логин", max_length=80).lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,79}", result):
+        raise ValueError("Логин: от 3 символов, латиница, цифры, точка, дефис или подчёркивание")
+    return result
+
+
+def find_operator_for_login(login: str, pin: str, verifier: Callable[[str, str], bool]) -> dict[str, Any] | None:
+    """Вход по логину и PIN: логин однозначно выбирает учётную запись."""
+    try:
+        account_login = _login(login)
+    except ValueError:
+        return None
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, role_code, display_name, pin_hash FROM tn_operator_accounts WHERE active = 1 ORDER BY id"
+                """SELECT id, role_code, login, display_name, pin_hash
+                   FROM tn_operator_accounts
+                   WHERE login = %s AND active = 1""",
+                (account_login,),
+            )
+            row = cursor.fetchone()
+    if row is None or not verifier(pin, str(row["pin_hash"])):
+        return None
+    return _operator_from_row(row)
+
+
+def find_operator_for_pin(pin: str, verifier: Callable[[str, str]], *, login: str | None = None) -> dict[str, Any] | None:
+    """Запасной вход по одному PIN для учёток без логина."""
+    if login is not None:
+        return find_operator_for_login(login, pin, verifier)
+    with transaction() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT id, role_code, login, display_name, pin_hash
+                   FROM tn_operator_accounts
+                   WHERE active = 1 AND (login IS NULL OR login = '') ORDER BY id"""
             )
             for row in cursor.fetchall():
                 if verifier(pin, str(row["pin_hash"])):
@@ -364,7 +407,7 @@ def session_operator(token_hash: str, *, renewal_seconds: int) -> dict[str, Any]
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                """SELECT a.id, a.role_code, a.display_name
+                """SELECT a.id, a.role_code, a.login, a.display_name
                    FROM tn_operator_sessions AS s
                    JOIN tn_operator_accounts AS a ON a.id = s.operator_id
                    WHERE s.token_hash = %s AND s.revoked_at IS NULL AND s.expires_at > %s AND a.active = 1
@@ -2199,19 +2242,37 @@ def _append_action_log(
     )
 
 
-def list_actions(*, limit: int = 100) -> list[dict[str, Any]]:
+def list_actions(
+    *, limit: int = 100, role: str | None = None, action: str | None = None,
+    subject_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Журнал действий с фильтрами по роли, действию и виду объекта."""
     count = _as_int(limit, "предел", minimum=1, maximum=1000)
+    conditions: list[str] = []
+    parameters: list[Any] = []
+    if role:
+        conditions.append("l.role_code = %s")
+        parameters.append(_required_text(role, "роль", max_length=20))
+    if action:
+        conditions.append("l.action = %s")
+        parameters.append(_required_text(action, "действие", max_length=80))
+    if subject_type:
+        conditions.append("l.subject_type = %s")
+        parameters.append(_required_text(subject_type, "вид объекта", max_length=40))
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    parameters.append(count)
     with transaction() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 """SELECT l.id, l.role_code, l.action, l.subject_type, l.subject_id,
                           l.details_json, l.remote_address, l.created_at,
-                          a.display_name AS actor_name
+                          a.display_name AS actor_name, a.login AS actor_login
                    FROM tn_action_log AS l
                    LEFT JOIN tn_operator_accounts AS a ON a.id = l.account_id
+                   """ + where + """
                    ORDER BY l.id DESC
                    LIMIT %s""",
-                (count,),
+                tuple(parameters),
             )
             rows = cursor.fetchall()
     result = []
@@ -2594,4 +2655,3 @@ def account_roles() -> list[dict[str, Any]]:
                    FROM tn_operator_accounts ORDER BY role_code, id"""
             )
             return [_row_datetime(dict(row)) for row in cursor.fetchall()]
-            return True

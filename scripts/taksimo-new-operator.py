@@ -21,14 +21,15 @@ import taksimo_new_store as store  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Настройка PIN учётных записей новой Таксимо")
+    parser = argparse.ArgumentParser(description="Настройка логина и PIN учётных записей новой Таксимо")
     parser.add_argument("role", choices=store.ROLE_CODES)
-    parser.add_argument("display_name", help="Отображаемое имя сотрудника")
+    parser.add_argument("display_name", help="Отображаемое имя сотрудника, например фамилия")
+    parser.add_argument("--login", help="Логин для входа: латиница, цифры, точка, дефис")
     parser.add_argument("--disable", action="store_true", help="Отключить учётную запись")
     args = parser.parse_args()
 
     if args.disable:
-        store.set_operator_account(args.role, args.display_name, pin_hash=None, active=False)
+        store.set_operator_account(args.role, args.display_name, pin_hash=None, active=False, login=args.login)
         print("Учётная запись отключена.")
         return 0
 
@@ -36,7 +37,9 @@ def main() -> int:
     second = getpass.getpass("Повторите PIN: ")
     if first != second:
         raise SystemExit("PIN не совпадают")
-    store.set_operator_account(args.role, args.display_name, pin_hash=hash_pin(first), active=True)
+    store.set_operator_account(
+        args.role, args.display_name, pin_hash=hash_pin(first), active=True, login=args.login
+    )
     print("Учётная запись сохранена. PIN на экран и в журнал не выводился.")
     return 0
 

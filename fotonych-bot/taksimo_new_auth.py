@@ -108,6 +108,42 @@ def _renew_cookie(request: web.Request, response: web.StreamResponse) -> web.Str
     return response
 
 
+SECTION_ROLES: dict[str, tuple[str, ...]] = {
+    "dashboard": ("admin", "dispatcher", "accountant1", "accountant2", "accountant3", "operator1", "operator2", "operator3"),
+    "reception": ("operator1", "operator2", "operator3"),
+    "yard": ("dispatcher", "operator1", "operator2", "operator3"),
+    "wagons": ("dispatcher", "operator1", "operator2", "operator3"),
+    "journal": ("admin", "dispatcher", "accountant1", "accountant2", "accountant3", "operator1", "operator2", "operator3"),
+    "reports": ("admin", "dispatcher", "accountant1", "accountant2", "accountant3", "operator1", "operator2", "operator3"),
+    "search": ("admin", "dispatcher", "accountant1", "accountant2", "accountant3", "operator1", "operator2", "operator3"),
+    "corrections": ("operator1", "operator2", "operator3"),
+    "admin": ("admin",),
+}
+
+
+def _permissions(operator: dict) -> dict[str, bool]:
+    """Какие разделы PWA доступны этой роли."""
+    role = str(operator.get("role") or "")
+    return {section: role in allowed for section, allowed in SECTION_ROLES.items()}
+
+
+def require_roles(*allowed: str):
+    """Декоратор: раздел доступен только указанным ролям."""
+
+    def decorator(handler):
+        async def wrapped(request: web.Request) -> web.Response:
+            operator = operator_from_request(request)
+            if operator is None:
+                return _json({"error": "Требуется вход"}, 401)
+            if allowed and operator["role"] not in allowed:
+                return _json({"error": "Недостаточно прав для этого раздела"}, 403)
+            return await handler(request)
+
+        return wrapped
+
+    return decorator
+
+
 @web.middleware
 async def taksimo_new_auth_middleware(request: web.Request, handler):
     path = request.path
@@ -143,7 +179,7 @@ async def handle_auth_me(request: web.Request) -> web.Response:
     operator = operator_from_request(request)
     if not operator:
         return _json({"error": "Требуется вход"}, 401)
-    return _json({"configured": True, "operator": operator})
+    return _json({"configured": True, "operator": operator, "permissions": _permissions(operator)})
 
 
 async def handle_auth_login(request: web.Request) -> web.Response:
@@ -163,10 +199,11 @@ async def handle_auth_login(request: web.Request) -> web.Response:
     except ValueError:
         return _json({"error": "Некорректный запрос"}, 400)
     pin = str(body.get("pin") or "")
-    operator = store.find_operator_for_pin(pin, verify_pin)
+    login = body.get("login")
+    operator = store.find_operator_for_pin(pin, verify_pin, login=login)
     if not operator:
         store.record_login_attempt(success=False, remote_address=remote, user_agent=agent)
-        return _json({"error": "Неверный PIN"}, 401)
+        return _json({"error": "Неверный логин или PIN"}, 401)
     token = secrets.token_urlsafe(32)
     store.create_session(
         token_hash=_token_hash(token),
@@ -179,7 +216,9 @@ async def handle_auth_login(request: web.Request) -> web.Response:
     try:
         store.record_action(
             operator=operator, action="auth_login", subject_type="account",
-            subject_id=str(operator["id"]), remote_address=remote,
+            subject_id=str(operator["id"]),
+            details={"login": operator.get("login"), "role": operator["role"]},
+            remote_address=remote,
         )
     except TaksimoNewDatabaseError:
         pass

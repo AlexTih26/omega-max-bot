@@ -2,7 +2,7 @@
   "use strict";
 
   var API = "/api/taksimo-new";
-  var state = { operator: null, activeTab: "today", searchTimer: null };
+  var state = { operator: null, permissions: {}, activeTab: "today", searchTimer: null };
   var statusLabels = {
     expected: "Ожидается",
     draft: "Черновик",
@@ -1594,12 +1594,23 @@
   function loadIdentity() {
     return request("/auth/me").then(function (data) {
       state.operator = data.operator;
+      state.permissions = data.permissions || {};
       currentUser.textContent = data.operator.name + " · " + (roleLabels[data.operator.role] || data.operator.role);
-      document.querySelectorAll("[data-operator1-only]").forEach(function (node) { node.hidden = !isOperator1(); });
-      document.querySelectorAll("[data-admin-only]").forEach(function (node) { node.hidden = !isAdmin(); });
-      var allowedTabs = { manage: isOperator1(), admin: isAdmin() };
-      if (allowedTabs[state.activeTab] === false) showPanel("today");
+      applyPermissions();
     });
+  }
+
+  function applyPermissions() {
+    var sectionByTab = { reception: "reception", yard: "yard", wagons: "wagons", journal: "journal", reports: "reports", search: "search" };
+    document.querySelectorAll(".tn-tab").forEach(function (tab) {
+      var name = tab.getAttribute("data-tab");
+      var section = sectionByTab[name];
+      if (section) tab.hidden = state.permissions[section] === false;
+    });
+    document.querySelectorAll("[data-operator1-only]").forEach(function (node) { node.hidden = !isOperator1(); });
+    document.querySelectorAll("[data-admin-only]").forEach(function (node) { node.hidden = !isAdmin(); });
+    var allowedTabs = { manage: isOperator1(), admin: isAdmin() };
+    if (allowedTabs[state.activeTab] === false) showPanel("today");
   }
 
   function bind() {

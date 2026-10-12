@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
-from taksimo_new_auth import operator_from_request
+from taksimo_new_auth import operator_from_request, _permissions
 from taksimo_new_db import TaksimoNewDatabaseError
 import taksimo_new_store as store
 import taksimo_legacy_archive as legacy_archive
@@ -752,7 +752,12 @@ async def handle_admin_accounts(_request: web.Request) -> web.Response:
 
 
 async def handle_admin_actions(request: web.Request) -> web.Response:
-    return _json({"actions": store.list_actions(limit=request.query.get("limit", 100))})
+    return _json({"actions": store.list_actions(
+        limit=request.query.get("limit", 100),
+        role=request.query.get("role"),
+        action=request.query.get("action"),
+        subject_type=request.query.get("subject_type"),
+    )})
 
 
 async def handle_admin_block_type(request: web.Request) -> web.Response:

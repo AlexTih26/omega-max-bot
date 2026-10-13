@@ -1,4 +1,4 @@
-"""Временные базовые права текущих ролей до миграции `016`."""
+"""Совместимая UI-матрица и подтверждённые capability нового контура."""
 
 from __future__ import annotations
 
@@ -31,25 +31,30 @@ SECTION_ROLES: dict[str, frozenset[str]] = {
     "admin": frozenset({"admin"}),
 }
 
-# Миграция 014 подготовила таблицы role_permissions/account_permissions,
-# но текущий runtime сохраняет временное сопоставление до миграции 016.
-# Единственная подтверждённая capability нового контура не читает новый SQL-контракт.
-TEMPORARY_CAPABILITY_SECTIONS: Mapping[tuple[str, str], str] = {
-    ("trip.create", "edit"): "trips",
+# Этот перечень сохраняется только для отображения legacy-разделов в /auth/me.
+# Серверные capability после подтверждения 016 читаются из role_permissions и
+# account_permissions, поэтому этот словарь не участвует в авторизации маршрутов.
+SUPPORTED_CAPABILITY_LEVELS = frozenset({
+    ("trip.create", "edit"),
+})
+
+PERMISSION_COLUMNS: Mapping[str, str] = {
+    "view": "can_view",
+    "edit": "can_edit",
+    "print": "can_print",
 }
 
 
 def effective_permissions(role: str) -> dict[str, bool]:
-    """Вернуть временные права роли без учётных overrides до миграции `016`."""
+    """Вернуть переходный UI-снимок разделов без account-level overrides."""
     return {section: role in allowed_roles for section, allowed_roles in SECTION_ROLES.items()}
 
 
-def is_permission_granted(role: str, capability: str, level: str) -> bool:
-    """Проверить временное capability-право по существующей матрице разделов."""
-    section = TEMPORARY_CAPABILITY_SECTIONS.get((capability, level))
-    return section is not None and effective_permissions(role).get(section, False)
-
-
 def is_supported_permission(capability: str, level: str) -> bool:
-    """Проверить, что capability имеет подтверждённое переходное сопоставление."""
-    return (capability, level) in TEMPORARY_CAPABILITY_SECTIONS
+    """Проверить, что capability и уровень утверждены SQL-контрактом `014`."""
+    return (capability, level) in SUPPORTED_CAPABILITY_LEVELS and level in PERMISSION_COLUMNS
+
+
+def permission_column(level: str) -> str:
+    """Вернуть имя безопасного поля снимка права для заданного уровня."""
+    return PERMISSION_COLUMNS[level]

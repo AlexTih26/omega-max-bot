@@ -1,4 +1,4 @@
-"""Незарегистрированная фабрика HTTP-роутера создания рейсов диспетчером."""
+"""HTTP-роутер атомарного создания рейсов диспетчером."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from app.trips.contracts import (
 from app.trips.service import (
     BlockAlreadyRegistered,
     IdempotencyKeyReused,
+    TripBlockTypeNotFound,
     TripReferenceNotFound,
     TripService,
     TripStorageUnavailable,
@@ -29,7 +30,7 @@ from app.trips.service import (
 
 
 def create_dispatcher_trips_router(service: TripService) -> APIRouter:
-    """Создать роутер для явного подключения только тестовым приложением."""
+    """Создать роутер опубликованного маршрута создания рейса."""
 
     router = APIRouter(prefix="/api/v1/dispatcher", tags=["dispatcher"])
 
@@ -93,6 +94,7 @@ def create_dispatcher_trips_router(service: TripService) -> APIRouter:
                 request=create_request,
                 actor=actor,
                 idempotency_key=idempotency_key,
+                remote_address=request.client.host if request.client is not None else "",
             )
         except TripReferenceNotFound as exc:
             code, message = {
@@ -106,6 +108,13 @@ def create_dispatcher_trips_router(service: TripService) -> APIRouter:
                 status.HTTP_409_CONFLICT,
                 "block_already_registered",
                 "Паспорт блока уже зарегистрирован",
+            )
+        except TripBlockTypeNotFound:
+            return _error_response(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "validation_error",
+                "Проверьте поля запроса",
+                fields=[ValidationErrorFieldResponse(field="blocks", code="block_type_not_found")],
             )
         except IdempotencyKeyReused:
             return _error_response(

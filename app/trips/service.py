@@ -4,32 +4,19 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
-from typing import Literal, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.auth.models import AuthenticatedUser
 from app.repositories.trips import CreateTripCommand, TripCreationResult, TripRepository
 from app.trips.contracts import CreateTripRequest
-
-
-class TripReferenceNotFound(RuntimeError):
-    """Не найдена или неактивна запрошенная справочная запись."""
-
-    def __init__(self, reference: Literal["vehicle", "carrier", "driver"]) -> None:
-        self.reference = reference
-        super().__init__(reference)
-
-
-class BlockAlreadyRegistered(RuntimeError):
-    """Канонический паспорт блока уже занят."""
-
-
-class IdempotencyKeyReused(RuntimeError):
-    """Один ключ идемпотентности использован с другим отпечатком команды."""
-
-
-class TripStorageUnavailable(RuntimeError):
-    """Нельзя безопасно сохранить рейс в доступном хранилище."""
+from app.trips.errors import (
+    BlockAlreadyRegistered,
+    IdempotencyKeyReused,
+    TripBlockTypeNotFound,
+    TripReferenceNotFound,
+    TripStorageUnavailable,
+)
 
 
 class TripService(Protocol):
@@ -41,6 +28,7 @@ class TripService(Protocol):
         request: CreateTripRequest,
         actor: AuthenticatedUser,
         idempotency_key: UUID,
+        remote_address: str = "",
     ) -> TripCreationResult:
         """Создать рейс или безопасно воспроизвести сохранённый ответ."""
 
@@ -57,12 +45,14 @@ class RepositoryTripService:
         request: CreateTripRequest,
         actor: AuthenticatedUser,
         idempotency_key: UUID,
+        remote_address: str = "",
     ) -> TripCreationResult:
         command = CreateTripCommand(
             actor=actor,
             idempotency_key=idempotency_key,
             fingerprint=_request_fingerprint(request),
             request=request,
+            remote_address=remote_address,
         )
         try:
             return await self._repository.create_trip(command)
@@ -80,3 +70,14 @@ def _request_fingerprint(request: CreateTripRequest) -> str:
         separators=(",", ":"),
     )
     return sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+__all__ = [
+    "BlockAlreadyRegistered",
+    "IdempotencyKeyReused",
+    "RepositoryTripService",
+    "TripBlockTypeNotFound",
+    "TripReferenceNotFound",
+    "TripService",
+    "TripStorageUnavailable",
+]

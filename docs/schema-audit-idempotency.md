@@ -124,14 +124,22 @@ TTL, очистка, архивация и повторное использов
 ## 4. Граница реализации
 
 Миграции `016_audit_and_idempotency.sql` и
-`016_audit_and_idempotency_triggers.sql` остаются source-only до отдельного
+`016_audit_and_idempotency_triggers.sql` были source-only до отдельного
 подтверждения применения в целевой БД. Триггерный файл запускается штатным
 runner отдельной локальной root-сессией, как и прежние `*_triggers.sql`.
 
-До подтверждения применения `016` запрещены замена
+До подтверждения применения `016` были запрещены замена
 `NotImplementedTripRepository`, подключение настоящего SQL-репозитория и
-регистрация `POST /api/v1/dispatcher/trips` в `create_app()`. Этот документ не
-подтверждает доступность какой-либо MySQL-инсталляции.
+регистрация `POST /api/v1/dispatcher/trips` в `create_app()`. Владелец позднее
+подтвердил применение `014–016` в целевой БД, поэтому runtime публикует
+маршрут и использует `tn_command_idempotency`. Приложение не применяет миграции,
+не проверяет инсталляцию и разработка не открывает соединение с MySQL.
+
+Для `POST /api/v1/dispatcher/trips` фиксированы: `operation_code`
+`dispatcher.trip.create`, `fingerprint_algorithm` `sha256` и
+`fingerprint_version` `normalized-json-v1`. Отпечаток — SHA-256 компактного JSON
+нормализованной Pydantic-команды с сортировкой ключей. Он сравнивается в области
+`(actor_account_id, operation_code, idempotency_key)`.
 
 ## 5. Матрица утверждённых решений
 

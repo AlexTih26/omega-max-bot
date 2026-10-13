@@ -11,8 +11,9 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.models import AuthenticatedUser
-from app.auth.permissions import is_permission_granted, is_supported_permission
+from app.auth.permissions import is_supported_permission, permission_column
 from app.core.settings import Settings
+from app.repositories.permissions import PermissionRepository, PermissionRepositoryUnavailable
 from app.repositories.sessions import SessionRepository, SessionRepositoryUnavailable
 
 
@@ -30,6 +31,10 @@ def get_settings(request: Request) -> Settings:
 
 def get_session_repository(request: Request) -> SessionRepository:
     return request.app.state.session_repository
+
+
+def get_permission_repository(request: Request) -> PermissionRepository:
+    return request.app.state.permission_repository
 
 
 async def get_current_user(
@@ -57,18 +62,21 @@ PermissionDependency = Callable[..., Awaitable[AuthenticatedUser]]
 
 
 def require_permission(capability: str, level: str) -> PermissionDependency:
-    """Потребовать подтверждённую capability через временную ролевую матрицу.
-
-    Точечные grants и overrides из БД будут подключены только на этапе `016`.
-    Неизвестная capability не получает молчаливого доступа.
-    """
+    """Потребовать capability с role grant и account-level override из MySQL."""
     if not is_supported_permission(capability, level):
         raise ValueError(f"Для {capability!r}/{level!r} нет настроенного правила доступа")
+    column = permission_column(level)
 
     async def check_permission(
         user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+        permissions: Annotated[PermissionRepository, Depends(get_permission_repository)],
     ) -> AuthenticatedUser:
-        if not is_permission_granted(user.role, capability, level):
+        try:
+            grant = await permissions.get_capability(user.account_id, capability)
+        except PermissionRepositoryUnavailable:
+            logger.warning("Не удалось проверить права FastAPI-контура")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Сервис авторизации недоступен") from None
+        if grant is None or not getattr(grant, column):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
         return user
 

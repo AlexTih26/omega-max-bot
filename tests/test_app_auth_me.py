@@ -22,6 +22,7 @@ else:
     from app.auth.models import AuthenticatedUser
     from app.core.settings import Settings
     from app.main import create_app
+    from app.repositories.permissions import CapabilityGrant
     from app.repositories.sessions import SessionRepositoryUnavailable
 
 
@@ -30,7 +31,13 @@ class AuthMeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sessions = _FakeSessionRepository()
         self.settings = Settings(auth_secret="test-secret")
-        self.client = TestClient(create_app(settings=self.settings, session_repository=self.sessions))
+        self.client = TestClient(
+            create_app(
+                settings=self.settings,
+                session_repository=self.sessions,
+                permission_repository=_FakePermissionRepository(),
+            )
+        )
 
     def tearDown(self) -> None:
         self.client.close()
@@ -91,6 +98,11 @@ class PermissionMappingTests(unittest.TestCase):
         from app.auth.permissions import effective_permissions
 
         self.assertFalse(any(effective_permissions("unknown").values()))
+
+
+class _FakePermissionRepository:
+    async def get_capability(self, account_id: int, capability: str) -> CapabilityGrant | None:
+        return None
 
 
 class _FakeSessionRepository:

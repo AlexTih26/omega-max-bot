@@ -1,4 +1,4 @@
-"""ASGI-контракт незарегистрированного создания рейса без MySQL и legacy-кода."""
+"""ASGI-контракт опубликованного создания рейса без MySQL и legacy-кода."""
 
 from __future__ import annotations
 
@@ -19,15 +19,11 @@ except ModuleNotFoundError:
     FASTAPI_AVAILABLE = False
 else:
     FASTAPI_AVAILABLE = True
-    from app.api.dispatcher_trips import create_dispatcher_trips_router
     from app.auth.models import AuthenticatedUser
     from app.core.settings import Settings
     from app.main import create_app
-    from app.repositories.trips import (
-        CreateTripCommand,
-        NotImplementedTripRepository,
-        TripCreationResult,
-    )
+    from app.repositories.permissions import CapabilityGrant
+    from app.repositories.trips import CreateTripCommand, NotImplementedTripRepository, TripCreationResult
     from app.trips.contracts import (
         TripBlockResponse,
         TripCarrierResponse,
@@ -37,7 +33,7 @@ else:
     )
     from app.trips.service import (
         IdempotencyKeyReused,
-        RepositoryTripService,
+        TripBlockTypeNotFound,
         TripReferenceNotFound,
     )
 
@@ -47,32 +43,43 @@ class DispatcherTripsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.sessions = _FakeSessionRepository()
         self.settings = Settings(auth_secret="test-secret")
+        self.permissions = _FakePermissionRepository()
         self.repository = _FakeTripRepository()
-        app = create_app(settings=self.settings, session_repository=self.sessions)
-        app.include_router(create_dispatcher_trips_router(RepositoryTripService(self.repository)))
-        self.client = TestClient(app)
+        self.client = TestClient(
+            create_app(
+                settings=self.settings,
+                session_repository=self.sessions,
+                permission_repository=self.permissions,
+                trip_repository=self.repository,
+            )
+        )
 
     def tearDown(self) -> None:
         self.client.close()
 
-    def test_plain_create_app_does_not_register_endpoint_or_use_sessions(self) -> None:
+    def test_plain_create_app_publishes_endpoint_and_uses_injected_repositories(self) -> None:
         sessions = _FakeSessionRepository()
-        client = TestClient(create_app(settings=self.settings, session_repository=sessions))
+        sessions.user = _dispatcher()
+        permissions = _FakePermissionRepository()
+        repository = _FakeTripRepository()
+        client = TestClient(
+            create_app(
+                settings=self.settings,
+                session_repository=sessions,
+                permission_repository=permissions,
+                trip_repository=repository,
+            )
+        )
         client.cookies.set(self.settings.auth_cookie_name, "session-token")
         try:
-            response = client.post(
-                "/api/v1/dispatcher/trips",
-                headers={
-                    "Content-Type": "application/json",
-                    "Idempotency-Key": "11111111-1111-4111-8111-111111111111",
-                },
-                json=_create_payload(),
-            )
+            response = client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())
         finally:
             client.close()
 
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(sessions.token_hashes, [])
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(len(sessions.token_hashes), 1)
+        self.assertEqual(permissions.requests, [(7, "trip.create")])
+        self.assertEqual(len(repository.created_commands), 1)
 
     def test_missing_session_is_unauthorized(self) -> None:
         response = self.client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())
@@ -93,6 +100,7 @@ class DispatcherTripsTests(unittest.TestCase):
         self.assertEqual(command.actor.account_id, 7)
         self.assertEqual(command.request.blocks[0].letter, "A")
         self.assertEqual(command.request.blocks[0].number, "901")
+        self.assertEqual(command.remote_address, "testclient")
 
     def test_same_key_and_normalized_request_replays_without_second_creation(self) -> None:
         self._authenticate_dispatcher()
@@ -120,6 +128,21 @@ class DispatcherTripsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"]["code"], "idempotency_key_reused")
         self.assertEqual(len(self.repository.created_commands), 1)
+
+    def test_missing_block_type_is_a_safe_validation_error(self) -> None:
+        self._authenticate_dispatcher()
+        self.repository.error = TripBlockTypeNotFound()
+
+        response = self.client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.json(), {
+            "error": {
+                "code": "validation_error",
+                "message": "Проверьте поля запроса",
+                "fields": [{"field": "blocks", "code": "block_type_not_found"}],
+            },
+        })
 
     def test_http_boundary_rejects_media_type_json_shape_and_noncanonical_key(self) -> None:
         self._authenticate_dispatcher()
@@ -176,8 +199,12 @@ class DispatcherTripsTests(unittest.TestCase):
     def test_not_implemented_repository_returns_safe_storage_error(self) -> None:
         sessions = _FakeSessionRepository()
         sessions.user = _dispatcher()
-        app = create_app(settings=self.settings, session_repository=sessions)
-        app.include_router(create_dispatcher_trips_router(RepositoryTripService(NotImplementedTripRepository())))
+        app = create_app(
+            settings=self.settings,
+            session_repository=sessions,
+            permission_repository=_FakePermissionRepository(),
+            trip_repository=NotImplementedTripRepository(),
+        )
         client = TestClient(app)
         client.cookies.set(self.settings.auth_cookie_name, "session-token")
         try:
@@ -203,14 +230,27 @@ class _FakeSessionRepository:
         return self.user
 
 
+class _FakePermissionRepository:
+    def __init__(self) -> None:
+        self.grant: CapabilityGrant | None = CapabilityGrant(can_view=True, can_edit=True, can_print=False)
+        self.requests: list[tuple[int, str]] = []
+
+    async def get_capability(self, account_id: int, capability: str) -> CapabilityGrant | None:
+        self.requests.append((account_id, capability))
+        return self.grant
+
+
 class _FakeTripRepository:
     """Тестовое хранилище с изоляцией идемпотентности по актору и ключу."""
 
     def __init__(self) -> None:
         self._records: dict[tuple[int, UUID], tuple[str, TripResponse]] = {}
         self.created_commands: list[CreateTripCommand] = []
+        self.error: Exception | None = None
 
     async def create_trip(self, command: CreateTripCommand) -> TripCreationResult:
+        if self.error is not None:
+            raise self.error
         self._validate_references(command)
         record_key = (command.actor.account_id, command.idempotency_key)
         previous = self._records.get(record_key)

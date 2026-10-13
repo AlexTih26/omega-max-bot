@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
 
 from app.auth.models import AuthenticatedUser
+from app.auth.permissions import is_permission_granted, is_supported_permission
 from app.core.settings import Settings
 from app.repositories.sessions import SessionRepository, SessionRepositoryUnavailable
 
@@ -49,3 +51,25 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Требуется вход")
     return user
+
+
+PermissionDependency = Callable[..., Awaitable[AuthenticatedUser]]
+
+
+def require_permission(capability: str, level: str) -> PermissionDependency:
+    """Потребовать подтверждённую capability через временную ролевую матрицу.
+
+    Точечные grants и overrides появятся только после отдельной миграции `014+`.
+    Неизвестная capability не получает молчаливого доступа.
+    """
+    if not is_supported_permission(capability, level):
+        raise ValueError(f"Для {capability!r}/{level!r} нет настроенного правила доступа")
+
+    async def check_permission(
+        user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    ) -> AuthenticatedUser:
+        if not is_permission_granted(user.role, capability, level):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Недостаточно прав")
+        return user
+
+    return check_permission

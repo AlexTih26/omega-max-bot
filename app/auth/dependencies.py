@@ -59,7 +59,7 @@ PermissionDependency = Callable[..., Awaitable[AuthenticatedUser]]
 def require_permission(capability: str, level: str) -> PermissionDependency:
     """Потребовать подтверждённую capability через временную ролевую матрицу.
 
-    Точечные grants и overrides появятся только после отдельной миграции `014+`.
+    Точечные grants и overrides из БД будут подключены только на этапе `016`.
     Неизвестная capability не получает молчаливого доступа.
     """
     if not is_supported_permission(capability, level):

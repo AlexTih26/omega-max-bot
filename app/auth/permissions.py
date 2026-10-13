@@ -1,4 +1,4 @@
-"""Временные базовые права текущих ролей до миграции `014+`."""
+"""Временные базовые права текущих ролей до миграции `016`."""
 
 from __future__ import annotations
 
@@ -31,16 +31,16 @@ SECTION_ROLES: dict[str, frozenset[str]] = {
     "admin": frozenset({"admin"}),
 }
 
-# Миграция 014 ещё не ввела таблицы role_permissions/account_permissions.
-# До неё единственная подтверждённая capability нового контура сопоставляется
-# с уже публикуемым разделом прав, а не с новым SQL-контрактом.
+# Миграция 014 подготовила таблицы role_permissions/account_permissions,
+# но текущий runtime сохраняет временное сопоставление до миграции 016.
+# Единственная подтверждённая capability нового контура не читает новый SQL-контракт.
 TEMPORARY_CAPABILITY_SECTIONS: Mapping[tuple[str, str], str] = {
     ("trip.create", "edit"): "trips",
 }
 
 
 def effective_permissions(role: str) -> dict[str, bool]:
-    """Вернуть права текущей роли без учётных overrides из ещё не созданной `014+`."""
+    """Вернуть временные права роли без учётных overrides до миграции `016`."""
     return {section: role in allowed_roles for section, allowed_roles in SECTION_ROLES.items()}
 
 

@@ -1,4 +1,4 @@
-"""Граница атомарного хранилища создания рейса без реализации SQL до `014+`."""
+"""Граница атомарного хранилища создания рейса без реализации SQL до `016`."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ class TripRepository(Protocol):
 
 
 class NotImplementedTripRepository:
-    """Production-looking заглушка, допустимая до появления миграции `014+`."""
+    """Production-looking заглушка, допустимая до появления миграции `016`."""
 
     async def create_trip(self, command: CreateTripCommand) -> TripCreationResult:
-        raise NotImplementedError("Репозиторий рейсов недоступен до миграции 014+")
+        raise NotImplementedError("Репозиторий рейсов недоступен до миграции 016")

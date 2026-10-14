@@ -9,12 +9,10 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from app.api.auth import router as auth_router
-from app.api.dispatcher_trips import create_dispatcher_trips_router
 from app.core.settings import Settings
 from app.repositories.permissions import AsyncMyPermissionRepository, PermissionRepository
 from app.repositories.sessions import AsyncMySessionRepository, SessionRepository
-from app.repositories.trips import AsyncMyTripRepository, TripRepository
-from app.trips.service import RepositoryTripService
+from app.repositories.trips import NotImplementedTripRepository, TripRepository
 
 
 @asynccontextmanager
@@ -42,9 +40,8 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.session_repository = session_repository or AsyncMySessionRepository(resolved_settings)
     app.state.permission_repository = permission_repository or AsyncMyPermissionRepository(resolved_settings)
-    app.state.trip_repository = trip_repository or AsyncMyTripRepository(resolved_settings)
+    app.state.trip_repository = trip_repository or NotImplementedTripRepository()
     app.include_router(auth_router)
-    app.include_router(create_dispatcher_trips_router(RepositoryTripService(app.state.trip_repository)))
     return app
 
 

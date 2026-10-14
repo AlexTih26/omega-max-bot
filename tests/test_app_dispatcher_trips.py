@@ -1,4 +1,4 @@
-"""ASGI-контракт опубликованного создания рейса без MySQL и legacy-кода."""
+"""Контракт маршрута рейсов и его временное отключение в корневом приложении."""
 
 from __future__ import annotations
 
@@ -14,16 +14,23 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 try:
+    from fastapi import FastAPI
     from fastapi.testclient import TestClient
 except ModuleNotFoundError:
     FASTAPI_AVAILABLE = False
 else:
     FASTAPI_AVAILABLE = True
+    from app.api.dispatcher_trips import create_dispatcher_trips_router
     from app.auth.models import AuthenticatedUser
     from app.core.settings import Settings
     from app.main import create_app
     from app.repositories.permissions import CapabilityGrant
-    from app.repositories.trips import CreateTripCommand, NotImplementedTripRepository, TripCreationResult
+    from app.repositories.trips import (
+        CreateTripCommand,
+        NotImplementedTripRepository,
+        TripCreationResult,
+        TripRepository,
+    )
     from app.trips.contracts import (
         TripBlockResponse,
         TripCarrierResponse,
@@ -33,6 +40,7 @@ else:
     )
     from app.trips.service import (
         IdempotencyKeyReused,
+        RepositoryTripService,
         TripBlockTypeNotFound,
         TripReferenceNotFound,
     )
@@ -46,7 +54,7 @@ class DispatcherTripsTests(unittest.TestCase):
         self.permissions = _FakePermissionRepository()
         self.repository = _FakeTripRepository()
         self.client = TestClient(
-            create_app(
+            _dispatcher_trips_test_app(
                 settings=self.settings,
                 session_repository=self.sessions,
                 permission_repository=self.permissions,
@@ -57,29 +65,24 @@ class DispatcherTripsTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.close()
 
-    def test_plain_create_app_publishes_endpoint_and_uses_injected_repositories(self) -> None:
+    def test_create_app_does_not_publish_endpoint_until_schema_migrations_are_applied(self) -> None:
         sessions = _FakeSessionRepository()
-        sessions.user = _dispatcher()
         permissions = _FakePermissionRepository()
-        repository = _FakeTripRepository()
-        client = TestClient(
-            create_app(
-                settings=self.settings,
-                session_repository=sessions,
-                permission_repository=permissions,
-                trip_repository=repository,
-            )
+        app = create_app(
+            settings=self.settings,
+            session_repository=sessions,
+            permission_repository=permissions,
         )
-        client.cookies.set(self.settings.auth_cookie_name, "session-token")
+        client = TestClient(app)
         try:
             response = client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())
         finally:
             client.close()
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(len(sessions.token_hashes), 1)
-        self.assertEqual(permissions.requests, [(7, "trip.create")])
-        self.assertEqual(len(repository.created_commands), 1)
+        self.assertEqual(response.status_code, 404)
+        self.assertIsInstance(app.state.trip_repository, NotImplementedTripRepository)
+        self.assertEqual(sessions.token_hashes, [])
+        self.assertEqual(permissions.requests, [])
 
     def test_missing_session_is_unauthorized(self) -> None:
         response = self.client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())
@@ -199,7 +202,7 @@ class DispatcherTripsTests(unittest.TestCase):
     def test_not_implemented_repository_returns_safe_storage_error(self) -> None:
         sessions = _FakeSessionRepository()
         sessions.user = _dispatcher()
-        app = create_app(
+        app = _dispatcher_trips_test_app(
             settings=self.settings,
             session_repository=sessions,
             permission_repository=_FakePermissionRepository(),
@@ -277,6 +280,22 @@ class _FakeTripRepository:
 
 def _dispatcher() -> AuthenticatedUser:
     return AuthenticatedUser(account_id=7, login="dispatcher", name="Диспетчер", role="dispatcher")
+
+
+def _dispatcher_trips_test_app(
+    *,
+    settings: Settings,
+    session_repository: _FakeSessionRepository,
+    permission_repository: _FakePermissionRepository,
+    trip_repository: TripRepository,
+) -> FastAPI:
+    app = FastAPI()
+    app.state.settings = settings
+    app.state.session_repository = session_repository
+    app.state.permission_repository = permission_repository
+    app.state.trip_repository = trip_repository
+    app.include_router(create_dispatcher_trips_router(RepositoryTripService(trip_repository)))
+    return app
 
 
 def _headers() -> dict[str, str]:

@@ -1,4 +1,4 @@
-"""Контракт маршрута рейсов и его временное отключение в корневом приложении."""
+"""Контракт маршрута рейсов и его публикация в корневом приложении."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ else:
     from app.main import create_app
     from app.repositories.permissions import CapabilityGrant
     from app.repositories.trips import (
+        AsyncMyTripRepository,
         CreateTripCommand,
         NotImplementedTripRepository,
         TripCreationResult,
@@ -65,24 +66,36 @@ class DispatcherTripsTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.client.close()
 
-    def test_create_app_does_not_publish_endpoint_until_schema_migrations_are_applied(self) -> None:
+    def test_create_app_publishes_endpoint_with_injected_repository(self) -> None:
         sessions = _FakeSessionRepository()
+        sessions.user = _dispatcher()
         permissions = _FakePermissionRepository()
+        repository = _FakeTripRepository()
         app = create_app(
             settings=self.settings,
             session_repository=sessions,
             permission_repository=permissions,
+            trip_repository=repository,
         )
         client = TestClient(app)
+        client.cookies.set(self.settings.auth_cookie_name, "session-token")
         try:
             response = client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())
         finally:
             client.close()
 
-        self.assertEqual(response.status_code, 404)
-        self.assertIsInstance(app.state.trip_repository, NotImplementedTripRepository)
-        self.assertEqual(sessions.token_hashes, [])
-        self.assertEqual(permissions.requests, [])
+        self.assertEqual(response.status_code, 201)
+        self.assertIs(app.state.trip_repository, repository)
+        self.assertEqual(len(repository.created_commands), 1)
+
+    def test_create_app_uses_mysql_trip_repository_by_default(self) -> None:
+        app = create_app(
+            settings=self.settings,
+            session_repository=_FakeSessionRepository(),
+            permission_repository=_FakePermissionRepository(),
+        )
+
+        self.assertIsInstance(app.state.trip_repository, AsyncMyTripRepository)
 
     def test_missing_session_is_unauthorized(self) -> None:
         response = self.client.post("/api/v1/dispatcher/trips", headers=_headers(), json=_create_payload())

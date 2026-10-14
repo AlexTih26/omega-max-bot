@@ -101,10 +101,11 @@ class AccountsAndPermissionsMigrationContractTests(unittest.TestCase):
         self.assertNotIn("drop table", lowered_sql)
         self.assertNotIn("create trigger", lowered_sql)
 
-    def test_documentation_keeps_the_endpoint_gated_by_016(self) -> None:
-        self.assertIn("до миграции `016`", self.documentation)
-        self.assertIn("только в миграции `016`", self.documentation)
-        self.assertIn("Миграция `014` только готовит канонические роли и права", self.documentation)
+    def test_documentation_records_the_applied_016_idempotency_boundary(self) -> None:
+        self.assertIn("Миграция `014`", self.documentation)
+        self.assertIn("канонические роли и права", self.documentation)
+        self.assertIn("устойчивая идемпотентность появляется в миграции", self.documentation)
+        self.assertIn("`014–016` подтверждённо применены", self.documentation)
 
 
 if __name__ == "__main__":

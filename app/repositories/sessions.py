@@ -15,10 +15,13 @@ class SessionRepositoryUnavailable(RuntimeError):
 
 
 class SessionRepository(Protocol):
-    """Минимальная граница хранилища, достаточная для `GET /auth/me`."""
+    """Минимальная граница хранилища сессий и readiness-проверки."""
 
     async def find_active_user(self, token_hash: str) -> AuthenticatedUser | None:
         """Найти активного пользователя по HMAC-хэшу серверной сессии."""
+
+    async def check_ready(self) -> None:
+        """Подтвердить read-only доступ к таблице сессий."""
 
 
 PoolFactory = Callable[..., Awaitable[Any]]
@@ -64,6 +67,22 @@ class AsyncMySessionRepository:
             name=str(row["display_name"]),
             role=str(row["role_code"]),
         )
+
+    async def check_ready(self) -> None:
+        """Выполнить read-only проверку MySQL без чтения сессионных данных."""
+
+        pool = await self._get_pool()
+        try:
+            from asyncmy.cursors import DictCursor
+
+            async with pool.acquire() as connection:
+                async with connection.cursor(cursor=DictCursor) as cursor:
+                    await cursor.execute("SELECT 1 FROM tn_operator_sessions LIMIT 1")
+                    await cursor.fetchone()
+        except SessionRepositoryUnavailable:
+            raise
+        except Exception as exc:
+            raise SessionRepositoryUnavailable("Хранилище сессий недоступно") from exc
 
     async def close(self) -> None:
         """Корректно закрыть пул при остановке ASGI-процесса."""

@@ -6,7 +6,7 @@ import json
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -29,10 +29,24 @@ from app.trips.service import (
 )
 
 
+TRUSTED_ORIGIN = "https://avtmsk.ru"
+
+
+async def require_trusted_origin(request: Request) -> None:
+    """Разрешить изменяющую команду только из утверждённого browser-origin."""
+
+    if request.headers.get("origin") != TRUSTED_ORIGIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Источник запроса не разрешён")
+
+
 def create_dispatcher_trips_router(service: TripService) -> APIRouter:
     """Создать роутер опубликованного маршрута создания рейса."""
 
-    router = APIRouter(prefix="/api/v1/dispatcher", tags=["dispatcher"])
+    router = APIRouter(
+        prefix="/api/v1/dispatcher",
+        tags=["dispatcher"],
+        dependencies=[Depends(require_trusted_origin)],
+    )
 
     @router.post(
         "/trips",
@@ -42,6 +56,7 @@ def create_dispatcher_trips_router(service: TripService) -> APIRouter:
         responses={
             status.HTTP_200_OK: {"model": TripCreateResponse, "description": "Повтор сохранённой команды"},
             status.HTTP_400_BAD_REQUEST: {"model": ErrorResponse, "description": "Некорректный JSON или ключ идемпотентности"},
+            status.HTTP_403_FORBIDDEN: {"description": "Неверный источник запроса"},
             status.HTTP_404_NOT_FOUND: {"model": ErrorResponse, "description": "Справочник не найден"},
             status.HTTP_409_CONFLICT: {"model": ErrorResponse, "description": "Конфликт блока или идемпотентности"},
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {"model": ErrorResponse, "description": "Ожидается JSON"},

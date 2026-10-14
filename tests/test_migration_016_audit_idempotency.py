@@ -162,8 +162,9 @@ class AuditAndIdempotencyMigrationContractTests(unittest.TestCase):
             with self.subTest(decision=decision):
                 self.assertIn(decision, self.documentation)
         self.assertIn("source-only", self.documentation)
-        self.assertIn("NotImplementedTripRepository", self.documentation)
-        self.assertIn("регистрация `POST /api/v1/dispatcher/trips`", self.documentation)
+        self.assertIn("`014–016` и объектов\n`016` на целевой MySQL подтверждено отдельно", self.documentation)
+        self.assertIn("`AsyncMyTripRepository`", self.documentation)
+        self.assertIn("не является deployment", self.documentation)
         self.assertIn("FastAPI-outbox и доставка остаются отдельной\nзадачей `017`", self.documentation)
 
     def _trigger_sql(self, name: str) -> str:

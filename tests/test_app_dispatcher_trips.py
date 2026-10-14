@@ -104,6 +104,30 @@ class DispatcherTripsTests(unittest.TestCase):
         self.assertEqual(response.json(), {"detail": "Требуется вход"})
         self.assertEqual(self.sessions.token_hashes, [])
 
+    def test_missing_or_foreign_origin_is_rejected_before_authentication(self) -> None:
+        missing_origin_headers = _headers()
+        del missing_origin_headers["Origin"]
+        foreign_origin_headers = _headers()
+        foreign_origin_headers["Origin"] = "https://example.invalid"
+
+        missing_origin = self.client.post(
+            "/api/v1/dispatcher/trips",
+            headers=missing_origin_headers,
+            json=_create_payload(),
+        )
+        foreign_origin = self.client.post(
+            "/api/v1/dispatcher/trips",
+            headers=foreign_origin_headers,
+            json=_create_payload(),
+        )
+
+        for response in (missing_origin, foreign_origin):
+            with self.subTest(status=response.status_code):
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(response.json(), {"detail": "Источник запроса не разрешён"})
+        self.assertEqual(self.sessions.token_hashes, [])
+        self.assertEqual(self.repository.created_commands, [])
+
     def test_dispatcher_create_normalizes_blocks_and_returns_server_snapshots(self) -> None:
         self._authenticate_dispatcher()
 
@@ -164,7 +188,10 @@ class DispatcherTripsTests(unittest.TestCase):
         self._authenticate_dispatcher()
         unsupported_media_type = self.client.post(
             "/api/v1/dispatcher/trips",
-            headers={"Idempotency-Key": _headers()["Idempotency-Key"]},
+            headers={
+                "Idempotency-Key": _headers()["Idempotency-Key"],
+                "Origin": _headers()["Origin"],
+            },
             content="{}",
         )
         non_object_json = self.client.post(
@@ -192,7 +219,7 @@ class DispatcherTripsTests(unittest.TestCase):
         self._authenticate_dispatcher()
         no_key = self.client.post(
             "/api/v1/dispatcher/trips",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "Origin": _headers()["Origin"]},
             json=_create_payload(),
         )
         payload = _create_payload()
@@ -315,6 +342,7 @@ def _headers() -> dict[str, str]:
     return {
         "Content-Type": "application/json",
         "Idempotency-Key": "11111111-1111-4111-8111-111111111111",
+        "Origin": "https://avtmsk.ru",
     }
 
 

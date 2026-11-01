@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
+from datetime import datetime
 from typing import Any, Callable
 
 from aiohttp import web
 
 from drivers_chat import notify_admin_plain
-from materials_chat import notify_master_receipt
+from materials_chat import notify_event, notify_master_receipt
 from materials_receipt_chat import notify_materials_role_users
 from max_webapp import display_name_from_user, user_id_from_user, validate_init_data
 from sklad_master_store import (
@@ -19,6 +21,8 @@ from sklad_master_store import (
     get_audit_entry, init_sklad_master_db,
     list_payment_receipts, list_audit_log, list_materials,
     list_movements, list_requests, list_roles, list_sites, list_suppliers,
+    site_movement_counts, consume_export_link, create_export_link,
+    EXPORT_LINK_TTL_SECONDS,
     find_similar_receipt_today,
     find_open_request_for_material,
     price_receipt, receive_delivery, record_inventory_adjustment, record_issue,
@@ -144,22 +148,28 @@ def _receipt_item_lines(receipt: dict) -> list[str]:
 
 
 def _receipt_date_label(receipt: dict) -> str:
-    from datetime import datetime
     stamp = receipt.get("document_date") or receipt.get("created_at")
     if not stamp:
         return ""
-    return datetime.fromtimestamp(float(stamp)).strftime("%d.%m.%Y")
+    return _movement_time_label(stamp)
+
+
+def _receipt_created_label(receipt: dict) -> str:
+    """Дата и время оформления прихода, если известно."""
+    stamp = receipt.get("created_at")
+    return _movement_time_label(stamp) if stamp else ""
 
 
 def _receipt_public_lines(receipt: dict, *, header: str | None = None) -> list[str]:
     date_label = _receipt_date_label(receipt)
     lines = [
         header or "📦 Склад Мастер · приход",
-        f"Приход №{receipt.get('id')} · {date_label}".strip(),
+        f"Дата: {date_label}" if date_label else "",
+        f"Приход №{receipt.get('id')}",
         f"Площадка: {receipt.get('site_name') or receipt.get('site', {}).get('name') or '—'}",
         f"Поставщик: {receipt.get('supplier_name') or receipt.get('supplier', {}).get('name') or '—'}",
         f"Принял: {receipt.get('actor_name') or '—'}",
-        "Позиции:",
+        "Наименования:",
     ]
     lines.extend(_receipt_item_lines(receipt))
     if receipt.get("note"):
@@ -189,6 +199,125 @@ def _receipt_payment_lines(receipt: dict, *, actor_name: str = "") -> list[str]:
             f"{bill_qty} {bill_unit} × {_money(unit_price).replace(' ₽', '')} = {_money(line_total)}"
         )
     lines.append(f"Итого: {_money(receipt.get('total_amount'))}")
+    return lines
+
+
+async def _send_movement_to_chats(lines: list[str]) -> None:
+    """Продублировать складское событие в чат приходов и чат сводок.
+
+    Оба чата пишутся независимо: ошибка доставки в один не мешает второму и не
+    влияет на ответ API. Отсутствие переменной окружения — штатная ситуация,
+    функции в этом случае вернут ``False`` и запишут предупреждение.
+    """
+    text = "\n".join(x for x in lines if x).strip()
+    if not text:
+        return
+    try:
+        await notify_master_receipt(text)
+    except Exception:
+        logger.exception("Склад Мастер: движение в чат приходов не отправлено")
+    try:
+        await notify_event(text)
+    except Exception:
+        logger.exception("Склад Мастер: движение в чат сводок не отправлено")
+
+
+def _movement_time_label(stamp: Any) -> str:
+    """Дата и время события в часовом поясе склада."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    name = (
+        os.getenv("MATERIALS_TIMEZONE")
+        or os.getenv("TAKSIMO_TIMEZONE")
+        or "Europe/Moscow"
+    ).strip()
+    try:
+        zone = ZoneInfo(name)
+    except Exception:
+        zone = ZoneInfo("Europe/Moscow")
+    try:
+        moment = datetime.fromtimestamp(float(stamp), tz=zone)
+    except (TypeError, ValueError):
+        moment = datetime.now(zone)
+    return moment.strftime("%d.%m.%Y %H:%M")
+
+
+def _material_of(result: dict) -> dict:
+    """Материал в виде словаря: API отдаёт вложенный, журнал — плоские поля."""
+    material = result.get("material")
+    if isinstance(material, dict) and material.get("name"):
+        return material
+    name = result.get("material_name")
+    if not name:
+        return {}
+    return {"id": result.get("material_id"), "name": name,
+            "unit": result.get("material_unit") or ""}
+
+
+def _movement_lines(
+    title: str,
+    *,
+    result: dict,
+    actor_name: str,
+    actor_max_id: int | None,
+    body: dict | None = None,
+) -> list[str]:
+    """Строки сообщения о складском движении для чатов и личных уведомлений.
+
+    Сообщение всегда несёт дату и время, площадку (для перемещения — откуда и
+    куда), наименование материала и количество. Приход и расход различаются
+    знаком приращения остатка.
+    """
+    body = body or {}
+    site_names = {int(site["id"]): site["name"] for site in list_sites(include_inactive=True)}
+    material = _material_of(result)
+    lines = [title, f"Время: {_movement_time_label(result.get('created_at'))}"]
+    if "from_site_id" in result or "to_site_id" in result:
+        from_site = result.get("from_site") or {}
+        to_site = result.get("to_site") or {}
+        from_id = result.get("from_site_id", body.get("from_site_id"))
+        to_id = result.get("to_site_id", body.get("to_site_id"))
+        lines.append(
+            f"Откуда: {from_site.get('name') or (site_names.get(int(from_id), '—') if from_id else '—')}"
+        )
+        lines.append(
+            f"Куда: {to_site.get('name') or (site_names.get(int(to_id), '—') if to_id else '—')}"
+        )
+    else:
+        site = result.get("site") or {}
+        site_name = site.get("name") or result.get("site_name")
+        site_id = result.get("site_id", body.get("site_id"))
+        lines.append(
+            f"Площадка: {site_name or (site_names.get(int(site_id), '—') if site_id else '—')}"
+        )
+    if material.get("name"):
+        lines.append(f"Наименование: {material['name']}")
+        unit = material.get("unit") or ""
+        is_transfer = "from_site_id" in result or "to_site_id" in result
+        if is_transfer:
+            quantity = result.get("quantity")
+            if quantity is None:
+                quantity = abs(float(result.get("quantity_delta") or 0))
+            lines.append(f"Количество: {_quantity_label(quantity)} {unit}".rstrip())
+        elif result.get("quantity_delta") is not None:
+            quantity = float(result["quantity_delta"])
+            sign = "+" if quantity >= 0 else "−"
+            lines.append(f"Количество: {sign}{_quantity_label(abs(quantity))} {unit}".rstrip())
+        elif result.get("quantity") is not None:
+            lines.append(f"Количество: {_quantity_label(result['quantity'])} {unit}".rstrip())
+    supplier = result.get("supplier") or {}
+    supplier_name = supplier.get("name") or result.get("supplier_name")
+    if supplier_name:
+        lines.append(f"Поставщик: {supplier_name}")
+    if result.get("balance") is not None and material.get("name"):
+        lines.append(
+            f"Остаток: {_quantity_label(result['balance'])} {material.get('unit') or ''}".rstrip()
+        )
+    lines.append(f"Оформил: {actor_name} (id {actor_max_id})")
+    note = str(body.get("note") or result.get("note") or "").strip()
+    if note:
+        lines.append(f"Примечание: {note}")
     return lines
 
 
@@ -329,6 +458,8 @@ async def handle_bootstrap(request: web.Request) -> web.Response:
         allowed = set(access["site_ids"])
         data["sites"] = [x for x in data["sites"] if x["id"] in allowed]
         data["site_summaries"] = [x for x in data["site_summaries"] if x["site_id"] in allowed]
+    _mark_idle_sites(data.get("sites") or [])
+    _mark_idle_sites(data.get("site_summaries") or [], key="site_id")
     data.update(user={"id": uid, "name": name}, access=access, roles=access["roles"],
                 capabilities=access["capabilities"],
                 allowed_actions=access["allowed_actions"],
@@ -383,9 +514,28 @@ async def handle_suppliers(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
+_MOVEMENT_TITLES = {
+    "receipt": "📦 Склад Мастер · приход",
+    "issue": "📤 Склад Мастер · расход",
+    "transfer_out": "🔄 Склад Мастер · перемещение",
+    "transfer_in": "🔄 Склад Мастер · перемещение",
+    "inventory_adjustment": "🧮 Склад Мастер · корректировка",
+}
+
+
+def movement_title(op_type: str) -> str:
+    """Заголовок сообщения по типу складской операции."""
+    return _MOVEMENT_TITLES.get(str(op_type or ""), "📋 Склад Мастер · операция")
+
+
 async def _command(request: web.Request, action: str, function: Callable[..., dict],
                    site_fields: tuple[str, ...], notify_title: str,
                    response_key: str = "movement") -> web.Response:
+    """Общий контур команд склада: доступ, тело, вызов и уведомления.
+
+    Перемещение раскрывается в две площадки: к результату добавляется площадка
+    назначения из парной записи ``transfer_in``, чтобы она попала в сообщение.
+    """
     auth = _auth(request, action)
     if isinstance(auth, web.Response):
         return auth
@@ -402,17 +552,58 @@ async def _command(request: web.Request, action: str, function: Callable[..., di
         result = function(**kwargs)
     except (KeyError, TypeError, ValueError) as exc:
         return _json({"error": str(exc)}, 400)
+    if action == "transfer":
+        _decorate_transfer_sites(result)
     replay = bool(result.get("_idempotent_replay"))
     if not replay:
         target_role = "supply" if action == "receipt" else None
-        await _notify(
-            [notify_title, f"Пользователь: {name} (id {uid})"],
-            role=target_role,
-            exclude_user_id=uid,
+        lines = _movement_lines(
+            notify_title,
+            result=result,
+            actor_name=name,
+            actor_max_id=uid,
+            body=body,
         )
+        await _notify(lines, role=target_role, exclude_user_id=uid)
+        await _send_movement_to_chats(lines)
         await _notify_stock_alerts(result.get("stock_alerts") or [], actor_id=uid)
     result.pop("_idempotent_replay", None)
     return _json({response_key: result}, 201)
+
+
+def _decorate_transfer_sites(result: dict) -> None:
+    """Добавить площадку назначения перемещения из парной записи.
+
+    У результата команды есть ``in_id``, у строки журнала — ``related_op_id``;
+    поддерживаются оба источника.
+    """
+    if result.get("to_site_id"):
+        return
+    partner_id = result.get("in_id") or result.get("related_op_id")
+    if not partner_id:
+        return
+    try:
+        from sklad_master_store import get_movement
+
+        partner = get_movement(int(partner_id))
+    except (KeyError, TypeError, ValueError):
+        return
+    result["to_site_id"] = partner.get("site_id")
+    result["from_site"] = {"id": result.get("from_site_id") or result.get("site_id"),
+                           "name": (result.get("from_site") or {}).get("name")
+                           or result.get("site_name") or _site_label(
+                               result.get("from_site_id") or result.get("site_id"))}
+    result["to_site"] = {"id": partner.get("site_id"),
+                         "name": partner.get("site_name") or _site_label(partner.get("site_id"))}
+
+
+def _site_label(site_id: Any) -> str:
+    if site_id is None:
+        return "—"
+    for site in list_sites(include_inactive=True):
+        if int(site["id"]) == int(site_id):
+            return str(site["name"])
+    return "—"
 
 
 async def handle_receipt(request: web.Request) -> web.Response:
@@ -680,7 +871,15 @@ async def handle_adjustment(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
     replay = result.pop("_idempotent_replay", False)
     if not replay:
-        await _notify(["🧮 Склад Мастер · корректировка", f"Пользователь: {name} (id {uid})"])
+        lines = _movement_lines(
+            "🧮 Склад Мастер · корректировка",
+            result=result,
+            actor_name=name,
+            actor_max_id=uid,
+            body=body,
+        )
+        await _notify(lines)
+        await _send_movement_to_chats(lines)
         await _notify_stock_alerts(result.get("stock_alerts") or [], actor_id=uid)
     return _json({"movement": result}, 201)
 
@@ -1006,6 +1205,156 @@ async def handle_movements(request: web.Request) -> web.Response:
         return _json({"error": str(exc)}, 400)
 
 
+def _mark_idle_sites(rows: list[dict], *, key: str = "id") -> None:
+    """Пометить площадки, по которым ещё не было движений.
+
+    Такая площадка заведена заранее и склад на ней не работает: показывать её
+    дефицит как критический нельзя, иначе отчёт теряет смысл.
+    """
+    if not rows:
+        return
+    try:
+        counts = site_movement_counts()
+    except Exception:
+        logger.exception("Склад Мастер: не удалось посчитать движения по площадкам")
+        return
+    for row in rows:
+        site_id = row.get(key) if key != "id" else row.get("id")
+        try:
+            row["idle"] = int(counts.get(int(site_id), 0)) == 0
+        except (TypeError, ValueError):
+            row["idle"] = False
+
+
+async def handle_export(request: web.Request) -> web.Response:
+    """Выгрузка складских данных в Excel.
+
+    ``kind=summary`` — сводка прихода, расхода и остатка по материалам;
+    ``kind=full`` — тот же файл, а также история операций, приходы и перемещения.
+    Цена попадает в файл там, где её проставил снабженец; чтение цены
+    разрешено всем ролям склада, поэтому отдельного права не требуется.
+    """
+    auth = _auth(request, "view")
+    if isinstance(auth, web.Response):
+        return auth
+    try:
+        import sklad_master_export as export
+    except Exception:
+        logger.exception("Склад Мастер: модуль экспорта недоступен")
+        return _json({"error": "Экспорт в Excel не настроен на сервере"}, 503)
+
+    kind = (request.query.get("kind") or "summary").strip().lower()
+    try:
+        if kind == "full":
+            payload = export.build_movements_workbook()
+            filename = "sklad-master.xlsx"
+        else:
+            payload = export.build_summary_workbook()
+            filename = "sklad-master-svodka.xlsx"
+    except Exception:
+        logger.exception("Склад Мастер: не удалось собрать файл выгрузки")
+        return _json({"error": "Не удалось сформировать файл"}, 500)
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    return web.Response(
+        body=payload,
+        headers={
+            "Content-Disposition": f"attachment; filename={stamp}-{filename}",
+            "Cache-Control": "no-store",
+        },
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
+
+
+async def handle_export_link(request: web.Request) -> web.Response:
+    """Выдать одноразовую ссылку на выгрузку для открытия в браузере.
+
+    Ссылка живёт несколько минут и привязана к тому, кто её запросил: так файл
+    можно скачать в браузере телефона, где нативные методы MAX недоступны.
+    """
+    auth = _auth(request, "view")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, _name, _access = auth
+    kind = (request.query.get("kind") or "summary").strip().lower()
+    if kind not in {"summary", "full"}:
+        kind = "summary"
+    token = secrets.token_urlsafe(32)
+    create_export_link(token=token, max_id=uid, kind=kind)
+    base = str(request.url).split("?")[0].replace("/export-link", "/export")
+    return _json({
+        "url": f"{base}?t={token}",
+        "kind": kind,
+        "expires_in": EXPORT_LINK_TTL_SECONDS,
+    })
+
+
+async def handle_export_by_token(request: web.Request) -> web.Response:
+    """Отдать файл по одноразовой ссылке — без заголовков мини-аппа."""
+    token = (request.query.get("t") or "").strip()
+    if not token:
+        return _json({"error": "Ссылка недействительна"}, 403)
+    link = consume_export_link(token)
+    if link is None:
+        return _json({"error": "Ссылка истекла. Выгрузите файл заново"}, 403)
+    try:
+        import sklad_master_export as export
+
+        if link["kind"] == "full":
+            payload = export.build_movements_workbook()
+            filename = "sklad-master.xlsx"
+        else:
+            payload = export.build_summary_workbook()
+            filename = "sklad-master-svodka.xlsx"
+    except Exception:
+        logger.exception("Склад Мастер: не удалось собрать файл по ссылке")
+        return _json({"error": "Не удалось сформировать файл"}, 500)
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    return web.Response(
+        body=payload,
+        headers={
+            "Content-Disposition": f"attachment; filename={stamp}-{filename}",
+            "Cache-Control": "no-store",
+        },
+        content_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+    )
+
+
+async def handle_export_send(request: web.Request) -> web.Response:
+    """Отправить выгрузку в личные сообщения MAX тому, кто нажал кнопку.
+
+    Это основной способ доставки: вложение в переписке открывается штатно,
+    тогда как нативное скачивание внутри WebView срабатывает не всегда.
+    """
+    auth = _auth(request, "view")
+    if isinstance(auth, web.Response):
+        return auth
+    _user, uid, _name, _access = auth
+    try:
+        body = await _body(request)
+    except (ValueError, web.HTTPBadRequest):
+        body = {}
+    kind = str(body.get("kind") or "summary").strip().lower()
+    if kind not in {"summary", "full"}:
+        kind = "summary"
+    try:
+        from sklad_master_export_chat import send_export_to_user
+    except Exception:
+        logger.exception("Склад Мастер: модуль доставки недоступен")
+        return _json({"error": "Отправка файлов не настроена на сервере"}, 503)
+    stamp = datetime.now().strftime("%Y-%m-%d")
+    tail = "sklad-master.xlsx" if kind == "full" else "sklad-master-svodka.xlsx"
+    ok, error = await send_export_to_user(
+        max_id=uid, kind=kind, file_name=f"{stamp}-{tail}"
+    )
+    if not ok:
+        return _json({"error": error or "Не удалось отправить файл"}, 502)
+    return _json({"ok": True, "kind": kind, "sent_to": uid})
+
+
 async def handle_admin_material(request: web.Request) -> web.Response:
     auth = _auth(request, "settings_manage")
     if isinstance(auth, web.Response):
@@ -1106,6 +1455,10 @@ def register_sklad_master_routes(app: web.Application) -> None:
     app.router.add_post(f"{prefix}/inventory-adjustment", handle_adjustment)
     app.router.add_get(f"{prefix}/movements/{{movement_id}}", handle_movement_detail)
     app.router.add_get(f"{prefix}/movements", handle_movements)
+    app.router.add_get(f"{prefix}/export.xlsx", handle_export)
+    app.router.add_post(f"{prefix}/export-link", handle_export_link)
+    app.router.add_post(f"{prefix}/export-send", handle_export_send)
+    app.router.add_get(f"{prefix}/export", handle_export_by_token)
     app.router.add_get(f"{prefix}/requests", handle_requests)
     app.router.add_post(f"{prefix}/requests", handle_request_create)
     app.router.add_get(f"{prefix}/requests/{{request_id}}", handle_request_detail)

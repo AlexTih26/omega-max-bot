@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "sklad_master.db"
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 DEFAULT_SITES = ("Туран", "Грузовой", "Площадка 3", "Площадка 4")
 DEFAULT_SUPPLIERS = (
@@ -426,6 +426,15 @@ def init_sklad_master_db() -> None:
                 entity_type TEXT NOT NULL, entity_id TEXT NOT NULL DEFAULT '',
                 details_json TEXT NOT NULL DEFAULT '{}', created_at REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS sm_export_links (
+                token TEXT PRIMARY KEY,
+                max_id INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'summary',
+                created_at REAL NOT NULL,
+                expires_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sm_export_links_expires
+                ON sm_export_links(expires_at);
             CREATE TABLE IF NOT EXISTS sm_access_requests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 max_id INTEGER NOT NULL,
@@ -1042,6 +1051,8 @@ def record_issue(*, site_id: int, material_id: int, quantity: Any,
         )
         result = {"id": op_id, "site_id": site_id, "material": _material(material),
                   "quantity": qty, "balance": new_balance,
+                  "actor_max_id": actor_max_id, "actor_name": actor_name.strip(),
+                  "note": note.strip(), "created_at": time.time(),
                   "stock_alerts": [alert] if alert else []}
         _audit(conn, actor_max_id, actor_name, "issue", "movement", op_id, result)
         _cache(conn, idempotency_key, "issue", result)
@@ -1079,7 +1090,11 @@ def record_transfer(*, from_site_id: int, to_site_id: int, material_id: int,
         conn.execute("UPDATE sm_stock_ops SET related_op_id=? WHERE id=?", (in_id, out_id))
         result = {"transfer_id": transfer_id, "out_id": out_id, "in_id": in_id,
                   "from_site_id": from_site_id, "to_site_id": to_site_id,
-                  "material": _material(material), "quantity": qty}
+                  "from_site": _site(_require(conn, "sm_sites", from_site_id, "Площадка отправления")),
+                  "to_site": _site(_require(conn, "sm_sites", to_site_id, "Площадка назначения")),
+                  "material": _material(material), "quantity": qty,
+                  "actor_max_id": actor_max_id, "actor_name": actor_name.strip(),
+                  "note": note.strip(), "created_at": time.time()}
         alerts = [
             _stock_alert(
                 conn,
@@ -1132,8 +1147,10 @@ def record_inventory_adjustment(*, site_id: int, material_id: int, quantity_delt
             old_balance=old_balance,
             new_balance=new_balance,
         )
-        result = {"id": op_id, "site_id": site_id, "material_id": material_id,
+        result = {"id": op_id, "site_id": site_id, "material": _material(material),
                   "quantity_delta": delta, "balance": new_balance,
+                  "actor_max_id": actor_max_id, "actor_name": actor_name.strip(),
+                  "note": note.strip(), "created_at": time.time(),
                   "stock_alerts": [alert] if alert else []}
         _audit(conn, actor_max_id, actor_name, "inventory_adjustment", "movement", op_id, result)
         _cache(conn, idempotency_key, "inventory_adjustment", result)
@@ -2872,6 +2889,53 @@ def resolve_access_request(
     pending["resolved_by_max_id"] = int(actor_max_id)
     pending["resolved_by_name"] = actor
     return True, "approved", pending
+
+
+def site_movement_counts() -> dict[int, int]:
+    """Число движений по каждой площадке: ноль означает, что склад не работает."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT site_id, COUNT(*) n FROM sm_stock_ops GROUP BY site_id"
+        ).fetchall()
+    return {int(row["site_id"]): int(row["n"]) for row in rows}
+
+
+EXPORT_LINK_TTL_SECONDS = 300
+
+
+def create_export_link(*, token: str, max_id: int, kind: str,
+                       ttl_seconds: int = EXPORT_LINK_TTL_SECONDS) -> dict:
+    """Одноразовая ссылка на выгрузку: файл откроется в браузере без мини-аппа."""
+    now = time.time()
+    with _connect() as conn:
+        conn.execute(
+            "DELETE FROM sm_export_links WHERE expires_at < ?", (now,)
+        )
+        conn.execute(
+            """INSERT INTO sm_export_links(token, max_id, kind, created_at, expires_at)
+               VALUES(?,?,?,?,?)""",
+            (token, int(max_id), str(kind), now, now + int(ttl_seconds)),
+        )
+        conn.commit()
+    return {"token": token, "expires_at": now + int(ttl_seconds)}
+
+
+def consume_export_link(token: str) -> dict | None:
+    """Проверить и погасить ссылку: повторное использование невозможно."""
+    now = time.time()
+    with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM sm_export_links WHERE token=?", (str(token),)
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        conn.execute("DELETE FROM sm_export_links WHERE token=?", (str(token),))
+        conn.commit()
+    if float(row["expires_at"]) < now:
+        return None
+    return {"max_id": int(row["max_id"]), "kind": str(row["kind"])}
 
 
 def dashboard(*, site_id: int | None = None) -> dict:

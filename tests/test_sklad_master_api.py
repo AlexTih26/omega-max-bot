@@ -232,6 +232,338 @@ class SkladMasterApiTests(AioHTTPTestCase):
         self.assertIn("Осталось получить:", sent[3])
         self.assertIn(": 3 шт", sent[3])
 
+    async def test_transfer_notification_reaches_both_chats_with_details(self):
+        """Перемещение должно уходить в чат приходов и чат сводок с деталями."""
+        store.record_receipt(
+            site_id=self.site_id,
+            material_id=self.material_id,
+            supplier_id=self.supplier_id,
+            quantity=10,
+            actor_max_id=101,
+            actor_name="Мастер",
+        )
+        to_site_id = store.list_sites()[1]["id"]
+        receipt_chat = []
+        reports_chat = []
+        personal = []
+        original_notify = api._notify
+        original_receipt_notify = api.notify_master_receipt
+        original_event_notify = api.notify_event
+
+        async def capture(lines, **kwargs):
+            personal.append((lines, kwargs))
+
+        async def capture_receipt(text):
+            receipt_chat.append(text)
+            return True
+
+        async def capture_event(text):
+            reports_chat.append(text)
+            return True
+
+        api._notify = capture
+        api.notify_master_receipt = capture_receipt
+        api.notify_event = capture_event
+        try:
+            response = await self.client.post(
+                "/api/sklad-master/transfers",
+                headers={"X-Max-Init-Data": "valid"},
+                json={
+                    "from_site_id": self.site_id,
+                    "to_site_id": to_site_id,
+                    "material_id": self.material_id,
+                    "quantity": 4,
+                    "note": "на Грузовой",
+                    "idempotency_key": "api-transfer-1",
+                },
+            )
+        finally:
+            api._notify = original_notify
+            api.notify_master_receipt = original_receipt_notify
+            api.notify_event = original_event_notify
+        self.assertEqual(response.status, 201)
+        self.assertEqual(len(receipt_chat), 1)
+        self.assertEqual(len(reports_chat), 1)
+        text = receipt_chat[0]
+        self.assertIn("перемещение", text)
+        self.assertIn("Время:", text)
+        self.assertIn("Откуда:", text)
+        self.assertIn("Куда:", text)
+        self.assertIn("Наименование:", text)
+        self.assertIn("Количество: 4", text)
+        self.assertIn("(id 101)", text)
+        self.assertIn("Примечание: на Грузовой", text)
+        self.assertEqual(reports_chat[0], text)
+        self.assertIn("перемещение", "\n".join(personal[0][0]))
+
+    async def test_transfer_replay_does_not_notify_twice(self):
+        """Повтор с тем же Idempotency-Key не должен дублировать сообщение в чат."""
+        store.record_receipt(
+            site_id=self.site_id,
+            material_id=self.material_id,
+            supplier_id=self.supplier_id,
+            quantity=10,
+            actor_max_id=101,
+            actor_name="Мастер",
+        )
+        to_site_id = store.list_sites()[1]["id"]
+        receipt_chat = []
+        original_notify = api._notify
+        original_receipt_notify = api.notify_master_receipt
+        original_event_notify = api.notify_event
+
+        async def capture(lines, **kwargs):
+            return None
+
+        async def capture_receipt(text):
+            receipt_chat.append(text)
+            return True
+
+        async def capture_event(text):
+            return True
+
+        api._notify = capture
+        api.notify_master_receipt = capture_receipt
+        api.notify_event = capture_event
+        payload = {
+            "from_site_id": self.site_id,
+            "to_site_id": to_site_id,
+            "material_id": self.material_id,
+            "quantity": 2,
+            "idempotency_key": "api-transfer-replay-1",
+        }
+        try:
+            first = await self.client.post(
+                "/api/sklad-master/transfers",
+                headers={"X-Max-Init-Data": "valid"},
+                json=payload,
+            )
+            second = await self.client.post(
+                "/api/sklad-master/transfers",
+                headers={"X-Max-Init-Data": "valid"},
+                json=payload,
+            )
+        finally:
+            api._notify = original_notify
+            api.notify_master_receipt = original_receipt_notify
+            api.notify_event = original_event_notify
+        self.assertEqual(first.status, 201)
+        self.assertEqual(second.status, 201)
+        self.assertEqual(len(receipt_chat), 1)
+
+    async def test_issue_without_stock_does_not_notify_chats(self):
+        """Ошибка «недостаточно остатка» не должна порождать сообщение в чат."""
+        receipt_chat = []
+        reports_chat = []
+        original_receipt_notify = api.notify_master_receipt
+        original_event_notify = api.notify_event
+
+        async def capture_receipt(text):
+            receipt_chat.append(text)
+            return True
+
+        async def capture_event(text):
+            reports_chat.append(text)
+            return True
+
+        api.notify_master_receipt = capture_receipt
+        api.notify_event = capture_event
+        try:
+            response = await self.client.post(
+                "/api/sklad-master/issues",
+                headers={"X-Max-Init-Data": "valid"},
+                json={
+                    "site_id": self.site_id,
+                    "material_id": self.second_material_id,
+                    "quantity": 999,
+                    "idempotency_key": "api-issue-empty-1",
+                },
+            )
+        finally:
+            api.notify_master_receipt = original_receipt_notify
+            api.notify_event = original_event_notify
+        self.assertEqual(response.status, 400)
+        self.assertEqual(receipt_chat, [])
+        self.assertEqual(reports_chat, [])
+
+    async def test_movement_message_has_time_and_names(self):
+        """Сообщение о движении несёт дату, время, площадку и наименование."""
+        store.record_receipt(
+            site_id=self.site_id,
+            material_id=self.material_id,
+            supplier_id=self.supplier_id,
+            quantity=20,
+            actor_max_id=101,
+            actor_name="Мастер",
+        )
+        lines = api._movement_lines(
+            "📤 Склад Мастер · выдача",
+            result={
+                "site": {"id": self.site_id, "name": "Туран"},
+                "site_id": self.site_id,
+                "material": {"id": self.material_id, "name": "Брус 150х150", "unit": "шт"},
+                "quantity": 5,
+                "balance": 15,
+                "created_at": 1762000000.0,
+            },
+            actor_name="Мастер",
+            actor_max_id=101,
+            body={"note": "на ремонт"},
+        )
+        text = "\n".join(lines)
+        self.assertIn("Время:", text)
+        self.assertIn("Площадка: Туран", text)
+        self.assertIn("Наименование: Брус 150х150", text)
+        self.assertIn("Количество: 5 шт", text)
+        self.assertIn("Остаток: 15 шт", text)
+        self.assertIn("Примечание: на ремонт", text)
+
+    async def test_adjustment_message_shows_signed_delta(self):
+        """Корректировка показывает знак изменения, то есть расход или приход."""
+        lines = api._movement_lines(
+            "🧮 Склад Мастер · корректировка",
+            result={
+                "site_id": self.site_id,
+                "material": {"name": "Проволока 6 мм", "unit": "кг"},
+                "quantity_delta": -3.5,
+                "balance": 8.0,
+                "created_at": 1762000000.0,
+            },
+            actor_name="Мастер",
+            actor_max_id=101,
+        )
+        text = "\n".join(lines)
+        self.assertIn("Наименование: Проволока 6 мм", text)
+        self.assertIn("Количество: −3.5 кг", text)
+
+    async def test_receipt_message_contains_date_and_names(self):
+        """Приход в чат несёт дату и список наименований."""
+        sent = []
+        original_receipt_notify = api.notify_master_receipt
+
+        async def capture_receipt(text):
+            sent.append(text)
+            return True
+
+        api.notify_master_receipt = capture_receipt
+        try:
+            response = await self.client.post(
+                "/api/sklad-master/receipts",
+                headers={"X-Max-Init-Data": "valid"},
+                json={
+                    "site_id": self.site_id,
+                    "supplier_id": self.supplier_id,
+                    "items": [{"material_id": self.material_id, "quantity": 7}],
+                    "note": "накладная 77",
+                    "idempotency_key": "api-receipt-time-1",
+                },
+            )
+        finally:
+            api.notify_master_receipt = original_receipt_notify
+        self.assertEqual(response.status, 201)
+        self.assertEqual(len(sent), 1)
+        text = sent[0]
+        self.assertIn("приход", text)
+        self.assertIn("Дата:", text)
+        self.assertIn(":", text.split("Время:")[-1] if "Время:" in text else "Дата:")
+        self.assertIn("Наименования:", text)
+        self.assertIn("Брус 150х150", text)
+
+    async def test_sites_without_movements_are_marked_idle(self):
+        """Площадка с движениями — рабочая, без движений — «не в работе»."""
+        site_id = store.list_sites()[0]["id"]
+        store.record_receipt(
+            site_id=site_id,
+            material_id=store.list_materials()[0]["id"],
+            supplier_id=store.list_suppliers()[0]["id"],
+            quantity=3,
+            actor_max_id=101,
+            actor_name="Мастер",
+            idempotency_key="idle-check-receipt-1",
+        )
+        response = await self.client.get(
+            "/api/sklad-master/bootstrap",
+            headers={"X-Max-Init-Data": "valid"},
+        )
+        body = await response.json()
+        idle = {site["id"]: site["idle"] for site in body["sites"]}
+        self.assertFalse(idle[site_id])
+        others = [value for key, value in idle.items() if key != site_id]
+        self.assertTrue(all(others))
+
+    async def test_export_summary_returns_xlsx(self):
+        """Сводка выгружается в Excel и содержит итоги прихода и расхода."""
+        import io
+
+        from openpyxl import load_workbook
+
+        response = await self.client.get(
+            "/api/sklad-master/export.xlsx?kind=summary",
+            headers={"X-Max-Init-Data": "valid"},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertIn("spreadsheetml", response.headers.get("Content-Type", ""))
+        workbook = load_workbook(io.BytesIO(await response.read()))
+        sheet = workbook.active
+        headers = [cell.value for cell in sheet[4]]
+        self.assertIn("Материал", headers)
+        self.assertIn("Приход", headers)
+        self.assertIn("Расход", headers)
+        self.assertIn("Остаток", headers)
+        texts = [str(cell.value or "") for row in sheet.iter_rows() for cell in row]
+        self.assertTrue(any(value.startswith("ИТОГО") for value in texts))
+
+    async def test_export_full_has_history_and_receipts(self):
+        """Полная выгрузка содержит листы истории, приходов и перемещений."""
+        import io
+
+        from openpyxl import load_workbook
+
+        response = await self.client.get(
+            "/api/sklad-master/export.xlsx?kind=full",
+            headers={"X-Max-Init-Data": "valid"},
+        )
+        self.assertEqual(response.status, 200)
+        workbook = load_workbook(io.BytesIO(await response.read()))
+        for title in ("История", "Приходы", "Перемещения"):
+            self.assertIn(title, workbook.sheetnames)
+
+    async def test_export_requires_access(self):
+        """Без входа в mini-app выгрузка недоступна."""
+        response = await self.client.get("/api/sklad-master/export.xlsx")
+        self.assertEqual(response.status, 401)
+
+    async def test_export_link_downloads_file_without_mini_app(self):
+        """Ссылка отдаёт файл без заголовков мини-аппа и работает один раз."""
+        created = await self.client.post(
+            "/api/sklad-master/export-link?kind=summary",
+            headers={"X-Max-Init-Data": "valid"},
+            json={},
+        )
+        self.assertEqual(created.status, 200)
+        body = await created.json()
+        token = body["url"].split("t=")[-1]
+        self.assertTrue(token)
+        self.assertEqual(body["expires_in"], 300)
+
+        first = await self.client.get(f"/api/sklad-master/export?t={token}")
+        self.assertEqual(first.status, 200)
+        self.assertIn("spreadsheetml", first.headers.get("Content-Type", ""))
+        self.assertGreater(len(await first.read()), 1000)
+
+        second = await self.client.get(f"/api/sklad-master/export?t={token}")
+        self.assertEqual(second.status, 403)
+
+    async def test_export_link_requires_access(self):
+        """Без входа ссылка не выдаётся."""
+        response = await self.client.post("/api/sklad-master/export-link", json={})
+        self.assertEqual(response.status, 401)
+
+    async def test_export_link_unknown_token_rejected(self):
+        """Неизвестный токен не даёт файл."""
+        response = await self.client.get("/api/sklad-master/export?t=unknown-token")
+        self.assertEqual(response.status, 403)
+
     async def test_admin_can_edit_material_and_see_inactive_catalog(self):
         os.environ["DRIVERS_ADMIN_MAX_IDS"] = "101"
         response = await self.client.patch(

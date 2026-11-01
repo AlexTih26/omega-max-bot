@@ -46,6 +46,7 @@ from sklad_master_access_chat import set_bot as set_sklad_access_bot
 from sklad_master_access_chat import handle_sklad_access_callback
 from sklad_master_backup import backup_sklad_master_db, daily_sklad_backup_loop
 from sklad_master_reminders import sklad_eta_reminder_loop
+from sklad_master_export_chat import set_bot as set_sklad_export_bot
 from taksimo_notify import daily_report_loop as taksimo_daily_report_loop
 from taksimo_notify import notify_chat_id, set_bot as set_taksimo_bot
 from taksimo_new_notify import set_bot as set_taksimo_new_bot
@@ -265,7 +266,7 @@ async def on_taksimo_chat(event: MessageCreated) -> None:
         return
     if is_materials_chat(chat_id):
         await event.message.answer(
-            "Чат приходов (только приходы от мастера):\n\n"
+            "Чат событий склада (приходы, выдача, перемещения, корректировки):\n\n"
             f"MATERIALS_CHAT_ID={chat_id}\n\n"
             "Добавьте в .env и перезапустите бота."
         )
@@ -298,7 +299,7 @@ async def on_drivers_chat_cmd(event: MessageCreated) -> None:
         return
     if is_materials_chat(chat_id):
         await event.message.answer(
-            "Чат приходов (только приходы от мастера):\n\n"
+            "Чат событий склада (приходы, выдача, перемещения, корректировки):\n\n"
             f"MATERIALS_CHAT_ID={chat_id}\n\n"
             "Добавьте в .env и перезапустите бота."
         )
@@ -579,6 +580,7 @@ async def main() -> None:
     set_materials_receipt_bot(bot)
     set_materials_reserve_bot(bot)
     set_sklad_access_bot(bot)
+    set_sklad_export_bot(bot)
     set_rumex_registry_bot(bot)
     backup_taksimo_db(reason="startup")
     backup_sklad_master_db(reason="startup")

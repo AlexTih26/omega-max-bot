@@ -425,6 +425,57 @@ button {
   font-weight: 750;
 }
 
+/* Площадка заведена заранее: склад на ней ещё не работает. */
+.sm-idle-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+/* Нижнее меню выбора действия при выгрузке файла. */
+.sm-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.sm-sheet__card {
+  width: 100%;
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+  border-radius: 18px 18px 0 0;
+  background: var(--sm-card, #1c1c1e);
+  color: var(--sm-text, #fff);
+}
+
+.sm-sheet__title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 750;
+  text-align: center;
+}
+
+.sm-sheet__note {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: center;
+  opacity: 0.72;
+}
+
+.sm-sheet__card .sm-btn + .sm-btn {
+  margin-top: 8px;
+}
+
 .sm-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

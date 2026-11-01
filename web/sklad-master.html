@@ -178,6 +178,12 @@
             <button type="button" class="sm-mini-action" id="movementsBackBtn" hidden>Назад</button>
           </div>
           <button type="button" class="sm-btn sm-btn--ghost sm-full" id="refreshMovementsBtn">Обновить историю</button>
+          <div class="sm-inline sm-section-gap">
+            <button type="button" class="sm-btn sm-btn--ghost" id="exportSummaryBtn">Выгрузить сводку</button>
+            <button type="button" class="sm-btn sm-btn--ghost" id="exportFullBtn">Выгрузить всё</button>
+          </div>
+          <a class="sm-btn sm-btn--ghost sm-full sm-section-gap" href="/sklad-master-help.html" target="_blank" rel="noopener">Инструкция (как пользоваться)</a>
+          <a class="sm-btn sm-btn--ghost sm-full" href="/help.html" target="_blank" rel="noopener">Все инструкции</a>
           <div class="sm-list sm-section-gap" id="movementsList"></div>
         </div>
         <form id="transferForm" hidden>
@@ -274,9 +280,20 @@
       </div>
     </main>
 
+    <div class="sm-sheet" id="exportSheet" hidden>
+      <div class="sm-sheet__card">
+        <h3 class="sm-sheet__title" id="exportSheetTitle">Выгрузка в Excel</h3>
+        <p class="sm-sheet__note" id="exportSheetNote"></p>
+        <button type="button" class="sm-btn sm-btn--primary sm-submit" id="exportSendBtn">Отправить в личку MAX</button>
+        <button type="button" class="sm-btn sm-btn--ghost sm-full" id="exportOpenBrowserBtn">Открыть в браузере</button>
+        <button type="button" class="sm-btn sm-btn--ghost sm-full" id="exportSaveBtn">Сохранить в Файлы</button>
+        <button type="button" class="sm-btn sm-btn--ghost sm-full" id="exportCancelBtn">Отмена</button>
+      </div>
+    </div>
+
     <div class="sm-toast" id="toast" hidden></div>
   </div>
 
-  <script src="/sklad-master.js?v=38"></script>
+  <script src="/sklad-master-43.js"></script>
 </body>
 </html>

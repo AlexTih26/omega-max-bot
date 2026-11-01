@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Инструкции и документация</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/sklad-master.css">
+  <style>
+    .sm-help { max-width: 760px; margin: 0 auto; padding: 16px 14px 40px; }
+    .sm-help h1 { font-size: 22px; margin: 8px 0 14px; }
+    .sm-help h2 { font-size: 18px; margin: 22px 0 10px; }
+    .sm-help h3 { font-size: 16px; margin: 16px 0 8px; }
+    .sm-help p { margin: 8px 0; line-height: 1.5; }
+    .sm-help hr { border: 0; border-top: 1px solid rgba(255,255,255,.12); margin: 18px 0; }
+    .sm-help table { width: 100%; border-collapse: collapse; margin: 10px 0 14px; font-size: 14px; }
+    .sm-help th, .sm-help td { border: 1px solid rgba(255,255,255,.14); padding: 7px 9px; text-align: left; vertical-align: top; }
+    .sm-help th { background: rgba(255,255,255,.07); font-weight: 700; }
+    .sm-help blockquote { margin: 10px 0; padding: 10px 12px; border-left: 3px solid var(--sm-accent, #d2a24c); background: rgba(255,255,255,.05); border-radius: 0 10px 10px 0; }
+    .sm-help .li { margin: 5px 0; padding-left: 4px; }
+    .sm-help .back { display: inline-block; margin-bottom: 10px; color: var(--sm-accent, #d2a24c); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="sm-help">
+    <a class="back" <a class="back" href="/">← На главную</a>
+<h1>Гид-хаб: все инструкции проекта</h1>
+    <p>Точка входа во все руководства. Ищите раздел по своей роли.</p>
+    <p><b>Онлайн-версия:</b> <a href="https://max.avtmsk.ru/help.html" target="_blank" rel="noopener">https://max.avtmsk.ru/help.html</a></p>
+    <hr>
+    <h2>Для сотрудников (инструкции)</h2>
+    <table>
+    <tr><th>Инструкция</th><th>Кому</th><th>Где открыть</th></tr>
+    <tr><td><b>Склад Мастер</b></td><td>Мастер, снабженец, руководитель</td><td><a href="https://max.avtmsk.ru/sklad-master-help.html" target="_blank" rel="noopener">открыть онлайн</a></td></tr>
+    <tr><td><b>Таксимо — оператор 2 и 3</b></td><td>Операторы выгрузки на площадке</td><td><a href="https://avtmsk.ru/taksimo.html" target="_blank" rel="noopener">открыть в Таксимо</a></td></tr>
+    <tr><td><b>Таксимо — памятка на 1 страницу</b></td><td>Быстрая шпаргалка для печати</td><td>из Таксимо, вкладка Excel</td></tr>
+    </table>
+    <p>Исходники этих инструкций лежат в папке <code>docs/</code> репозитория: <code>sklad-master-guide.md</code>, <code>taksimo-instrukciya-operator2-3.md</code>, <code>taksimo-instrukciya-operator2-3-1str.md</code>.</p>
+    <hr>
+    <h2>Для разработчиков (схемы и планы)</h2>
+    <table>
+    <tr><th>Документ</th><th>О чём</th></tr>
+    <tr><td>Схема администрирования (<code>docs/schema-admin.md</code>)</td><td>Учётки, роли, справочники, журнал действий</td></tr>
+    <tr><td>Схема рейсов (<code>docs/schema-trips.md</code>)</td><td>Рейс, ТТН, ЭР, печатные копии</td></tr>
+    <tr><td>Аудит и идемпотентность (<code>docs/schema-audit-idempotency.md</code>)</td><td>Журнал действий и защита от повторов</td></tr>
+    <tr><td>Состояния очереди (<code>docs/schema-queue-states.md</code>)</td><td>Очередь уведомлений и её переходы</td></tr>
+    <tr><td>Экосистема РУМЕКС / Таксимо / Кодар (<code>docs/rumex-taksimo-kodar-ecosystem.md</code>)</td><td>Как связаны контуры</td></tr>
+    <tr><td>План миграций 014–016 (<code>docs/migration-014-016-rollout-plan.md</code>)</td><td>Порядок применения миграций</td></tr>
+    <tr><td>Гид rollout FastAPI (<code>docs/fastapi-production-rollout-guide.md</code>)</td><td>Вывод единого контура в прод</td></tr>
+    </table>
+    <hr>
+    <h2>Приложения и входы</h2>
+    <table>
+    <tr><th>Что</th><th>Адрес</th><th>Как открыть</th></tr>
+    <tr><td>Склад Мастер</td><td><a href="https://max.avtmsk.ru/sklad-master.html" target="_blank" rel="noopener">https://max.avtmsk.ru/sklad-master.html</a></td><td>только из MAX</td></tr>
+    <tr><td>Таксимо (площадка)</td><td><a href="https://avtmsk.ru/taksimo.html" target="_blank" rel="noopener">https://avtmsk.ru/taksimo.html</a></td><td>браузер, вход по PIN</td></tr>
+    <tr><td>Кабинет бухгалтера</td><td><a href="https://max.avtmsk.ru/rumex-accountant.html" target="_blank" rel="noopener">https://max.avtmsk.ru/rumex-accountant.html</a></td><td>из MAX</td></tr>
+    <tr><td>Управление РУМЕКС</td><td><a href="https://max.avtmsk.ru/rumex-management.html" target="_blank" rel="noopener">https://max.avtmsk.ru/rumex-management.html</a></td><td>из MAX</td></tr>
+    </table>
+    <hr>
+    <h2>Как добавить новую инструкцию</h2>
+    <p class="li">1. Положить текст в <code>docs/</code> в формате markdown.</p>
+    <p class="li">2. Добавить строку в таблицу выше.</p>
+    <p class="li">3. Пересобрать страницы для телефона:</p>
+    <p><code>`</code></p>
+    <p>python3 scripts/build-sklad-help.py</p>
+    <p><code>`</code></p>
+    <p>Markdown в <code>docs/</code> остаётся источником: правки вносятся туда, страницы <code>web/*.html</code> пересобираются одной командой.</p>
+  </div>
+</body>
+</html>

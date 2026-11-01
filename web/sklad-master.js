@@ -124,6 +124,136 @@
     });
   }
 
+  // Выбор действия перед выгрузкой: открыть файл в Excel или сохранить.
+  var exportChoice = { kind: "summary", busy: false };
+
+  function openExportSheet(button, kind) {
+    if (!syncInitData()) {
+      toast("Откройте программу внутри MAX");
+      return;
+    }
+    if (!inMax()) {
+      exportFile(kind, "save");
+      return;
+    }
+    exportChoice.kind = kind;
+    $("exportSheetNote").textContent =
+      (kind === "full" ? "Полная выгрузка: сводка, приходы, история, перемещения." : "Сводка: приход, расход и остаток по материалам.") +
+      " Файл придёт вам в личку MAX.";
+    $("exportSheet").hidden = false;
+  }
+
+  function closeExportSheet() {
+    $("exportSheet").hidden = true;
+  }
+
+  // Выгрузка Excel. Внутри MAX применяются нативные методы: downloadFile
+  // сохраняет файл, shareContent открывает системное меню, откуда файл
+  // передаётся в Excel. Blob остаётся запасным путём для браузера.
+  function exportUrl(kind) {
+    syncInitData();
+    var path = API + "/export.xlsx?kind=" + encodeURIComponent(kind);
+    if (initData) path += "&initData=" + encodeURIComponent(initData);
+    return path;
+  }
+
+  function exportFileName(kind) {
+    var stamp = new Date().toISOString().slice(0, 10);
+    return stamp + (kind === "full" ? "-sklad-master.xlsx" : "-sklad-master-svodka.xlsx");
+  }
+
+  function inMax() {
+    return Boolean(webApp && typeof webApp.downloadFile === "function");
+  }
+
+  function browserDownload(url, name) {
+    return fetch(url, { headers: headers() })
+      .then(function (response) {
+        if (!response.ok) throw new Error("Не удалось получить файл");
+        return response.blob();
+      })
+      .then(function (blob) {
+        var objectUrl = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        setTimeout(function () {
+          URL.revokeObjectURL(objectUrl);
+          if (link.parentNode) link.parentNode.removeChild(link);
+        }, 4000);
+      });
+  }
+
+  // Открыть файл в браузере телефона: нативные методы MAX в WebView
+  // срабатывают не всегда, а браузер скачивает файл штатно. Ссылка одноразовая
+  // и живёт несколько минут.
+  function exportInBrowser(kind) {
+    if (!syncInitData()) {
+      toast("Откройте программу внутри MAX");
+      return;
+    }
+    toast("Готовим ссылку…");
+    api("/export-link?kind=" + encodeURIComponent(kind), { method: "POST", body: "{}" })
+      .then(function (body) {
+        var url = body && body.url;
+        if (!url) throw new Error("Сервер не выдал ссылку");
+        if (webApp && typeof webApp.openLink === "function") {
+          webApp.openLink(url);
+        } else {
+          window.open(url, "_blank");
+        }
+        toast("Ссылка открыта в браузере. Скачайте файл и откройте его в Excel");
+      })
+      .catch(function (error) {
+        fail(error, "Не удалось открыть ссылку");
+      });
+  }
+
+  // Отправить файл в личку MAX. Самый надёжный путь: вложение в переписке
+  // открывается штатно и остаётся в истории чата.
+  function exportToChat(kind) {
+    if (!syncInitData()) {
+      toast("Откройте программу внутри MAX");
+      return;
+    }
+    toast("Собираем файл и отправляем…");
+    post("/export-send", { kind: kind })
+      .then(function () {
+        toast("Файл отправлен в личку MAX");
+      })
+      .catch(function (error) {
+        fail(error, "Не удалось отправить файл");
+      });
+  }
+
+  function exportFile(kind, mode) {
+    if (!syncInitData()) {
+      toast("Откройте программу внутри MAX");
+      return;
+    }
+    var url = exportUrl(kind);
+    var name = exportFileName(kind);
+    if (!inMax()) {
+      browserDownload(url, name)
+        .then(function () { toast("Файл готов: " + name); })
+        .catch(function (error) { fail(error, "Не удалось выгрузить файл"); });
+      return;
+    }
+    var saving = mode === "save";
+    var request = saving
+      ? webApp.downloadFile(url, name)
+      : webApp.shareContent({ url: url, file_name: name, type: "file" });
+    Promise.resolve(request)
+      .then(function () {
+        toast(saving ? "Файл сохранён: " + name : "Файл передан в Excel");
+      })
+      .catch(function (error) {
+        fail(error, "Не удалось подготовить файл");
+      });
+  }
+
   var toastTimer = null;
   function toast(message) {
     var element = $("toast");
@@ -208,11 +338,11 @@
     }).join("");
   }
 
-  function setBusy(button, busy) {
+  function setBusy(button, busy, label) {
     if (!button) return;
     if (busy) {
       button.dataset.label = button.textContent;
-      button.textContent = "Сохраняем…";
+      button.textContent = label || "Сохраняем…";
     } else if (button.dataset.label) {
       button.textContent = button.dataset.label;
     }
@@ -354,7 +484,8 @@
     $("siteList").innerHTML = sites.map(function (site) {
       return '<button type="button" class="sm-chip' +
         (String(site.id) === String(state.siteId) ? " is-active" : "") +
-        '" data-site-id="' + esc(site.id) + '">' + esc(site.name) + "</button>";
+        '" data-site-id="' + esc(site.id) + '">' + esc(site.name) +
+        (site.idle ? ' <span class="sm-idle-tag">не в работе</span>' : "") + "</button>";
     }).join("") || '<p class="sm-empty">Нет доступных площадок.</p>';
   }
 
@@ -1958,6 +2089,37 @@
     $("materialCreateBtn").addEventListener("click", createMaterial);
     $("addRequestItemBtn").addEventListener("click", addRequestItem);
     $("refreshMovementsBtn").addEventListener("click", loadMovements);
+    if ($("exportSummaryBtn")) {
+      $("exportSummaryBtn").addEventListener("click", function () {
+        openExportSheet(this, "summary");
+      });
+    }
+    if ($("exportFullBtn")) {
+      $("exportFullBtn").addEventListener("click", function () {
+        openExportSheet(this, "full");
+      });
+    }
+    if ($("exportSendBtn")) {
+      $("exportSendBtn").addEventListener("click", function () {
+        closeExportSheet();
+        exportToChat(exportChoice.kind);
+      });
+    }
+    if ($("exportOpenBrowserBtn")) {
+      $("exportOpenBrowserBtn").addEventListener("click", function () {
+        closeExportSheet();
+        exportInBrowser(exportChoice.kind);
+      });
+    }
+    if ($("exportSaveBtn")) {
+      $("exportSaveBtn").addEventListener("click", function () {
+        closeExportSheet();
+        exportFile(exportChoice.kind, "save");
+      });
+    }
+    if ($("exportCancelBtn")) {
+      $("exportCancelBtn").addEventListener("click", closeExportSheet);
+    }
     if ($("materialCardFullHistoryBtn")) {
       $("materialCardFullHistoryBtn").addEventListener("click", openMaterialCardFullHistory);
     }
